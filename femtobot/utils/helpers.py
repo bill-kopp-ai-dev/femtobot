@@ -728,13 +728,33 @@ def build_default_onboard_config(instance_dir: Path, suffix: str | None = None) 
     return config
 
 
-def write_default_config(config: Config, config_path: Path, force: bool = False) -> bool:
+def write_default_config(
+    config: Config,
+    config_path: Path,
+    force: bool = False,
+    *,
+    scrub_secrets: bool = True,
+) -> bool:
     """Write default config to file.
+
+    SECURITY: by default, sensitive fields (``api_key``, ``token``, ``secret``,
+    etc.) are scrubbed to ``None`` before the config is persisted. This
+    prevents a class of bug where ``Config()`` reads ``FEMTOBOT_*`` env vars
+    (inherited from the parent process / IDE) into the config object, and a
+    subsequent ``model_dump`` writes them to ``config.json`` in plain text.
+
+    A ``loguru`` warning is emitted whenever any secrets are detected in the
+    in-memory config so the user knows where to look. Pass
+    ``scrub_secrets=False`` to persist secrets verbatim — but be aware this
+    re-opens the on-disk exposure the scrubber is meant to close.
 
     Args:
         config: Config object to write
         config_path: Path to config.json
         force: Overwrite if exists
+        scrub_secrets: When True (default), sensitive values are replaced with
+            ``None`` before serialization. When False, the config is dumped
+            verbatim and a warning is logged.
 
     Returns:
         True if written, False if skipped (file exists and not force)
@@ -742,11 +762,42 @@ def write_default_config(config: Config, config_path: Path, force: bool = False)
     if config_path.exists() and not force:
         return False
 
-    import json
+    # Import locally to avoid a hard dependency at module import time; the
+    # scrubber has no other coupling and this keeps cold-start paths clean.
+    from femtobot.utils.secret_scrub import count_secrets, scrub_secrets as _scrub
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
     data = config.model_dump(mode="json", by_alias=True)
+    secret_count = count_secrets(data)
+    if secret_count > 0:
+        logger.warning(
+            "Config at {} contains {} sensitive field(s) (api_key/token/secret/...). "
+            "Move them to env vars (FEMTOBOT_PROVIDERS__<NAME>__API_KEY) or a "
+            "gitignored .env file. They will be scrubbed from the persisted "
+            "config.json to avoid leaking via `git add` / backups / IDE sync.",
+            config_path,
+            secret_count,
+        )
+
+    if scrub_secrets:
+        data, scrubbed = _scrub(data)
+        if scrubbed != secret_count:
+            # Defensive: should be impossible, but log if it ever happens.
+            logger.warning(
+                "Secret scrubber mismatch on {}: detected={}, scrubbed={}",
+                config_path,
+                secret_count,
+                scrubbed,
+            )
+    elif secret_count > 0:
+        logger.warning(
+            "Persisting {} sensitive field(s) to {} with scrub_secrets=False. "
+            "This file MUST stay out of version control.",
+            secret_count,
+            config_path,
+        )
+
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 

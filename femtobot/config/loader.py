@@ -221,18 +221,55 @@ def _apply_ssrf_whitelist(config: Config) -> None:
     configure_ssrf_whitelist(config.tools.ssrf_whitelist)
 
 
-def save_config(config: Config, config_path: Path | None = None) -> None:
-    """
-    Save configuration to file.
+def save_config(
+    config: Config,
+    config_path: Path | None = None,
+    *,
+    scrub_secrets: bool = True,
+) -> None:
+    """Save configuration to file.
+
+    SECURITY: by default, sensitive fields (``api_key``, ``token``, ``secret``,
+    etc.) are scrubbed to ``None`` before persistence. See
+    ``femtobot.utils.secret_scrub`` for the catalog and rationale. Pass
+    ``scrub_secrets=False`` to persist verbatim — this re-opens the on-disk
+    exposure the scrubber is meant to close, so use it only when you fully
+    trust the destination path.
 
     Args:
         config: Configuration to save.
         config_path: Optional path to save to. Uses default if not provided.
+        scrub_secrets: When True (default), sensitive values are replaced with
+            ``None`` before serialization.
     """
+    from loguru import logger
+
+    from femtobot.utils.secret_scrub import count_secrets, scrub_secrets as _scrub
+
     path = config_path or get_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
 
     data = config.model_dump(mode="json", by_alias=True)
+    secret_count = count_secrets(data)
+    if secret_count > 0:
+        logger.warning(
+            "Config at {} contains {} sensitive field(s) (api_key/token/secret/...). "
+            "Move them to env vars (FEMTOBOT_PROVIDERS__<NAME>__API_KEY) or a "
+            "gitignored .env file. They will be scrubbed from the persisted "
+            "config.json to avoid leaking via `git add` / backups / IDE sync.",
+            path,
+            secret_count,
+        )
+
+    if scrub_secrets:
+        data, _ = _scrub(data)
+    elif secret_count > 0:
+        logger.warning(
+            "Persisting {} sensitive field(s) to {} with scrub_secrets=False. "
+            "This file MUST stay out of version control.",
+            secret_count,
+            path,
+        )
 
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
