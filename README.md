@@ -482,6 +482,28 @@ Before submitting a PR:
 2. Update the README and any relevant docs in `docs/`.
 3. Add or update tests if you change behavior (the test suite is being rebuilt from scratch in this stage).
 
+## Documentation
+
+Full documentation lives under [docs/](docs/). Start here:
+
+- [docs/quick-start.md](docs/quick-start.md) — install + first run.
+- [docs/configuration.md](docs/configuration.md) — every field of `config.json`.
+- [docs/cli-reference.md](docs/cli-reference.md) — every subcommand, flag, and slash command.
+- [docs/python-sdk.md](docs/python-sdk.md) — driving Femtobot from Python.
+- [docs/openai-api.md](docs/openai-api.md) — the OpenAI-compatible HTTP surface.
+- [docs/websocket.md](docs/websocket.md) — the WebSocket channel.
+- [docs/mcp.md](docs/mcp.md) — wiring Model Context Protocol servers.
+- [docs/memory.md](docs/memory.md) — the three-layer memory model (Consolidator, AutoCompact, Dream).
+- [docs/architecture.md](docs/architecture.md) — runtime data flow and extension points.
+- [docs/tools.md](docs/tools.md) — every built-in tool.
+- [docs/my-tool.md](docs/my-tool.md) — the introspection tool and its security layers.
+- [docs/security.md](docs/security.md) — the security model.
+- [docs/deployment.md](docs/deployment.md) — Docker, systemd, supervisord, reverse proxies.
+- [docs/multiple-instances.md](docs/multiple-instances.md) — running `.femtobot`, `.femtobot_dev`, etc. side by side.
+- [docs/troubleshooting.md](docs/troubleshooting.md) — common failure modes and fixes.
+
+Also at the repo root: [CHANGELOG.md](CHANGELOG.md), [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Acknowledgements
 
 - Based on ideas and core patterns from [Nanobot](https://github.com/HKUDS/nanobot).

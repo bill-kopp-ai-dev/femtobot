@@ -1,21 +1,179 @@
 # CLI Reference
 
-| Command | Description |
-|---------|-------------|
-| `femtobot onboard` | Initialize config & workspace |
-| `femtobot onboard --force` | Overwrite existing configuration |
-| `femtobot onboard --suffix <name>` | Initialize a specific instance using a suffix |
-| `femtobot onboard --folder-path <path>` | Initialize an instance at a specific path |
-| `femtobot agent` | Interactive chat mode |
-| `femtobot agent -m "..."` | Chat with the agent |
-| `femtobot agent --suffix <name>` | Chat against a specific instance suffix |
-| `femtobot agent --folder-path <path>` | Chat against a specific instance path |
-| `femtobot serve` | Start the OpenAI-compatible API |
-| `femtobot gateway` | Start the gateway in headless mode |
-| `femtobot gateway --suffix <name>` | Start the gateway for a specific instance suffix |
-| `femtobot gateway --folder-path <path>` | Start the gateway for a specific instance path |
-| `femtobot status` | Show status |
-| `femtobot status --suffix <name>` | Show status for a specific instance suffix |
-| `femtobot status --folder-path <path>` | Show status for a specific instance path |
+Run `femtobot --help` for the canonical list. This page documents every
+subcommand, its flags, and the in-REPL slash commands.
 
-Interactive mode exits: `exit`, `quit`, `/exit`, `/quit`, `:q`, or `Ctrl+D`.
+## Global flags
+
+These work with every subcommand that targets an instance:
+
+| Flag | Alias | Description |
+|---|---|---|
+| `--suffix <name>` | `-s` | Instance suffix (e.g. `dev`, `prod`, `billing`). See [multiple-instances.md](./multiple-instances.md). |
+| `--folder-path <path>` | `-f` | Parent folder for the instance (overrides `$FEMTOBOT_HOME` and CWD). |
+| `--workspace <path>` | `-w` | Override `agents.defaults.workspace` from `config.json`. |
+| `--config <path>` | `-c` | Explicit path to `config.json` (otherwise auto-discovered). |
+
+---
+
+## `femtobot onboard`
+
+Initialize a new instance. Creates the instance directory, writes a default
+`config.json`, and syncs the workspace templates (`AGENTS.md`, `SOUL.md`,
+`USER.md`, `MEMORY.md`).
+
+```bash
+femtobot onboard                              # ./.femtobot/
+femtobot onboard --suffix dev                 # ./.femtobot_dev/
+femtobot onboard --folder-path /opt/agents    # /opt/agents/.femtobot/
+femtobot onboard --suffix billing --force     # overwrite existing config.json
+```
+
+| Option | Description |
+|---|---|
+| `--suffix`, `-s` | Instance suffix. |
+| `--folder-path`, `-f` | Parent folder. |
+| `--workspace`, `-w` | Workspace path. |
+| `--config`, `-c` | Path to a seed `config.json`. |
+| `--wizard` / `--no-wizard` | Interactive wizard on first run. |
+| `--force` | Overwrite an existing `config.json`. |
+
+---
+
+## `femtobot status`
+
+Show the resolved configuration for the current instance: config path,
+workspace path, active model and provider, configured providers, and the
+`mcpServers` currently registered.
+
+```bash
+femtobot status
+femtobot status --suffix dev
+```
+
+Always run this after editing `config.json` — if Pydantic validation failed
+at load time, `status` will show the silent fallback to defaults and you'll
+know your overrides were dropped.
+
+---
+
+## `femtobot agent`
+
+Run the agent loop. With no `-m`, drops you into an interactive REPL. With
+`-m`, runs a single turn and exits.
+
+```bash
+femtobot agent                              # interactive REPL
+femtobot agent -m "Hello!"                  # single-shot
+femtobot agent --suffix dev -m "Hi dev!"    # against the dev instance
+femtobot agent --session myproject          # isolated session id
+femtobot agent --markdown                   # render output as Markdown (default)
+femtobot agent --no-markdown                # plain text only
+femtobot agent --logs                       # show tool calls and reasoning
+femtobot agent --verbose                    # full femtobot.* logger output
+```
+
+| Option | Description |
+|---|---|
+| `--message`, `-m` | Run a single message and exit. |
+| `--session`, `-s` | Session ID (default `cli:direct`). Different IDs keep independent histories. |
+| `--workspace`, `-w` | Workspace override. |
+| `--config`, `-c` | Path to `config.json`. |
+| `--folder-path`, `-f` | Instance folder. |
+| `--suffix` | Instance suffix. |
+| `--markdown` / `--no-markdown` | Render assistant output as Markdown (default `true`). |
+| `--logs` | Show tool calls and intermediate steps in the REPL. |
+
+### In-REPL commands (slash commands)
+
+Inside `femtobot agent` (interactive), the following slash commands are
+registered by `femtobot.command.builtin`:
+
+| Command | Description |
+|---|---|
+| `/help` | List available commands. |
+| `/status` | Show current session / model / provider. |
+| `/new` | Start a new session. |
+| `/model` | Show the active model. |
+| `/model <name>` | Switch model at runtime. |
+| `/history` | Show recent session messages. |
+| `/history <n>` | Show the last `n` messages. |
+| `/goal` | Show the current long-running task description. |
+| `/goal <text>` | Set / rewrite the long-running task. |
+| `/dream` | Run the Dream consolidation job immediately (see [memory.md](./memory.md)). |
+| `/dream-log` | Show the latest Dream diff. |
+| `/dream-log <sha>` | Show a specific Dream diff. |
+| `/dream-restore` | List recent Dream commits. |
+| `/dream-restore <sha>` | Restore memory to the state before a given Dream commit. |
+| `/stop` | Cancel the in-flight turn (priority). |
+| `/restart` | Restart the agent loop (priority). |
+
+Exit the REPL with `exit`, `quit`, `/exit`, `/quit`, `:q`, or `Ctrl+D`.
+
+---
+
+## `femtobot serve`
+
+Start the OpenAI-compatible HTTP server (see [openai-api.md](./openai-api.md)).
+By default binds to `127.0.0.1:8900` per the `api` block in `config.json`.
+
+```bash
+femtobot serve                              # default api.host:api.port
+femtobot serve --port 9000                  # override
+femtobot serve --host 0.0.0.0 --verbose     # bind all interfaces + show logs
+femtobot serve --suffix dev --timeout 60    # 60s per-request timeout
+```
+
+| Option | Description |
+|---|---|
+| `--port`, `-p` | API server port (overrides `api.port`). |
+| `--host`, `-H` | Bind address (overrides `api.host`). |
+| `--timeout`, `-t` | Per-request timeout in seconds (overrides `api.timeout`). |
+| `--verbose`, `-v` | Show Femtobot runtime logs (`loguru.enable("femtobot")`). |
+| `--workspace`, `-w` | Workspace override. |
+| `--config`, `-c` | Path to `config.json`. |
+
+The server exposes `POST /v1/chat/completions`, `GET /v1/models`, and
+`GET /health` on the same port. On startup it connects to every MCP server
+in `tools.mcpServers` and tears them down on shutdown.
+
+---
+
+## `femtobot gateway`
+
+Start the simplified headless gateway — currently exposes `GET /health` and
+a stub `POST /v1/chat/completions` (returns `501 Not Implemented`). This is
+the placeholder for the Stage-2 A2A / Docker orchestration work.
+
+```bash
+femtobot gateway
+femtobot gateway --port 9001 --suffix prod
+```
+
+| Option | Description |
+|---|---|
+| `--port`, `-p` | Gateway port (default `8765`, or `gateway.port` from config). |
+| `--workspace`, `-w` | Workspace override. |
+| `--config`, `-c` | Path to `config.json`. |
+| `--folder-path`, `-f` | Instance folder. |
+| `--suffix`, `-s` | Instance suffix. |
+| `--verbose`, `-v` | Verbose output. |
+
+---
+
+## Environment variables
+
+| Variable | Effect |
+|---|---|
+| `FEMTOBOT_HOME` | Base path for instance directories (default: `~/.femtobot`). |
+| `FEMTOBOT_<UPPER_SNAKE_CASE>` | Override any `config.json` value (see [configuration.md](./configuration.md#environment-variables)). |
+
+---
+
+## See also
+
+- [configuration.md](./configuration.md) — full `config.json` reference
+- [multiple-instances.md](./multiple-instances.md) — running `.femtobot` and
+  `.femtobot_dev` side by side
+- [memory.md](./memory.md) — what `/dream*` actually does
+- [openai-api.md](./openai-api.md) — what `femtobot serve` exposes
