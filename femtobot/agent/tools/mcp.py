@@ -54,6 +54,19 @@ _ReconnectCallback = Callable[[str, str, Tool], Awaitable[Tool | None]]
 _CONNECTED_TOOLS_CACHE: dict[str, list[str]] = {}
 _PROMPT_CONTENT_CACHE: dict[str, str] = {}
 
+# Tools that *require* an absolute ``workspace_path``. When the agent calls
+# one of these without passing ``workspace_path``, ``MCPToolWrapper.execute``
+# fills it in from the active request context — see ``_resolve_active_workspace``.
+#
+# This is purely additive: an explicit ``workspace_path`` from the caller
+# always wins.
+#
+# Refs: FEMTOBOT_MCP_IMPROVEMENT_PLAN.md Fase 3.
+_MCP_WORKSPACE_AWARE_TOOLS: frozenset[str] = frozenset({
+    "agy_run_task",
+    "claude_run_task",
+})
+
 
 def get_connected_servers() -> dict[str, list[str]]:
     """Snapshot of (server_name -> sorted tool names) for currently connected MCPs.
@@ -84,6 +97,32 @@ def cache_prompt_content(tool_name: str, content: str) -> None:
 def get_prompt_content(tool_name: str) -> str | None:
     """Return previously cached prompt content, or ``None`` if absent."""
     return _PROMPT_CONTENT_CACHE.get(tool_name)
+
+
+def _resolve_active_workspace() -> str | None:
+    """Best-effort: return the workspace path bound to the current request.
+
+    Reads from the ``RequestContext`` contextvar populated by the agent
+    loop. Falls back to ``None`` when no context is set (e.g. direct
+    calls from a REPL or a test).
+
+    Refs: FEMTOBOT_MCP_IMPROVEMENT_PLAN.md Fase 3.
+    """
+    try:
+        from femtobot.agent.tools.context import current_request_context
+
+        ctx = current_request_context()
+        if ctx is None:
+            return None
+        meta = ctx.metadata if isinstance(ctx.metadata, dict) else None
+        if meta:
+            ws = meta.get("workspace")
+            if isinstance(ws, str) and ws:
+                return ws
+    except Exception:
+        # Never raise from a best-effort resolver.
+        return None
+    return None
 
 
 def _sanitize_name(name: str) -> str:
@@ -300,6 +339,15 @@ class MCPToolWrapper(_MCPWrapperBase):
 
     async def execute(self, **kwargs: Any) -> str:
         from mcp import types
+
+        # Best-effort workspace_path auto-fill for tools that require it.
+        # Refs: FEMTOBOT_MCP_IMPROVEMENT_PLAN.md Fase 3.
+        if self._original_name in _MCP_WORKSPACE_AWARE_TOOLS and not (
+            isinstance(kwargs.get("workspace_path"), str) and kwargs["workspace_path"]
+        ):
+            workspace = _resolve_active_workspace()
+            if workspace:
+                kwargs = {**kwargs, "workspace_path": workspace}
 
         retried_transient = False
         refreshed_session = False
