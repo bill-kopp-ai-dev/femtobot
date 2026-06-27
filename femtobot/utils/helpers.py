@@ -764,18 +764,38 @@ def create_instance_gitignore(instance_dir: Path) -> Path:
     """
     gitignore = instance_dir / ".gitignore"
     if not gitignore.exists():
-        gitignore.write_text("""# Femtobot instance data
-# Keep config.json but ignore other generated files
+        # SECURITY: ignore config.json by default. It routinely contains API
+        # keys (providers.*.apiKey), webhook tokens, allowed-root lists, and
+        # other secrets. Earlier versions un-ignored it (rule "!config.json")
+        # so the file could be tracked in personal forks, but that put anyone
+        # who ran `git init` inside this dir at risk of pushing secrets.
+        #
+        # Override patterns if you really want to commit a non-secret slice
+        # of your config (e.g. !config.public.json).
+        gitignore.write_text("""# Femtobot instance data — DO NOT COMMIT secrets
+# config.json is intentionally ignored because it contains provider API
+# keys (providers.*.apiKey) and other credentials. To persist secrets
+# safely, use:
+#   - Environment variables (FEMTOBOT_PROVIDERS__MINIMAX__API_KEY=...)
+#   - A `.env` file (already ignored below)
+#   - A separate `config.local.json` and un-ignore it explicitly here
+#     only AFTER scrubbing secrets from that file.
 *.json
-!config.json
+*.toml
+*.yaml
+*.yml
 history/
 workspace/memory/history.jsonl
 workspace/tool_results/
 workspace/artifacts/
+workspace/sessions/
 __pycache__/
 *.pyc
 .env
+.env.*
 *.log
+*.pid
+*.seed
 """)
     return gitignore
 
