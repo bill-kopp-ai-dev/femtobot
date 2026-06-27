@@ -197,6 +197,13 @@ def load_config(config_path: Path | None = None) -> Config:
         _resolve_tool_config_refs()
         _schema_refs_ready = True
 
+    # Load a gitignored ``.env`` from the active instance directory before
+    # constructing ``Config`` so ``BaseSettings`` picks up
+    # ``FEMTOBOT_PROVIDERS__<NAME>__API_KEY`` etc. via its env-prefix + nested
+    # delimiter machinery. ``.env`` values never override explicit shell env
+    # vars (override=False).
+    _load_instance_env_file()
+
     path = config_path or get_config_path()
 
     config = Config()
@@ -219,6 +226,61 @@ def _apply_ssrf_whitelist(config: Config) -> None:
     from femtobot.security.network import configure_ssrf_whitelist
 
     configure_ssrf_whitelist(config.tools.ssrf_whitelist)
+
+
+def _load_instance_env_file() -> Path | None:
+    """Load a ``.env`` file co-located with the active instance directory.
+
+    Behavior:
+        * Looks for ``<instance_dir>/.env`` and, if absent, falls back to
+          ``<cwd>/.env`` (so shells running from the project root still work).
+        * Loads values into ``os.environ`` using ``python-dotenv``'s
+          ``load_dotenv`` with ``override=False`` — explicit env vars already
+          set by the user/IDE always win.
+        * Idempotent and safe to call multiple times.
+
+    Returns:
+        The path that was loaded, or ``None`` if no ``.env`` was found.
+
+    Notes:
+        * ``.env`` is already covered by the instance ``.gitignore`` (see
+          ``Femtobot — instance, runtime and workspace data`` block) so the
+          loaded secrets are never tracked by git.
+        * Use the convention ``FEMTOBOT_PROVIDERS__<NAME>__API_KEY`` (e.g.
+          ``FEMTOBOT_PROVIDERS__MINIMAX__API_KEY``) to inject provider
+          credentials; ``Config`` is a ``BaseSettings`` with
+          ``env_prefix="FEMTOBOT_"`` and ``env_nested_delimiter="__"``.
+    """
+    try:
+        from dotenv import load_dotenv
+    except ImportError:  # pragma: no cover - python-dotenv is a hard dependency
+        return None
+
+    instance_dir = get_instance_dir()
+    candidates: list[Path] = []
+    if instance_dir is not None:
+        candidates.append(instance_dir / ".env")
+    try:
+        cwd = Path.cwd()
+    except OSError:  # pragma: no cover - extremely defensive
+        cwd = None
+    if cwd is not None:
+        candidates.append(cwd / ".env")
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            resolved = candidate
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if candidate.is_file():
+            # ``override=False`` keeps explicit shell/IDE env vars authoritative.
+            load_dotenv(candidate, override=False, encoding="utf-8")
+            return candidate
+    return None
 
 
 def save_config(

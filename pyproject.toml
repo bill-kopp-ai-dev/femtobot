@@ -82,6 +82,7 @@ dependencies = [
     # Utilities
     "filelock>=3.25.2",
     "dulwich>=0.22.0,<1.0.0",
+    "python-dotenv>=1.0.0,<2.0.0",
 ]
 
 [project.urls]
