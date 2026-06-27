@@ -549,12 +549,21 @@ class AgentLoop:
         else:
             effective_key = f"{channel}:{chat_id}"
 
+        # Inject the absolute workspace path so MCP-wrapped tools that
+        # require ``workspace_path`` (agy_run_task, claude_run_task) can
+        # auto-fill it from the active request context. See Fase 3 of
+        # FEMTOBOT_MCP_IMPROVEMENT_PLAN.md.
+        merged_metadata = dict(metadata or {})
+        ws = getattr(self, "workspace", None)
+        if ws and isinstance(ws, Path):
+            merged_metadata.setdefault("workspace", str(ws))
+
         request_ctx = RequestContext(
             channel=channel,
             chat_id=chat_id,
             message_id=message_id,
             session_key=effective_key,
-            metadata=dict(metadata or {}),
+            metadata=merged_metadata,
         )
 
         for name in self.tools.tool_names:
