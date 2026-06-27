@@ -153,6 +153,12 @@ class AgentDefaults(Base):
         le=0.95,
     )  # Consolidation target ratio (0.5 = 50% of budget retained after compression)
     dream: DreamConfig = Field(default_factory=DreamConfig)
+    notify_mcp_startup_failures: bool = (
+        False  # When True, surface MCP startup failures to the user (Fase 6)
+    )
+    include_mcp_context: bool = (
+        False  # When True, read AGENTS.md/MEMORY.md headers from MCPs (Fase 8)
+    )
 
 
 class AgentsConfig(Base):

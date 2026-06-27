@@ -480,8 +480,56 @@ class AgentLoop:
         logger.info("Registered {} tools: {}", len(registered), registered)
 
     async def _connect_mcp(self) -> None:
-        """Connect configured MCP servers."""
+        """Connect configured MCP servers.
+
+        After the underlying ``agent_context.connect_mcp`` completes,
+        surface a startup warning to the user when at least one
+        configured server failed to connect. The warning is gated on
+        ``agents.defaults.notifyMcpStartupFailures`` (default False)
+        to preserve the pre-Phase-6 behavior (log only).
+
+        Refs: FEMTOBOT_MCP_IMPROVEMENT_PLAN.md Fase 6.
+        """
         await agent_context.connect_mcp(self, self.tools)
+
+        configured = set(self._mcp_servers or {})
+        connected = set(self._mcp_stacks or {})
+        missing = configured - connected
+        if not missing:
+            return
+
+        logger.warning(
+            "MCP servers configured but not connected at startup: {}. "
+            "Use `/mcp reload` to retry, or check the server logs.",
+            sorted(missing),
+        )
+
+        # Opt-in user-facing warning (default: log only).
+        notify = False
+        try:
+            notify = bool(
+                self.agents_config.defaults.notify_mcp_startup_failures  # type: ignore[attr-defined]
+            )
+        except Exception:
+            notify = False
+        if not notify:
+            return
+
+        try:
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel="cli",
+                    chat_id="startup",
+                    content=(
+                        f"⚠ MCP servers unavailable: {sorted(missing)}. "
+                        "Their tools will not be available this session. "
+                        "Run `/mcp reload` to retry."
+                    ),
+                    metadata={"render_as": "text"},
+                )
+            )
+        except Exception:
+            logger.debug("Could not publish startup MCP warning", exc_info=True)
 
     def _set_tool_context(
         self,

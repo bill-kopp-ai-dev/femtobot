@@ -2,6 +2,7 @@
 
 import base64
 import mimetypes
+import os
 import platform
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -19,6 +20,45 @@ from femtobot.utils.helpers import (
     truncate_text,
 )
 from femtobot.utils.prompt_templates import render_template
+
+
+# Max characters to read from each AGENTS.md / MEMORY.md snippet pulled
+# from an MCP server's persistence directory. Keeps the system prompt
+# bounded when an MCP's persistence is verbose.
+_MCP_PERSISTENCE_SNIPPET_MAX_CHARS = 1500
+
+
+def _collect_mcp_persistence_snippets(mcp_servers: dict | None) -> str:
+    """Return a Markdown block with headers of MCP servers' AGENTS.md / MEMORY.md.
+
+    Returns "" when no MCP servers are configured, when their env doesn't
+    expose ``*_PERSISTENCE_BASE_DIR``, or when the file does not exist.
+    Defensive: any read error is swallowed (logged at debug level by the
+    caller's framework).
+    """
+    if not mcp_servers:
+        return ""
+    snippets: list[str] = []
+    for server_name, cfg in mcp_servers.items():
+        env: Mapping[str, str] | None = getattr(cfg, "env", None) or {}
+        base_dir: Path | None = None
+        for key, value in env.items():
+            if key.endswith("PERSISTENCE_BASE_DIR") and value:
+                base_dir = Path(os.path.expanduser(value))
+                break
+        if base_dir is None or not base_dir.exists():
+            continue
+        for fname in ("AGENTS.md", "MEMORY.md"):
+            fpath = base_dir / fname
+            if not fpath.exists():
+                continue
+            try:
+                head = fpath.read_text(encoding="utf-8")[:_MCP_PERSISTENCE_SNIPPET_MAX_CHARS]
+            except OSError:
+                continue
+            if head:
+                snippets.append(f"### {server_name} / {fname}\n\n{head}")
+    return "\n\n".join(snippets)
 
 
 def session_extra(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -86,6 +126,26 @@ class ContextBuilder:
         mcp_capability_block = self._build_mcp_capability_block()
         if mcp_capability_block:
             parts.append(mcp_capability_block)
+
+        mcp_protocol_block = self._build_mcp_protocol_block()
+        if mcp_protocol_block:
+            parts.append(mcp_protocol_block)
+
+        # Phase 8: opt-in sync of AGENTS.md / MEMORY.md headers from MCPs.
+        try:
+            include_mcp = bool(
+                self.agents_config.defaults.include_mcp_context  # type: ignore[attr-defined]
+            )
+        except Exception:
+            include_mcp = False
+        if include_mcp and getattr(self, "tools_config", None) is not None:
+            mcp_persistence_snippets = _collect_mcp_persistence_snippets(
+                getattr(self.tools_config, "mcp_servers", None)
+            )
+            if mcp_persistence_snippets:
+                parts.append(
+                    "## MCP Persistence Pointers\n\n" + mcp_persistence_snippets
+                )
 
         memory = self.memory.get_memory_context()
         if memory and not self._is_template_content(self.memory.read_memory(), "memory/MEMORY.md"):
@@ -192,6 +252,33 @@ class ContextBuilder:
         if tpl is not None:
             return content.strip() == tpl.strip()
         return False
+
+    @staticmethod
+    def _build_mcp_protocol_block() -> str:
+        """Render cached ``*_persistence_protocol`` snippets as a system-prompt section.
+
+        Reads from :mod:`femtobot.agent.tools.mcp`'s prompt-content cache
+        (populated by callers that pre-fetch prompts). Empty when no
+        snippets are cached — no impact for installations without
+        persistence-protocol prompts.
+        """
+        from femtobot.agent.tools import mcp as mcp_tools
+
+        cached = mcp_tools.get_cached_persistence_protocols()
+        if not cached:
+            return ""
+        lines: list[str] = []
+        for tool_name, content in cached:
+            bounded = (content or "")[: mcp_tools.MAX_PROMPT_SNIPPET_CHARS]
+            if not bounded:
+                continue
+            lines.append(f"### {tool_name}")
+            lines.append("")
+            lines.append(bounded)
+            lines.append("")
+        if not lines:
+            return ""
+        return "## MCP Persistence Protocols\n\n" + "\n".join(lines).rstrip()
 
     @staticmethod
     def _build_mcp_capability_block() -> str:

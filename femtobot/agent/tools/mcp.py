@@ -54,6 +54,14 @@ _ReconnectCallback = Callable[[str, str, Tool], Awaitable[Tool | None]]
 _CONNECTED_TOOLS_CACHE: dict[str, list[str]] = {}
 _PROMPT_CONTENT_CACHE: dict[str, str] = {}
 
+# Pattern matching the persistence_protocol prompts exposed by the agy and
+# claude MCP servers. When an MCP prompt name matches this pattern, its
+# rendered content is injected into the system prompt as a "persistence
+# protocol" section.
+#
+# Refs: FEMTOBOT_MCP_IMPROVEMENT_PLAN.md Fase 7.
+_PERSISTENCE_PROTOCOL_RE = re.compile(r".*_persistence_protocol$")
+
 # Tools that *require* an absolute ``workspace_path``. When the agent calls
 # one of these without passing ``workspace_path``, ``MCPToolWrapper.execute``
 # fills it in from the active request context — see ``_resolve_active_workspace``.
@@ -97,6 +105,30 @@ def cache_prompt_content(tool_name: str, content: str) -> None:
 def get_prompt_content(tool_name: str) -> str | None:
     """Return previously cached prompt content, or ``None`` if absent."""
     return _PROMPT_CONTENT_CACHE.get(tool_name)
+
+
+def is_persistence_protocol_prompt(prompt_name: str) -> bool:
+    """Whether a prompt name matches the persistence_protocol pattern."""
+    return bool(_PERSISTENCE_PROTOCOL_RE.match(prompt_name))
+
+
+def get_cached_persistence_protocols(server_name: str | None = None) -> list[tuple[str, str]]:
+    """Return ``(tool_name, content)`` pairs for cached persistence_protocol prompts.
+
+    Filters by the persistence_protocol name pattern (the server name
+    argument is currently informational and reserved for future per-server
+    scoping). The returned snippets are bounded by
+    :data:`MAX_PROMPT_SNIPPET_CHARS` so the system prompt does not balloon.
+    """
+    return [
+        (name, content)
+        for name, content in _PROMPT_CONTENT_CACHE.items()
+        if is_persistence_protocol_prompt(name) and content
+    ]
+
+
+# Bound the injected snippet so a runaway prompt does not blow the prompt budget.
+MAX_PROMPT_SNIPPET_CHARS: int = 2000
 
 
 def _resolve_active_workspace() -> str | None:
