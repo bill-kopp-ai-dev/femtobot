@@ -383,7 +383,67 @@ FEMTOBOT_MCP_SERVERS__AGY_MCP_SERVER__TOOL_TIMEOUT=900 femtobot serve
 
 ---
 
-## 8. Security
+## 8. Femtobot-specific patterns
+
+The generic MCP rules above apply; this section covers Femtobot's
+ergonomics layered on top.
+
+### The `mcp-router` skill
+
+Femtobot ships a builtin skill, [`femtobot/skills/mcp-router/SKILL.md`](../femtobot/skills/mcp-router/SKILL.md),
+that teaches the agent when to delegate a coding task to a wrapped
+agent (`agy_run_task` / `claude_run_task`) versus solving it locally
+with `read_file`, `apply_patch`, etc.
+
+Highlights:
+
+- Loaded lazily (frontmatter `always: false`). The agent reads it when
+  the user's request matches the skill description.
+- Documents the **`mode=safe` + `confirm` gate** for both servers:
+  writes require `confirm=true`, which the agent must only set after
+  explicit user approval.
+- Provides the **server-selection matrix**: long-horizon planning →
+  agy; quick focused coding → claude; comparison → both.
+
+You can disable the skill per-instance with:
+
+```json
+{
+  "agents": { "defaults": { "disabledSkills": ["mcp-router"] } }
+}
+```
+
+### Tool naming convention
+
+MCP-wrapped tools follow `mcp_<sanitized_server>_<sanitized_tool>`:
+
+- `agy-mcp-server` + `agy_run_task` → `mcp_agy_mcp_server_agy_run_task`
+- `claude-code-cli-mcp` + `claude_run_task` →
+  `mcp_claude_code_cli_mcp_claude_run_task`
+
+Both prefixes (`agy_run_task`, `claude_run_task`) require `workspace_path`
+as an absolute path that matches one of the server's
+`AGY_MCP_ALLOWED_ROOTS` / `CLAUDE_MCP_ALLOWED_ROOTS`. The femtobot's
+own workspace is *not* automatically on either list unless you add it
+explicitly.
+
+### Confirm gate in safe mode
+
+When a server is started with `AGY_MCP_MODE=safe` (or `CLAUDE_MCP_MODE=safe`)
+and `*_MCP_FORCE_SANDBOX_IN_SAFE_MODE=true` (the default in
+[the open-cli-router reference config](../.femtobot/config.json)),
+every write through `*_run_task` requires:
+
+1. First call: `confirm: false` → server returns the proposed plan.
+2. Femtobot (or the user) reviews the plan.
+3. Second call: `confirm: true` → server executes.
+
+Set `confirm: true` *only* after explicit user approval. The
+`mcp-router` skill is the canonical source for this contract.
+
+---
+
+## 9. Security
 
 See [security.md](./security.md#mcp-server-isolation) for the broader
 threat model. Two MCP-specific points worth repeating:

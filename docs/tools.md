@@ -262,6 +262,28 @@ and never tries to call them.
 
 ---
 
+## Bundled skills
+
+Femtobot ships a built-in skill that helps the agent decide when to
+delegate a coding task to an MCP-wrapped agent (`agy_run_task` /
+`claude_run_task`) versus solving it locally:
+
+| Skill | Purpose | Loaded by default? |
+|---|---|---|
+| `mcp-router` | Decides between local tools and MCP delegation. Documents the `confirm` gate for safe-mode writes. | No (opt-in via description match) |
+
+Source: [`femtobot/skills/mcp-router/SKILL.md`](https://github.com/bill-kopp-ai-dev/femtobot/blob/main/femtobot/skills/mcp-router/SKILL.md).
+
+The skill is discovered by `SkillsLoader` and summarized in the system
+prompt under `## Skills Summary`. Its `metadata.femtobot.always: false`
+frontmatter means the agent reads it lazily — only when the task profile
+matches the skill's description.
+
+For details on how MCP-wrapped tools compose with skills, see
+[mcp.md § "Femtobot-specific patterns"](./mcp.md#femtobot-specific-patterns).
+
+---
+
 ## Adding a new tool
 
 1. Create `femtobot/agent/tools/my_tool.py` with a class implementing
