@@ -31,6 +31,45 @@ Femtobot is designed to be a practical foundation for building specialized "work
 - **Workspace-scoped safety.** Tools are sandboxed to a per-instance workspace, with SSRF protection, command guards, and a deny-list for destructive shell operations.
 - **Minimal surface area.** Roughly 14,000 lines of Python across 85 well-scoped modules. No social channels, no embedded web UI, no bundled frontend assets.
 
+## Optimized for: MCP Server Pairings
+
+Femtobot is **optimized to work in tandem** with the following MCP
+(Model Context Protocol) servers, which wrap external CLI agents and
+expose them as tools to Femtobot's LLM loop:
+
+- [`antigravity-cli-mcp`](https://github.com/bill-kopp-ai-dev/antigravity-cli-mcp)
+  — Gemini CLI wrapper. Exposes `agy_run_task`, `agy_health`, and
+  friends. Recommended for long-horizon autonomous refactors and
+  planning tasks.
+- [`claude-code-cli-mcp`](https://github.com/bill-kopp-ai-dev/claude-code-cli-mcp)
+  — Claude Code CLI wrapper. Exposes `claude_run_task`,
+  `claude_health`, and friends. Recommended for focused coding tasks
+  and quick reviews.
+
+These integrations ship as first-class features:
+
+- **`/mcp` slash command** — `status`, `reload`, `tools <server>`,
+  `restart <server>` for runtime inspection and recovery.
+- **`mcp-router` skill** — teaches the LLM when to delegate to
+  `agy_run_task` / `claude_run_task` vs. solving locally with
+  `read_file`, `apply_patch`, etc.
+- **Capability tags** — tool hints now show
+  `[long-running, safe-mode:confirm]` for run_task tools, so the model
+  recognizes the `confirm` gate before invoking them.
+- **Workspace auto-fill** — `agy_run_task` and `claude_run_task` calls
+  get `workspace_path` filled in automatically from the active
+  request context.
+- **System-prompt blocks** — `## MCP Servers in this workspace` lists
+  each connected server and its tools; `## MCP Persistence Pointers`
+  (opt-in) reads AGENTS.md / MEMORY.md headers from the MCPs so the
+  LLM has context continuity across delegations.
+- **Startup health check** — when a configured MCP fails to connect,
+  Femtobot surfaces a visible warning (opt-in via
+  `agents.defaults.notifyMcpStartupFailures`).
+
+See [`docs/mcp.md`](./docs/mcp.md) §8 "Femtobot-specific patterns" for
+the full reference.
+
 ## Features
 
 ### Agent core
