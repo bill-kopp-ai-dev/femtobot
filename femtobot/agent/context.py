@@ -83,6 +83,10 @@ class ContextBuilder:
 
         parts.append(render_template("agent/tool_contract.md"))
 
+        mcp_capability_block = self._build_mcp_capability_block()
+        if mcp_capability_block:
+            parts.append(mcp_capability_block)
+
         memory = self.memory.get_memory_context()
         if memory and not self._is_template_content(self.memory.read_memory(), "memory/MEMORY.md"):
             parts.append(f"# Memory\n\n{memory}")
@@ -188,6 +192,33 @@ class ContextBuilder:
         if tpl is not None:
             return content.strip() == tpl.strip()
         return False
+
+    @staticmethod
+    def _build_mcp_capability_block() -> str:
+        """Render a Markdown block describing MCP tool capabilities for the LLM.
+
+        Reads from the side-channel cache populated by
+        :mod:`femtobot.agent.tools.mcp`. The block is empty (and thus
+        omitted by the caller) when no MCP servers are connected, so the
+        prompt is unaffected in installations without MCP.
+        """
+        # Local import to avoid a hard dependency on ``tool_hints`` at module
+        # load time (keeps the context module import-graph cheap).
+        from femtobot.utils.tool_hints import get_mcp_tool_metadata
+
+        connected = mcp_tools.get_connected_servers()
+        if not connected:
+            return ""
+
+        lines = ["## MCP Servers in this workspace", ""]
+        for server_name, tool_names in sorted(connected.items()):
+            lines.append(f"### {server_name}")
+            for tool_name in tool_names:
+                tags = get_mcp_tool_metadata(tool_name)
+                tag_str = f" [{', '.join(tags)}]" if tags else ""
+                lines.append(f"- `{tool_name}`{tag_str}")
+            lines.append("")
+        return "\n".join(lines).rstrip()
 
     def build_messages(
         self,

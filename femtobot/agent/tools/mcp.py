@@ -46,6 +46,45 @@ _SANITIZE_RE = re.compile(r"_+")
 _RELOAD_LOCKS: WeakKeyDictionary[Any, asyncio.Lock] = WeakKeyDictionary()
 _ReconnectCallback = Callable[[str, str, Tool], Awaitable[Tool | None]]
 
+# Side-channel cache for context builders that don't have direct access to
+# the AgentLoop. Populated by ``connect_mcp_servers`` and cleared by
+# ``_unregister_server_tools`` / ``_close_server``.
+#
+# Refs: FEMTOBOT_MCP_IMPROVEMENT_PLAN.md Fase 2.
+_CONNECTED_TOOLS_CACHE: dict[str, list[str]] = {}
+_PROMPT_CONTENT_CACHE: dict[str, str] = {}
+
+
+def get_connected_servers() -> dict[str, list[str]]:
+    """Snapshot of (server_name -> sorted tool names) for currently connected MCPs.
+
+    Returns a copy; callers may iterate freely without affecting the cache.
+    """
+    return {k: list(v) for k, v in _CONNECTED_TOOLS_CACHE.items()}
+
+
+def _update_connected_cache(server_name: str, tool_names: list[str]) -> None:
+    """Replace the cached tool list for *server_name* (sorted)."""
+    _CONNECTED_TOOLS_CACHE[server_name] = sorted(tool_names)
+
+
+def _clear_connected_cache(server_name: str | None = None) -> None:
+    """Remove one server (or all) from the cache."""
+    if server_name is None:
+        _CONNECTED_TOOLS_CACHE.clear()
+    else:
+        _CONNECTED_TOOLS_CACHE.pop(server_name, None)
+
+
+def cache_prompt_content(tool_name: str, content: str) -> None:
+    """Cache the rendered prompt content for a ``*_persistence_protocol`` tool."""
+    _PROMPT_CONTENT_CACHE[tool_name] = content
+
+
+def get_prompt_content(tool_name: str) -> str | None:
+    """Return previously cached prompt content, or ``None`` if absent."""
+    return _PROMPT_CONTENT_CACHE.get(tool_name)
+
 
 def _sanitize_name(name: str) -> str:
     """Sanitize an MCP-derived name for model API compatibility."""
@@ -731,6 +770,17 @@ async def connect_mcp_servers(
             logger.info(
                 "MCP server '{}': connected, {} capabilities registered", name, registered_count
             )
+
+            # Refresh the side-channel cache for context builders that don't
+            # have direct access to the AgentLoop's registry. Tools registered
+            # here match the prefix ``mcp_<server>_*`` (resources/prompts use
+            # ``_resource_`` / ``_prompt_`` infixes).
+            registered_tools = [
+                t_name
+                for t_name in registry.tool_names
+                if t_name.startswith(_tool_prefix(name))
+            ]
+            _update_connected_cache(name, registered_tools)
             return name, server_stack
 
         except Exception as e:
@@ -1090,7 +1140,15 @@ def _unregister_server_tools(state: Any, registry: ToolRegistry, server_name: st
     for tool_name in list(registry.tool_names):
         if tool_name.startswith(prefix):
             registry.unregister(tool_name)
+            # Also drop cached prompt content for any prompt owned by this server.
+            _PROMPT_CONTENT_CACHE.pop(tool_name, None)
             removed += 1
+    # Sync the side-channel cache so context builders don't show stale tools.
+    if removed:
+        _update_connected_cache(
+            server_name,
+            [n for n in registry.tool_names if n.startswith(prefix)],
+        )
     return removed
 
 
@@ -1102,3 +1160,6 @@ async def _close_server(state: Any, server_name: str) -> None:
         await stack.aclose()
     except (RuntimeError, BaseExceptionGroup):
         logger.debug("MCP server '{}' cleanup error (can be ignored)", server_name)
+    # Clear the side-channel cache for this server so context builders see
+    # the right "connected" picture on the next ``build_system_prompt``.
+    _clear_connected_cache(server_name)

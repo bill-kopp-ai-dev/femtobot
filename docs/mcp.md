@@ -427,6 +427,33 @@ as an absolute path that matches one of the server's
 own workspace is *not* automatically on either list unless you add it
 explicitly.
 
+### Capability tags (model-facing hints)
+
+Femtobot decorates MCP-wrapped tool hints with capability tags so the
+model can see at a glance whether a tool is long-running or requires
+confirmation. The hint for `agy_run_task` becomes:
+
+```text
+agy_mcp_server::agy_run_task("/abs/path") [long-running, safe-mode:confirm]
+```
+
+Currently catalogued tags:
+
+| Tool | Tags |
+|---|---|
+| `agy_run_task` | `long-running`, `safe-mode:confirm` |
+| `claude_run_task` | `long-running`, `safe-mode:confirm` |
+| `agy_health` | `read-only`, `cheap` |
+| `agy_self_test` | `read-only`, `cheap` |
+| `claude_health` | `read-only`, `cheap` |
+
+Unknown MCP tools render without tags (back-compat).
+
+In addition to the per-hint suffix, Femtobot also injects a `## MCP
+Servers in this workspace` block into the system prompt listing each
+connected server and its tools with their tags, so the model can plan
+its tool choice before the first call.
+
 ### Confirm gate in safe mode
 
 When a server is started with `AGY_MCP_MODE=safe` (or `CLAUDE_MCP_MODE=safe`)
