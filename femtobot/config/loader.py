@@ -212,6 +212,15 @@ def load_config(config_path: Path | None = None) -> Config:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             data = _migrate_config(data)
+            # Important: ``Config.model_validate(data)`` does NOT re-read
+            # ``os.environ`` — it constructs the object purely from ``data``.
+            # That means a config.json with ``apiKey: null`` (the correct
+            # scrubbed shape) would silently wipe the credentials we just
+            # loaded from the gitignored ``.env``. To preserve env-var
+            # precedence for fields the JSON left blank, fold any
+            # ``FEMTOBOT_*`` env vars whose leaf is currently null/empty into
+            # the dict before validation.
+            data = _merge_env_overrides(data)
             config = Config.model_validate(data)
         except (json.JSONDecodeError, ValueError, pydantic.ValidationError) as e:
             logger.warning("Failed to load config from {}: {}", path, e)
@@ -219,6 +228,92 @@ def load_config(config_path: Path | None = None) -> Config:
 
     _apply_ssrf_whitelist(config)
     return config
+
+
+def _merge_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
+    """Return ``data`` with ``FEMTOBOT_*`` env vars patched in for null leaves.
+
+    Translates the env-var convention used by ``Config`` (``BaseSettings``)
+    — ``env_prefix="FEMTOBOT_"`` + ``env_nested_delimiter="__"`` — back into
+    nested dict keys and overlays them on top of ``data``. The merge is
+    shallow-by-level but walks dicts recursively so e.g.
+    ``FEMTOBOT_PROVIDERS__MINIMAX__API_KEY`` lands at
+    ``data["providers"]["minimax"]["api_key"]``.
+
+    Rules:
+        * Only leaves that are ``None``, ``""`` or missing in ``data`` are
+          overridden. Explicit non-null values in the JSON win (intentional:
+          the user wrote them in the file, so they take precedence).
+        * Strings are not case-folded — the env var names already match the
+          model field names (``API_KEY`` -> ``api_key``).
+        * Empty string env values are skipped (a bare ``KEY=`` line would
+          otherwise clobber a configured non-null value).
+
+    This is the seam that lets the ``.env`` feed secrets into ``Config``
+    even though the on-disk ``config.json`` deliberately keeps
+    ``providers.*.apiKey`` as ``null`` for safety.
+    """
+    if not isinstance(data, dict):
+        return data
+
+    prefix = "FEMTOBOT_"
+    for env_name, env_value in os.environ.items():
+        if not env_name.startswith(prefix):
+            continue
+        if env_value == "":
+            continue
+        path = env_name[len(prefix):].split("__")
+        if not path:
+            continue
+        # Lowercase only the top-level segment to match Pydantic's
+        # ``populate_by_name`` behavior with the camelCase aliases. The
+        # `to_camel` alias generator produces `apiKey` while the env var
+        # carries `API_KEY`; both must reach the same field.
+        path = [path[0].lower(), *(p.lower() for p in path[1:])]
+        _set_if_blank(data, path, env_value)
+    return data
+
+
+def _set_if_blank(node: Any, path: list[str], value: str) -> None:
+    """Recursively descend ``path`` and set ``value`` only at blank leaves.
+
+    At the leaf, both the snake_case name (``api_key``) and the camelCase
+    alias produced by ``to_camel`` (``apiKey``) are checked — the env-var
+    convention is always snake_case/upper, but the on-disk JSON uses
+    whichever the user (or the default dumper) chose. If either key exists
+    and is ``None``/empty, the existing key is overwritten in place (no
+    duplicate keys created). If neither exists yet, ``api_key`` is created.
+    """
+    if not path:
+        return
+    head, *tail = path
+    if tail:
+        child = node.get(head) if isinstance(node, dict) else None
+        if not isinstance(child, dict):
+            return  # Refuse to descend through scalars/None — env vars
+            # cannot create new sub-trees that the JSON didn't already
+            # sketch out.
+        _set_if_blank(child, tail, value)
+        return
+
+    if not isinstance(node, dict):
+        return
+
+    camel = _snake_to_camel(head)
+    for candidate in (head, camel):
+        if candidate in node:
+            current = node[candidate]
+            if current is None or current == "":
+                node[candidate] = value
+            return  # First match wins — never duplicate the key.
+    # Neither snake nor camel existed: create the snake_case form.
+    node[head] = value
+
+
+def _snake_to_camel(name: str) -> str:
+    """Convert ``api_key`` -> ``apiKey`` to match the Pydantic alias generator."""
+    parts = name.split("_")
+    return parts[0] + "".join(p.title() for p in parts[1:])
 
 
 def _apply_ssrf_whitelist(config: Config) -> None:

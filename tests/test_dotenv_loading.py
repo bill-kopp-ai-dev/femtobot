@@ -13,6 +13,9 @@ instance. The behavior under test is:
     4. When no ``.env`` is present, ``_load_instance_env_file`` returns
        ``None`` and leaves the environment untouched.
     5. The loader is idempotent and safe to call multiple times.
+    6. ``_merge_env_overrides`` patches null/empty leaves in the on-disk
+       ``data`` dict so ``Config.model_validate(data)`` (which DOES NOT
+       re-read ``os.environ``) still picks up the secrets.
 """
 
 from __future__ import annotations
@@ -25,6 +28,9 @@ import pytest
 from femtobot.config import loader
 from femtobot.config.loader import (
     _load_instance_env_file,
+    _merge_env_overrides,
+    _set_if_blank,
+    _snake_to_camel,
     load_config,
     set_instance_dir,
 )
@@ -192,3 +198,150 @@ def test_load_config_does_not_persist_keys_when_config_json_absent(
     _ = load_config(config_path=cfg_path)
 
     assert not cfg_path.exists()
+
+
+# -----------------------------------------------------------------------------
+# _merge_env_overrides / _set_if_blank
+#
+# These functions patch the on-disk ``data`` dict BEFORE
+# ``Config.model_validate(data)`` is called, because model_validate does NOT
+# re-read ``os.environ``. Without this seam, a scrubbed ``config.json`` with
+# ``apiKey: null`` would silently wipe every secret from the ``.env``.
+# -----------------------------------------------------------------------------
+
+
+def test_merge_env_overrides_patches_null_camel_case_leaf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``apiKey: null`` in JSON must be replaced by env value, in-place."""
+    monkeypatch.setenv("FEMTOBOT_PROVIDERS__MINIMAX__API_KEY", "tok-1")
+    data = {"providers": {"minimax": {"apiKey": None, "apiBase": "https://x"}}}
+
+    merged = _merge_env_overrides(data)
+
+    # No duplicate keys: the existing ``apiKey`` key was overwritten, NOT a
+    # new ``api_key`` added next to it.
+    assert "apiKey" in merged["providers"]["minimax"]
+    assert "api_key" not in merged["providers"]["minimax"]
+    assert merged["providers"]["minimax"]["apiKey"] == "tok-1"
+    # Untouched fields survive.
+    assert merged["providers"]["minimax"]["apiBase"] == "https://x"
+
+
+def test_merge_env_overrides_patches_null_snake_case_leaf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A snake_case ``api_key: null`` leaf is also patched."""
+    monkeypatch.setenv("FEMTOBOT_PROVIDERS__GROQ__API_KEY", "tok-2")
+    data = {"providers": {"groq": {"api_key": None}}}
+
+    merged = _merge_env_overrides(data)
+
+    assert merged["providers"]["groq"]["api_key"] == "tok-2"
+
+
+def test_merge_env_overrides_does_not_overwrite_non_null_json_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the JSON has a real (non-null) value, it wins over the env var.
+
+    This is intentional — the user wrote it in the file, so we trust their
+    explicit choice over an inherited environment value.
+    """
+    monkeypatch.setenv("FEMTOBOT_PROVIDERS__MINIMAX__API_KEY", "from-env")
+    data = {"providers": {"minimax": {"apiKey": "from-json"}}}
+
+    merged = _merge_env_overrides(data)
+
+    assert merged["providers"]["minimax"]["apiKey"] == "from-json"
+
+
+def test_merge_env_overrides_ignores_unrelated_env_vars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only ``FEMTOBOT_*`` env vars participate."""
+    monkeypatch.setenv("UNRELATED_API_KEY", "nope")
+    monkeypatch.setenv("PATH", "/usr/bin")
+    data: dict = {"providers": {"minimax": {"apiKey": None}}}
+
+    merged = _merge_env_overrides(data)
+
+    assert merged["providers"]["minimax"]["apiKey"] is None
+
+
+def test_merge_env_overrides_skips_empty_string_env_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare ``KEY=`` line in ``.env`` must NOT clobber a configured value."""
+    monkeypatch.setenv("FEMTOBOT_PROVIDERS__MINIMAX__API_KEY", "")
+    data = {"providers": {"minimax": {"apiKey": "explicitly-set"}}}
+
+    merged = _merge_env_overrides(data)
+
+    assert merged["providers"]["minimax"]["apiKey"] == "explicitly-set"
+
+
+def test_merge_env_overrides_refuses_to_create_new_subtrees(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Env vars cannot invent new dict sub-trees the JSON never sketched.
+
+    This is a safety property: a stale env var like
+    ``FEMTOBOT_NONEXISTENT__FIELD=x`` must not silently materialize a
+    ``nonExistent`` section that downstream code didn't anticipate.
+    """
+    monkeypatch.setenv("FEMTOBOT_NONEXISTENT__FIELD", "x")
+    data: dict = {"providers": {"minimax": {"apiKey": None}}}
+
+    merged = _merge_env_overrides(data)
+
+    assert "nonexistent" not in merged
+    assert merged["providers"]["minimax"]["apiKey"] is None
+
+
+def test_merge_env_overrides_handles_non_dict_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defensive: a corrupted JSON root (not a dict) returns unchanged."""
+    monkeypatch.setenv("FEMTOBOT_PROVIDERS__MINIMAX__API_KEY", "tok")
+    data = ["not", "a", "dict"]  # type: ignore[list-item]
+
+    merged = _merge_env_overrides(data)  # type: ignore[arg-type]
+
+    assert merged is data
+
+
+def test_set_if_blank_writes_when_key_missing() -> None:
+    """When neither ``api_key`` nor ``apiKey`` exist at the leaf, write the snake form.
+
+    Intermediate dicts must already exist — by design ``_set_if_blank``
+    refuses to invent new sub-trees (see
+    ``test_merge_env_overrides_refuses_to_create_new_subtrees``).
+    """
+    node = {"providers": {"minimax": {}}}
+    _set_if_blank(node, ["providers", "minimax", "api_key"], "v")
+    assert node == {"providers": {"minimax": {"api_key": "v"}}}
+
+
+def test_set_if_blank_overwrites_blank_camel() -> None:
+    """When only the camelCase key exists and is ``None``, overwrite in place."""
+    node = {"providers": {"minimax": {"apiKey": None}}}
+    _set_if_blank(node, ["providers", "minimax", "api_key"], "v")
+    assert "apiKey" in node["providers"]["minimax"]
+    assert "api_key" not in node["providers"]["minimax"]
+    assert node["providers"]["minimax"]["apiKey"] == "v"
+
+
+def test_set_if_blank_preserves_non_null_value() -> None:
+    """When the camelCase key holds a real value, leave it alone."""
+    node = {"providers": {"minimax": {"apiKey": "keep-me"}}}
+    _set_if_blank(node, ["providers", "minimax", "api_key"], "v")
+    assert node["providers"]["minimax"]["apiKey"] == "keep-me"
+
+
+def test_snake_to_camel_known_cases() -> None:
+    """Pin the helper so a future Pydantic alias-generator change is caught."""
+    assert _snake_to_camel("api_key") == "apiKey"
+    assert _snake_to_camel("api_base") == "apiBase"
+    assert _snake_to_camel("extra_headers") == "extraHeaders"
+    assert _snake_to_camel("api") == "api"
