@@ -49,9 +49,37 @@ If this directory was created with `--suffix`, this is a *named* instance
 (`.femtobot_<suffix>`). Multiple instances may run on the same host with
 isolated state. Use `femtobot status --suffix <name>` to inspect any of them.
 
+## MCP-Aware Operating Rules
+
+If the system prompt contains a `## MCP Servers in this workspace` block,
+follow these rules:
+
+1. **Default to local tools** (`apply_patch`, `edit_file`, `exec`,
+   `read_file`) for single-file edits and quick Q&A. MCP delegation is
+   overkill for them and burns quota.
+2. **Use `agy_run_task` / `claude_run_task`** for multi-file refactors,
+   long autonomous plans, or when the user says "let the agent handle
+   this end-to-end". Consult the `mcp-router` skill for the decision
+   matrix.
+3. **Both servers run in `mode=safe`.** Writes through these tools
+   require `confirm=true`. Never set it speculatively. Always:
+   - Call once with `confirm=false` to inspect the plan.
+   - Show the user what will change.
+   - Wait for explicit "yes" / "go ahead" / "proceed".
+   - Re-call with `confirm=true`.
+4. **Persistence is per-server.** Both servers have their own
+   `~/.open-cli-router/{namespace}/` directory with `AGENTS.md`,
+   `MEMORY.md`, `PROJECTS.md`. They are NOT shared with this
+   workspace's `MEMORY.md`. Do not assume continuity between calls.
+5. **MCP tools are long-running.** `agy_run_task` and `claude_run_task`
+   can run for several minutes. They are not suitable for fast
+   interactive loops. For "what's in this file" use `read_file`, not
+   `agy_run_task`.
+
 ## See Also
 
 - `SOUL.md` — personality
 - `USER.md` — user profile
 - `MEMORY.md` — accumulated long-term memory
+- `docs/mcp.md` — MCP server configuration reference
 - `docs/` — project documentation
