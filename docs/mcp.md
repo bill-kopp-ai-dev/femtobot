@@ -468,6 +468,22 @@ every write through `*_run_task` requires:
 Set `confirm: true` *only* after explicit user approval. The
 `mcp-router` skill is the canonical source for this contract.
 
+### The `/mcp` slash command
+
+Femtobot exposes the underlying MCP wiring through a built-in slash
+command so operators can inspect and recover state without restarting
+the process:
+
+| Subcommand | Effect |
+|---|---|
+| `/mcp status` | Lists configured + connected servers, highlights missing ones, and reports total tool count. |
+| `/mcp reload` | Hot-reloads the MCP server list from `config.json` (closes stale connections, reconnects new ones). |
+| `/mcp tools <server>` | Lists the tools registered from a specific server, useful for verifying `enabledTools` filtering. |
+| `/mcp restart <server>` | Force-reloads a specific server by name (currently triggers a full reload — same as `/mcp reload`). |
+
+The bare `/mcp` defaults to `status`. Unknown subcommands return a
+usage hint rather than silently doing nothing.
+
 ---
 
 ## 9. Security

@@ -104,6 +104,13 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "List available slash commands.",
         "circle-help",
     ),
+    BuiltinCommandSpec(
+        "/mcp",
+        "Manage MCP servers",
+        "Inspect, reload, or restart MCP server connections.",
+        "plug",
+        "[status|reload|tools <server>|restart <server>]",
+    ),
 )
 
 
@@ -678,6 +685,108 @@ def build_help_text() -> str:
     return "\n".join(lines)
 
 
+async def cmd_mcp(ctx: CommandContext) -> OutboundMessage | None:
+    """Manage MCP server connections.
+
+    Subcommands (handled in order, default = status):
+
+    * ``/mcp status`` — list configured + connected servers, highlight missing
+    * ``/mcp reload`` — hot-reload MCP servers from config.json
+    * ``/mcp tools <server>`` — list tools registered from a specific server
+    * ``/mcp restart <server>`` — force-reload a single server
+
+    Refs: FEMTOBOT_MCP_IMPROVEMENT_PLAN.md Fase 5.
+    """
+    loop = ctx.loop
+    msg = ctx.msg
+    raw = (ctx.args or msg.content or "").strip()
+    # Split off the first token as the subcommand.
+    tokens = raw.split()
+    # If the first token starts with "/", the user typed "/mcp status" — the
+    # router already stripped "/mcp ", so tokens[0] is "status".
+    sub = (tokens[0].lower() if tokens else "status").lstrip("/")
+
+    def _reply(content: str) -> OutboundMessage:
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=content,
+            metadata=dict(msg.metadata or {}),
+        )
+
+    # ``/mcp status`` — show configured vs connected.
+    if sub == "status":
+        configured = sorted(getattr(loop, "_mcp_servers", {}) or {})
+        connected = sorted(getattr(loop, "_mcp_stacks", {}) or {})
+        missing = sorted(set(configured) - set(connected))
+        lines = [
+            "MCP server status:",
+            f"  configured: {', '.join(configured) or '(none)'}",
+            f"  connected:  {', '.join(connected) or '(none)'}",
+        ]
+        if missing:
+            lines.append(f"  missing:    {', '.join(missing)}")
+        try:
+            total_tools = len(getattr(loop, "tools", None).tool_names)
+        except Exception:
+            total_tools = "?"
+        lines.append(f"  total tools registered: {total_tools}")
+        return _reply("\n".join(lines))
+
+    # ``/mcp reload`` — hot-reload MCP servers from config.
+    if sub == "reload":
+        from femtobot.agent.tools.mcp import request_mcp_reload
+
+        result = await request_mcp_reload(loop.bus)
+        if isinstance(result, dict):
+            content = f"MCP reload: {result.get('message', 'unknown')}"
+            if result.get("failed"):
+                content += f" (failed: {', '.join(result['failed'])})"
+        else:
+            content = "MCP reload: requested"
+        return _reply(content)
+
+    # ``/mcp tools <server>`` — list tools registered from a server.
+    if sub == "tools":
+        server = tokens[1] if len(tokens) > 1 else None
+        if not server:
+            return _reply("Usage: /mcp tools <server>")
+        prefix = f"mcp_{server.replace('-', '_')}_"
+        registry = getattr(loop, "tools", None)
+        try:
+            tools = sorted(
+                n for n in registry.tool_names if n.startswith(prefix)
+            )
+        except Exception:
+            tools = []
+        if not tools:
+            return _reply(f"No tools registered from '{server}'.")
+        return _reply(
+            f"Tools from '{server}':\n  " + "\n  ".join(tools)
+        )
+
+    # ``/mcp restart <server>`` — force-reload a single server.
+    if sub == "restart":
+        server = tokens[1] if len(tokens) > 1 else None
+        if not server:
+            return _reply("Usage: /mcp restart <server>")
+        # Hot-reload the whole stack — fine for restart-of-all; a per-server
+        # endpoint can be added if needed.
+        from femtobot.agent.tools.mcp import request_mcp_reload
+
+        result = await request_mcp_reload(loop.bus)
+        if isinstance(result, dict):
+            content = f"MCP restart for '{server}': {result.get('message', 'unknown')}"
+        else:
+            content = f"MCP restart for '{server}': requested"
+        return _reply(content)
+
+    # Unknown subcommand.
+    return _reply(
+        f"Unknown /mcp subcommand: {sub!r}. Use: status|reload|tools <server>|restart <server>"
+    )
+
+
 def register_builtin_commands(router: CommandRouter) -> None:
     """Register the default set of slash commands."""
     router.priority("/stop", cmd_stop)
@@ -697,3 +806,5 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.exact("/dream-restore", cmd_dream_restore)
     router.prefix("/dream-restore ", cmd_dream_restore)
     router.exact("/help", cmd_help)
+    router.exact("/mcp", cmd_mcp)
+    router.prefix("/mcp ", cmd_mcp)
