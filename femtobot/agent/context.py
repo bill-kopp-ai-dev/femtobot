@@ -31,10 +31,18 @@ _MCP_PERSISTENCE_SNIPPET_MAX_CHARS = 1500
 def _collect_mcp_persistence_snippets(mcp_servers: dict | None) -> str:
     """Return a Markdown block with headers of MCP servers' AGENTS.md / MEMORY.md.
 
-    Returns "" when no MCP servers are configured, when their env doesn't
-    expose ``*_PERSISTENCE_BASE_DIR``, or when the file does not exist.
-    Defensive: any read error is swallowed (logged at debug level by the
-    caller's framework).
+    Persistence directory resolution (in priority order):
+
+    1. ``*_PERSISTENCE_BASE_DIR`` in the server's env (global / custom mode).
+    2. Computed from ``MCPServerConfig.cwd`` when
+       ``*_PERSISTENCE_LOCATION=workspace`` is set:
+       ``<cwd_parent>/.open-cli-router/<namespace>/``.
+
+    The namespace is the server name as-is, matching how the MCP servers
+    themselves name the subdirectory under ``.open-cli-router/``.
+
+    Returns "" when no MCP servers are configured or no persistence
+    files are found. Defensive: any read error is swallowed.
     """
     if not mcp_servers:
         return ""
@@ -42,10 +50,28 @@ def _collect_mcp_persistence_snippets(mcp_servers: dict | None) -> str:
     for server_name, cfg in mcp_servers.items():
         env: Mapping[str, str] | None = getattr(cfg, "env", None) or {}
         base_dir: Path | None = None
+
+        # Priority 1: explicit PERSISTENCE_BASE_DIR env var (global/custom mode).
         for key, value in env.items():
             if key.endswith("PERSISTENCE_BASE_DIR") and value:
                 base_dir = Path(os.path.expanduser(value))
                 break
+
+        # Priority 2: derive from server's cwd when in workspace mode.
+        # workspace mode sets PERSISTENCE_LOCATION=workspace but does NOT set
+        # PERSISTENCE_BASE_DIR (the server computes it internally as
+        # <cwd_parent>/.open-cli-router/<namespace>/).  We replicate that
+        # calculation here so femtobot can discover the files without needing
+        # the server to echo the computed path back via env.
+        if base_dir is None and getattr(cfg, "cwd", None):
+            location_keys = [k for k in env if k.endswith("PERSISTENCE_LOCATION")]
+            persistence_location = (
+                env[location_keys[0]] if location_keys else "global"
+            )
+            if persistence_location == "workspace":
+                server_cwd = Path(cfg.cwd)
+                base_dir = server_cwd.parent / ".open-cli-router" / server_name
+
         if base_dir is None or not base_dir.exists():
             continue
         for fname in ("AGENTS.md", "MEMORY.md"):

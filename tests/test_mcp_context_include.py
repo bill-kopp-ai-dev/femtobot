@@ -109,6 +109,78 @@ def test_collect_handles_missing_files_gracefully(tmp_path: Path) -> None:
     assert _collect_mcp_persistence_snippets({"agy-mcp-server": cfg}) == ""
 
 
+def test_collect_derives_base_dir_from_cwd_when_workspace_mode(tmp_path: Path) -> None:
+    """When PERSISTENCE_LOCATION=workspace (no PERSISTENCE_BASE_DIR), base_dir is derived from cwd.
+
+    Femtobot replicates the server's internal calculation:
+    <cfg.cwd>/../.open-cli-router/<server_name>/
+    """
+    base = tmp_path / "antigravity-cli-mcp"
+    base.mkdir(parents=True)
+    persistence_root = tmp_path / ".open-cli-router"
+    agy_persistence = persistence_root / "agy-mcp-server"
+    agy_persistence.mkdir(parents=True)
+    (agy_persistence / "AGENTS.md").write_text("# AGY workspace agents", encoding="utf-8")
+
+    cfg = SimpleNamespace(
+        name="agy-mcp-server",
+        env={"AGY_MCP_PERSISTENCE_LOCATION": "workspace"},  # no PERSISTENCE_BASE_DIR
+        cwd=str(base),
+    )
+    snippets = _collect_mcp_persistence_snippets({"agy-mcp-server": cfg})
+
+    assert "agy-mcp-server / AGENTS.md" in snippets
+    assert "AGY workspace agents" in snippets
+
+
+def test_collect_derives_workspace_dir_for_claude_server(tmp_path: Path) -> None:
+    """Claude's workspace persistence dir uses the full server name as namespace."""
+    claude_cwd = tmp_path / "claude-code-cli-mcp"
+    claude_cwd.mkdir(parents=True)
+    persistence_root = tmp_path / ".open-cli-router"
+    claude_persistence = persistence_root / "claude-code-cli-mcp"
+    claude_persistence.mkdir(parents=True)
+    (claude_persistence / "MEMORY.md").write_text("# Recent claude tasks\n- task 1", encoding="utf-8")
+
+    cfg = SimpleNamespace(
+        name="claude-code-cli-mcp",
+        env={"CLAUDE_MCP_PERSISTENCE_LOCATION": "workspace"},
+        cwd=str(claude_cwd),
+    )
+    snippets = _collect_mcp_persistence_snippets({"claude-code-cli-mcp": cfg})
+
+    assert "claude-code-cli-mcp / MEMORY.md" in snippets
+    assert "task 1" in snippets
+
+
+def test_collect_persistence_base_dir_wins_over_workspace(tmp_path: Path) -> None:
+    """When BOTH PERSISTENCE_BASE_DIR and PERSISTENCE_LOCATION=workspace are set,
+    PERSISTENCE_BASE_DIR wins (explicit always overrides computed)."""
+    base = tmp_path / "antigravity-cli-mcp"
+    base.mkdir()
+    explicit_root = tmp_path / "explicit-persistence"
+    explicit_root.mkdir()
+    (explicit_root / "AGENTS.md").write_text("explicit", encoding="utf-8")
+
+    # Computed path would be tmp/.open-cli-router/agy-mcp-server/ (does not exist).
+    computed_root = tmp_path / ".open-cli-router"
+    computed_root.mkdir()
+    (computed_root / "agy-mcp-server").mkdir()
+    (computed_root / "agy-mcp-server" / "AGENTS.md").write_text("computed", encoding="utf-8")
+
+    cfg = SimpleNamespace(
+        name="agy-mcp-server",
+        env={
+            "AGY_MCP_PERSISTENCE_BASE_DIR": str(explicit_root),
+            "AGY_MCP_PERSISTENCE_LOCATION": "workspace",
+        },
+        cwd=str(base),
+    )
+    snippets = _collect_mcp_persistence_snippets({"agy-mcp-server": cfg})
+    assert "explicit" in snippets
+    assert "computed" not in snippets
+
+
 def test_collect_continues_after_one_server_fails(tmp_path: Path) -> None:
     """A failing server does not block other servers from being read."""
     bad_base = tmp_path / "bad"
