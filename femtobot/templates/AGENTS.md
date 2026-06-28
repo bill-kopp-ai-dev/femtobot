@@ -75,6 +75,17 @@ follow these rules:
    can run for several minutes. They are not suitable for fast
    interactive loops. For "what's in this file" use `read_file`, not
    `agy_run_task`.
+6. **`workspace_path` is auto-filled. Never invent it.** The runtime
+   injects the active workspace into `metadata.workspace` and the MCP
+   wrapper fills `workspace_path` from there. You should **omit**
+   `workspace_path` unless you have an explicit reason not to. Never
+   pass `/tmp`, `/var`, or any path outside the server's
+   `ALLOWED_ROOTS` as a "convenient scratch dir" — the server rejects
+   with `NOT_ALLOWED` and a retry will fail the same way. If you need
+   an isolated scratch area, create a subdirectory **inside** the
+   active workspace (e.g. `<workspace>/.scratch_<id>/`). If you truly
+   must operate outside `ALLOWED_ROOTS`, stop and ask the user to widen
+   the policy — do not bypass silently.
 
 ## See Also
 

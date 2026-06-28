@@ -53,6 +53,45 @@ Both tools require:
 - `confirm` (default `false`; set `true` only after explicit user
   approval of the plan).
 
+## `workspace_path` — non-negotiable rule
+
+**Never invent a `workspace_path`. Always pass exactly what the runtime
+injects for you.** Specifically:
+
+1. **Default: omit `workspace_path`.** The runtime auto-fills it from the
+   active request context (see `AgentLoop._set_tool_context`). Pass
+   nothing and let the wrapper fill it in. This is the safe path.
+2. **Never pass `/tmp`, `/var`, `/home`, or any other system path**
+   as a "convenient scratch dir". Servers reject with
+   `NOT_ALLOWED: workspace_path is outside allowed roots`. Your retry
+   will hit the same error.
+3. **If you genuinely need an isolated scratch area** (smoke test,
+   scratch computation, etc.) **inside the active workspace**, create a
+   subdirectory like `<active_workspace>/.scratch_<task_id>/` via
+   `exec mkdir -p` or `apply_patch` and pass that absolute path.
+   Confirm the subdirectory is under the auto-filled workspace first.
+4. **If you must operate outside the configured `ALLOWED_ROOTS`**
+   (cross-repo work, system inspection, anything outside
+   `/home/bill/Codes/CLI-router-project`), **stop and ask the user**:
+   they may need to widen `AGY_MCP_ALLOWED_ROOTS` /
+   `CLAUDE_MCP_ALLOWED_ROOTS` in `.femtobot/config.json` and restart
+   the MCP servers. Do NOT silently bypass the policy.
+
+**Symptom of getting this wrong:**
+
+```
+ValueError: NOT_ALLOWED: workspace_path is outside allowed roots
+```
+
+The fix is **never** to retry with a different invented path. The fix
+is to use the auto-filled workspace, or to escalate to the user.
+
+**Why this matters:** each MCP server enforces an `ALLOWED_ROOTS` policy
+as a sandbox boundary. Auto-fill exists precisely so you don't have to
+reason about paths. If you override it, you are operating outside the
+trusted boundary without the user knowing — and the server will reject
+the call anyway.
+
 ## Confirm gate (safe-mode)
 
 Both servers run in `mode=safe` by default. Writes require `confirm=true`.
