@@ -1,12 +1,14 @@
 """MCP client: connects to MCP servers and wraps their tools as native femtobot tools."""
 
 import asyncio
+import json
 import os
 import re
 import shutil
 import urllib.parse
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack, suppress
+from pathlib import Path
 from typing import Any, Mapping
 from weakref import WeakKeyDictionary
 
@@ -180,6 +182,97 @@ def _is_session_terminated(exc: BaseException) -> bool:
     )
 
 
+# Matches ``AGY_MCP_ALLOWED_ROOTS``, ``CLAUDE_MCP_ALLOWED_ROOTS``, or plain
+# ``ALLOWED_ROOTS``. Servers using the documented pydantic-settings
+# ``env_prefix="<NAME>_MCP_"`` produce keys like ``AGY_MCP_ALLOWED_ROOTS``.
+_ALLOWED_ROOTS_ENV_RE = re.compile(r"^(?:[A-Z0-9_]+_MCP_)?ALLOWED_ROOTS$")
+
+
+def _extract_allowed_roots(env: Mapping[str, str] | None) -> list[Path]:
+    """Extract ``*_MCP_ALLOWED_ROOTS`` (or ``ALLOWED_ROOTS``) from a server's env.
+
+    The value is expected to be a JSON list of path strings, matching the
+    pydantic-settings convention used by both ``agy_mcp_server`` and
+    ``claude_code_mcp`` (``AGY_MCP_ALLOWED_ROOTS='["/foo", "/bar"]'``).
+
+    Returns an empty list when no matching key is found. Defensive against
+    malformed input — never raises. A single warning is logged on the first
+    malformed value seen per call.
+    """
+    if not env:
+        return []
+    for key, raw in env.items():
+        if not isinstance(key, str) or not _ALLOWED_ROOTS_ENV_RE.match(key):
+            continue
+        if not raw or not isinstance(raw, str):
+            return []
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            logger.warning(
+                "MCP ALLOWED_ROOTS env var {!r} is not valid JSON; ignoring: {!r}",
+                key,
+                raw[:120],
+            )
+            return []
+        if not isinstance(parsed, list):
+            logger.warning(
+                "MCP ALLOWED_ROOTS env var {!r} must be a JSON list; got {}",
+                key,
+                type(parsed).__name__,
+            )
+            return []
+        roots: list[Path] = []
+        for entry in parsed:
+            if isinstance(entry, str) and entry:
+                roots.append(Path(entry))
+        return roots
+    return []
+
+
+def _validate_workspace_against_allowed_roots(
+    workspace_path: str,
+    allowed_roots: list[Path],
+) -> str | None:
+    """Return an actionable error if ``workspace_path`` is outside ``allowed_roots``.
+
+    Returns ``None`` when valid. Semantics:
+
+    - Empty ``allowed_roots`` -> always valid (no policy; defer to the server).
+    - ``["/"]`` in ``allowed_roots`` -> always valid (documented escape hatch;
+      mirrors the server-side handling of the ``"/"`` wildcard).
+    - Otherwise: ``workspace_path`` must equal one of the roots or be a
+      descendant of one (path-component boundary, not prefix-string match).
+
+    The returned message is meant to be a *user-facing* diagnostic: it names
+    the rejected path, lists the configured roots, and tells the caller what
+    to do instead of retrying with a different invented path.
+    """
+    if not allowed_roots:
+        return None
+    if any(str(r) == "/" for r in allowed_roots):
+        return None
+    try:
+        p = Path(workspace_path).expanduser().resolve()
+    except (OSError, RuntimeError) as exc:
+        return f"invalid workspace_path ({exc!r}); omit it to use the auto-filled workspace"
+    for root in allowed_roots:
+        try:
+            root_resolved = root.expanduser().resolve()
+        except (OSError, RuntimeError):
+            continue
+        if p == root_resolved or str(p).startswith(str(root_resolved) + "/"):
+            return None
+    roots_repr = ", ".join(f"'{r}'" for r in allowed_roots)
+    return (
+        f"workspace_path '{workspace_path}' is outside the MCP server's "
+        f"ALLOWED_ROOTS ({roots_repr}). "
+        f"Omit workspace_path to use the auto-filled active workspace, "
+        f"or pass a subdirectory inside it (e.g. '<active_workspace>/.scratch_<id>/'). "
+        f"Do NOT retry with a different invented path — the server will reject it again."
+    )
+
+
 async def _probe_http_url(url: str, timeout: float = 3.0) -> bool:
     """Quick TCP probe to check if an HTTP MCP server is reachable.
 
@@ -348,7 +441,14 @@ class MCPToolWrapper(_MCPWrapperBase):
 
     _plugin_discoverable = False
 
-    def __init__(self, session, server_name: str, tool_def, tool_timeout: int = 30):
+    def __init__(
+        self,
+        session,
+        server_name: str,
+        tool_def,
+        tool_timeout: int = 30,
+        allowed_roots: list[Path] | None = None,
+    ):
         self._set_mcp_connection(session, server_name)
         self._original_name = tool_def.name
         self._name = _sanitize_name(f"mcp_{server_name}_{tool_def.name}")
@@ -356,6 +456,15 @@ class MCPToolWrapper(_MCPWrapperBase):
         raw_schema = tool_def.inputSchema or {"type": "object", "properties": {}}
         self._parameters = _normalize_schema_for_openai(raw_schema)
         self._tool_timeout = tool_timeout
+        # Server's ALLOWED_ROOTS policy, extracted from cfg.env by
+        # ``connect_mcp_servers``. Used by ``execute`` to short-circuit
+        # workspace_path violations with an actionable message *before*
+        # the round-trip to the server (which would otherwise surface as a
+        # raw ``ValueError: NOT_ALLOWED``).
+        #
+        # Empty list = no policy known client-side; defer entirely to the
+        # server's own enforcement.
+        self._allowed_roots: list[Path] = list(allowed_roots or [])
 
     @property
     def name(self) -> str:
@@ -380,6 +489,31 @@ class MCPToolWrapper(_MCPWrapperBase):
             workspace = _resolve_active_workspace()
             if workspace:
                 kwargs = {**kwargs, "workspace_path": workspace}
+
+        # Pre-flight validation: short-circuit ``workspace_path`` violations
+        # against the server's ``ALLOWED_ROOTS`` *before* the round-trip, so
+        # the caller sees an actionable diagnostic instead of a raw
+        # ``ValueError: NOT_ALLOWED: workspace_path is outside allowed roots``
+        # bubbling up from the server. Defensive only — the server still
+        # enforces its own check (the source of truth).
+        #
+        # Skipped when ``allowed_roots`` is empty (no policy known client-side)
+        # or when the tool is not workspace-aware.
+        if (
+            self._original_name in _MCP_WORKSPACE_AWARE_TOOLS
+            and self._allowed_roots
+        ):
+            ws = kwargs.get("workspace_path")
+            if isinstance(ws, str) and ws:
+                err = _validate_workspace_against_allowed_roots(ws, self._allowed_roots)
+                if err is not None:
+                    logger.warning(
+                        "MCP tool '{}' blocked pre-flight: workspace_path='{}' "
+                        "outside allowed_roots",
+                        self._name,
+                        ws,
+                    )
+                    return f"(MCP tool blocked by pre-flight check: {err})"
 
         retried_transient = False
         refreshed_session = False
@@ -786,6 +920,11 @@ async def connect_mcp_servers(
             available_wrapped_names = [
                 _sanitize_name(f"mcp_{name}_{tool_def.name}") for tool_def in tools.tools
             ]
+            # Extract the server's ALLOWED_ROOTS from its env (if present) so
+            # ``MCPToolWrapper`` can pre-flight validate workspace_path before
+            # round-tripping. Falls back to an empty list when no policy is
+            # declared client-side (server is the source of truth).
+            allowed_roots = _extract_allowed_roots(cfg.env or None)
             for tool_def in tools.tools:
                 wrapped_name = _sanitize_name(f"mcp_{name}_{tool_def.name}")
                 if (
@@ -799,7 +938,13 @@ async def connect_mcp_servers(
                         name,
                     )
                     continue
-                wrapper = MCPToolWrapper(session, name, tool_def, tool_timeout=cfg.tool_timeout)
+                wrapper = MCPToolWrapper(
+                    session,
+                    name,
+                    tool_def,
+                    tool_timeout=cfg.tool_timeout,
+                    allowed_roots=allowed_roots,
+                )
                 registry.register(wrapper)
                 logger.debug("MCP: registered tool '{}' from server '{}'", wrapper.name, name)
                 registered_count += 1
