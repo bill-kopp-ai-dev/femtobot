@@ -204,17 +204,25 @@ def _init_prompt_session() -> None:
     else:
         from prompt_toolkit.filters import Condition
 
-        def _wants_multiline(buf) -> bool:
-            text = buf.text
-            if not text:
-                return False
-            if text.endswith("\\"):
-                return True
-            if text.rstrip().endswith("[EOF]"):
-                return True
-            return False
+        def _multiline_filter() -> bool:
+            """Decide whether the current input buffer is in multiline mode.
 
-        session_kwargs["multiline"] = Condition(_wants_multiline)
+            ``prompt_toolkit.filters.Condition`` calls this callable with no
+            arguments, so we read the focused buffer via ``get_app()``.
+            Returning True keeps the cursor on the same line when the user
+            presses Enter (i.e. they want a newline, not a submit).
+            """
+            from prompt_toolkit.application.current import get_app
+
+            try:
+                app = get_app()
+                buf = app.layout.get_focused_buffer()
+                text = buf.text if buf is not None else ""
+            except Exception:
+                return False
+            return _wants_multiline_text(text)
+
+        session_kwargs["multiline"] = Condition(_multiline_filter)
 
     _PROMPT_SESSION = PromptSession(**session_kwargs)
 
@@ -246,6 +254,26 @@ def _build_prompt_session_features() -> tuple[str, object | None]:
         # Config not loaded yet (e.g. during tests) — keep features off.
         return multiline_mode, None
     return multiline_mode, completer
+
+
+def _wants_multiline_text(text: str) -> bool:
+    """Pure decision: should ``text`` be in multiline mode right now?
+
+    Two escape signals are supported:
+      * trailing ``\\`` — the user wants a newline (continuation)
+      * trailing ``[EOF]`` (possibly with surrounding whitespace) — the
+        user wants to submit a multiline block
+
+    Returns False for empty text or for any input that ends in a
+    "submit-able" state (no escape marker).
+    """
+    if not text:
+        return False
+    if text.endswith("\\"):
+        return True
+    if text.rstrip().endswith("[EOF]"):
+        return True
+    return False
 
 
 def submit_multiline_transform(text: str) -> str:
