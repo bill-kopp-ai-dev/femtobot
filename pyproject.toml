@@ -83,6 +83,9 @@ dependencies = [
     "filelock>=3.25.2",
     "dulwich>=0.22.0,<1.0.0",
     "python-dotenv>=1.0.0,<2.0.0",
+
+    # CLI enhancements (Camada 2)
+    "watchdog>=5.0.0",  # hot-reload of keybindings.json
 ]
 
 [project.urls]

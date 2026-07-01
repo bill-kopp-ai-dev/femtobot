@@ -67,6 +67,13 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "[preset]",
     ),
     BuiltinCommandSpec(
+        "/effort",
+        "Set reasoning effort",
+        "Control extended thinking depth: auto, none, minimal, low, medium, maximum.",
+        "gauge",
+        "[level]",
+    ),
+    BuiltinCommandSpec(
         "/history",
         "Show conversation history",
         "Print the last N persisted conversation messages.",
@@ -110,6 +117,18 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "Inspect, reload, or restart MCP server connections.",
         "plug",
         "[status|reload|tools <server>|restart <server>]",
+    ),
+    BuiltinCommandSpec(
+        "/btw",
+        "Ask a side question",
+        "Quick question without polluting conversation history. Works mid-generation.",
+        "message-circle",
+    ),
+    BuiltinCommandSpec(
+        "/tasks",
+        "Show background tasks",
+        "List and manage background tasks started with Ctrl+B.",
+        "list",
     ),
 )
 
@@ -368,6 +387,175 @@ async def cmd_model(ctx: CommandContext) -> OutboundMessage:
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,
         content="\n".join(lines),
+        metadata=metadata,
+    )
+
+
+# ---------------------------------------------------------------------------
+# /effort — reasoning effort control
+# ---------------------------------------------------------------------------
+
+EFFORT_LEVELS: tuple[str, ...] = (
+    "auto",
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "maximum",
+)
+
+
+def _current_reasoning_effort(loop) -> str | None:
+    """Return the active reasoning_effort from the agent runner or loop."""
+    effort = getattr(getattr(loop, "runner", None), "_active_effort", None)
+    if effort is not None:
+        return effort
+    return getattr(loop, "_reasoning_effort", None)
+
+
+def _set_reasoning_effort(loop, effort: str | None) -> None:
+    """Wire effort into the agent runner so the next turn picks it up."""
+    if loop.runner is not None:
+        loop.runner._active_effort = effort
+    setattr(loop, "_reasoning_effort", effort)
+
+
+async def cmd_effort(ctx: CommandContext) -> OutboundMessage:
+    """Show or switch the reasoning effort level.
+
+    Usage:
+        /effort          — show current effort and available levels
+        /effort <level>  — set effort to one of: auto, none, minimal, low, medium, high, maximum
+
+    The effort level controls how much extended thinking the model uses. Higher
+    levels are slower but more thorough. This does NOT persist across sessions
+    (each session starts at 'auto').
+    """
+    loop = ctx.loop
+    args = ctx.args.strip()
+    metadata = {**dict(ctx.msg.metadata or {}), "render_as": "text"}
+
+    # Best-effort retrieval of current effort from runner or provider.
+    current = _current_reasoning_effort(loop)
+
+    if not args:
+        lines = ["**Reasoning effort**"]
+        if current:
+            lines.append(f"  Current: `{current}`")
+        else:
+            lines.append("  Current: `auto` (provider default)")
+        lines.append("")
+        lines.append("Available levels:")
+        for lvl in EFFORT_LEVELS:
+            marker = " ◀ (current)" if lvl == (current or "auto") else ""
+            lines.append(f"  - `{lvl}`{marker}")
+        lines.append("")
+        lines.append("Usage: `/effort <level>`")
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content="\n".join(lines),
+            metadata=metadata,
+        )
+
+    # Validate the requested level.
+    normalized = args.lower()
+    # Allow "high" as alias for "maximum" for ergonomics.
+    if normalized == "high":
+        normalized = "maximum"
+    if normalized not in EFFORT_LEVELS:
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=(
+                f"Unknown effort level: `{args}`.\n\n"
+                f"Available: {', '.join('`'+l+'`' for l in EFFORT_LEVELS)}"
+            ),
+            metadata=metadata,
+        )
+
+    _set_reasoning_effort(loop, normalized)
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content=f"Reasoning effort set to `{normalized}`. This applies to the next turn.",
+        metadata=metadata,
+    )
+
+
+async def cmd_btw(ctx: CommandContext) -> OutboundMessage:
+    """Placeholder for /btw side-question handler.
+
+    Full streaming integration (running during active generation) requires the
+    REPL to detect /btw in-stream and call ``cli/btw.run_btw()``.
+    This handler runs when /btw is used standalone (not mid-generation).
+    """
+    loop = ctx.loop
+    args = ctx.args.strip()
+    metadata = {**dict(ctx.msg.metadata or {}), "render_as": "text"}
+
+    if not args:
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=(
+                "**/btw** — Ask a quick question without affecting conversation.\n\n"
+                "Usage: `/btw <your question>`\n\n"
+                "Tip: /btw is most useful **during** an active response, "
+                "when the model is mid-generation."
+            ),
+            metadata=metadata,
+        )
+
+    # Run the side-question handler.
+    try:
+        from femtobot.cli.btw import run_btw
+        result = await run_btw(
+            loop=loop,
+            question=args,
+            session_key=ctx.key,
+            channel=ctx.msg.channel,
+            chat_id="btw",
+        )
+        if result is not None:
+            return result
+    except Exception:
+        pass
+
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content="[btw] Could not process the question. Is the model connected?",
+        metadata=metadata,
+    )
+
+
+async def cmd_tasks(ctx: CommandContext) -> OutboundMessage:
+    """List background tasks started with Ctrl+B."""
+    metadata = {**dict(ctx.msg.metadata or {}), "render_as": "text"}
+    # Try to read the background pool from the session context if available.
+    pool = None
+    try:
+        from femtobot.cli.background import BackgroundPool
+        pool = BackgroundPool()  # NOTE: in full integration this would be the shared instance
+    except Exception:
+        pass
+    if pool:
+        tasks = pool.status()
+        if not tasks:
+            content = "No background tasks."
+        else:
+            lines = ["**Background tasks**"]
+            for t in tasks:
+                lines.append(f"  - {t.summary}")
+            content = "\n".join(lines)
+    else:
+        content = "[/tasks] Background pool not yet wired in this session."
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content=content,
         metadata=metadata,
     )
 
@@ -873,6 +1061,11 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.prefix("/dream-log ", cmd_dream_log)
     router.exact("/dream-restore", cmd_dream_restore)
     router.prefix("/dream-restore ", cmd_dream_restore)
+    router.exact("/effort", cmd_effort)
+    router.prefix("/effort ", cmd_effort)
+    router.exact("/btw", cmd_btw)
+    router.prefix("/btw ", cmd_btw)
+    router.exact("/tasks", cmd_tasks)
     router.exact("/help", cmd_help)
     router.exact("/mcp", cmd_mcp)
     router.prefix("/mcp ", cmd_mcp)

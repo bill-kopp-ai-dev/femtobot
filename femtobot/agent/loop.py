@@ -74,6 +74,14 @@ _MAX_PREVIEW_LEN = 120
 _MAX_INBOUND_PREVIEW_LEN = 80
 
 
+def _current_reasoning_effort(loop) -> str | None:
+    """Return the active reasoning_effort from the agent runner or loop."""
+    effort = getattr(getattr(loop, "runner", None), "_active_effort", None)
+    if effort is not None:
+        return effort
+    return getattr(loop, "_reasoning_effort", None)
+
+
 class TurnState(Enum):
     RESTORE = auto()
     COMPACT = auto()
@@ -827,6 +835,7 @@ class AgentLoop:
                     provider_retry_mode=self.provider_retry_mode,
                     progress_callback=on_progress,
                     stream_progress_deltas=on_stream is not None,
+                    reasoning_effort=_current_reasoning_effort(self),
                     retry_wait_callback=on_retry_wait,
                     checkpoint_callback=_checkpoint,
                     injection_callback=_drain_pending,
