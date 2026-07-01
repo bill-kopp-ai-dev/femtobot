@@ -87,6 +87,29 @@ follow these rules:
    must operate outside `ALLOWED_ROOTS`, stop and ask the user to widen
    the policy — do not bypass silently.
 
+## CLI Interaction Tips
+
+When the user is running `femtobot agent` interactively, they have access
+to several short-cuts in the REPL (Camada 1 of
+`FEMTOBOT_CLI_REFACTOR_PLAN.md`):
+
+- **Multiline prompts**: end a line with `\` + Enter to insert a
+  newline without submitting. `Ctrl+D` submits the whole block,
+  `Ctrl+C` cancels. Default behavior; toggle with
+  `agents.cli.multiline = "off"`.
+- **Bash shortcuts**: prefix any line with `!` to run a shell command
+  directly. Output is shown inline but does **not** enter the agent
+  loop, so `!git status` is cheap. Disable with
+  `agents.cli.bashModeEnabled = false`.
+- **File references**: prefix a path with `@` to mention a file in
+  the prompt. The literal `@path` token stays in the buffer.
+- **Slash commands**: type `/` to see available commands. The
+  completer uses exact > prefix > substring ranking, so the user's
+  exact input always wins. `/help` for the canonical list.
+- **Themes**: configure `agents.cli.theme` in `config.json`. Four
+  presets: `terracotta-claude` (default), `solarized-light`,
+  `cyber-dark`, `monochrome`.
+
 ## See Also
 
 - `SOUL.md` — personality

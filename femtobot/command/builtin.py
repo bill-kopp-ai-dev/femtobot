@@ -153,7 +153,13 @@ async def cmd_restart(ctx: CommandContext) -> OutboundMessage:
 
 
 async def cmd_status(ctx: CommandContext) -> OutboundMessage:
-    """Build an outbound status message for a session."""
+    """Build an outbound status message for a session.
+
+    Camada 1 (1.7): rendered as a ``rich.Panel`` with 4 sections
+    (context usage, session line, provider, MCP). Falls back to the
+    pre-Camada-1 text formatter if Rich is unavailable or the active
+    config disables the new layout.
+    """
     loop = ctx.loop
     session = ctx.session or loop.sessions.get_or_create(ctx.key)
     ctx_est = 0
@@ -162,27 +168,84 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
     if ctx_est <= 0:
         ctx_est = loop._last_usage.get("prompt_tokens", 0)
 
-    # Fetch web search provider usage (best-effort, never blocks the response)
-    search_usage_text: str | None = None
-    # Never let usage fetch break /status
+    # New panel-style output. Best-effort: any failure falls back to legacy
+    # text formatter to guarantee a /status response.
+    new_layout = True
+    body: str | None = None
     with suppress(Exception):
-        from femtobot.utils.searchusage import fetch_search_usage
+        from rich.console import Console
+        from rich.panel import Panel
+        from rich.text import Text
 
-        web_cfg = getattr(loop, "web_config", None)
-        search_cfg = getattr(web_cfg, "search", None) if web_cfg else None
-        if search_cfg is not None:
-            provider = getattr(search_cfg, "provider", "duckduckgo")
-            api_key = getattr(search_cfg, "api_key", "") or None
-            usage = await fetch_search_usage(provider=provider, api_key=api_key)
-            search_usage_text = usage.format()
-    active_tasks = loop._active_tasks.get(ctx.key, [])
-    task_count = sum(1 for t in active_tasks if not t.done())
-    with suppress(Exception):
-        task_count += loop.subagents.get_running_count_by_session(ctx.key)
-    return OutboundMessage(
-        channel=ctx.msg.channel,
-        chat_id=ctx.msg.chat_id,
-        content=build_status_content(
+        from femtobot.cli.status_line import render_session_status_line
+
+        # Section 1: context window usage
+        context_window = int(getattr(loop, "context_window_tokens", 0) or 0)
+        ctx_pct = (ctx_est / context_window * 100) if context_window else 0.0
+        bar_width = 24
+        filled = int(min(100.0, ctx_pct) / 100 * bar_width)
+        bar = "█" * filled + "░" * (bar_width - filled)
+        bar_style = "green" if ctx_pct < 70 else ("yellow" if ctx_pct < 90 else "red")
+        context_block = Text()
+        context_block.append(
+            f"Context: {ctx_est:,} / {context_window:,} tok ", style="bold"
+        )
+        context_block.append(f"[{bar}] ", style=bar_style)
+        context_block.append(f"{ctx_pct:.1f}%\n", style="dim")
+        context_block.append(
+            f"Messages: {len(session.get_history(max_messages=0))}\n", style="dim"
+        )
+
+        # Section 2: session line (from T4 helper)
+        session_block = Text()
+        rendered = render_session_status_line(loop)
+        # Render the rich RenderableType into a string we can append.
+        tmp_console = Console(record=True, width=120, color_system="standard")
+        with tmp_console.capture() as cap:
+            tmp_console.print(rendered)
+        session_block.append(cap.get().rstrip("\n"))
+        session_block.append("\n")
+
+        # Section 3: provider
+        max_tok = getattr(getattr(loop.provider, "generation", None), "max_tokens", 8192)
+        provider_block = Text()
+        provider_block.append(f"Provider: {loop.model}\n", style="cyan")
+        provider_block.append(f"  max_output_tokens: {max_tok}\n", style="dim")
+
+        # Section 4: MCP
+        configured = sorted(getattr(loop, "_mcp_servers", {}) or {})
+        connected = sorted(getattr(loop, "_mcp_stacks", {}) or {})
+        missing = sorted(set(configured) - set(connected))
+        mcp_block = Text()
+        mcp_block.append(
+            f"MCP: {len(connected)}/{len(configured)} connected\n", style="cyan"
+        )
+        if missing:
+            mcp_block.append(f"  missing: {', '.join(missing)}\n", style="red")
+        try:
+            total_tools = len(getattr(loop, "tools", None).tool_names)
+        except Exception:
+            total_tools = 0
+        mcp_block.append(f"  total_tools: {total_tools}\n", style="dim")
+
+        body_text = Text()
+        body_text.append_text(context_block)
+        body_text.append_text(session_block)
+        body_text.append_text(provider_block)
+        body_text.append_text(mcp_block)
+
+        console = Console(record=True, width=120)
+        console.print(
+            Panel(
+                body_text,
+                title=f"🐈 Femtobot status (v{__version__})",
+                border_style="cyan",
+            )
+        )
+        body = console.export_text(styles=False)
+
+    if not new_layout or body is None:
+        body = build_status_content(
             version=__version__,
             model=loop.model,
             start_time=loop._start_time,
@@ -190,12 +253,17 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
             context_window_tokens=loop.context_window_tokens,
             session_msg_count=len(session.get_history(max_messages=0)),
             context_tokens_estimate=ctx_est,
-            search_usage_text=search_usage_text,
-            active_task_count=task_count,
+            search_usage_text=None,
+            active_task_count=0,
             max_completion_tokens=getattr(
                 getattr(loop.provider, "generation", None), "max_tokens", 8192
             ),
-        ),
+        )
+
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content=body,
         metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
     )
 

@@ -104,6 +104,44 @@ class ModelPresetConfig(Base):
         )
 
 
+class CliWhimsyConfig(Base):
+    """Whimsical loading-state verbs and spinner choices for the CLI.
+
+    All fields default to the current Femtobot behavior, so the field is
+    fully backward-compatible when this block is added to existing configs.
+    """
+
+    verbs_enabled: bool = True
+    spinner_style: str = "auto"  # 'auto' | 'dots' | 'dots2' | 'dots3' | 'line' | 'aesthetic'
+    verb_pool_size: int = 40
+
+
+class CliSessionStatusConfig(Base):
+    """Lightweight session indicators rendered at end-of-turn and in /status."""
+
+    enabled: bool = True
+    show_tokens: bool = True
+    show_elapsed: bool = True
+
+
+class CliConfig(Base):
+    """CLI behavior configuration.
+
+    All fields default to safe backward-compatible values. See
+    FEMTOBOT_CLI_REFACTOR_PLAN.md Camada 1.
+    """
+
+    multiline: Literal["off", "backslash"] = "backslash"
+    completer_enabled: bool = True
+    completer_max_results: int = 10
+    bash_mode_enabled: bool = True
+    bash_mode_timeout_s: float = 30.0
+    file_mention_enabled: bool = True
+    theme: str = "terracotta-claude"
+    whimsy: CliWhimsyConfig = Field(default_factory=CliWhimsyConfig)
+    session_status: CliSessionStatusConfig = Field(default_factory=CliSessionStatusConfig)
+
+
 class AgentDefaults(Base):
     """Default agent configuration."""
 
@@ -159,6 +197,7 @@ class AgentDefaults(Base):
     include_mcp_context: bool = (
         False  # When True, read AGENTS.md/MEMORY.md headers from MCPs (Fase 8)
     )
+    cli: CliConfig = Field(default_factory=CliConfig)  # Camada 1 CLI behavior
 
 
 class AgentsConfig(Base):

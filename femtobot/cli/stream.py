@@ -17,6 +17,8 @@ from rich.live import Live
 from rich.markdown import Markdown
 from rich.text import Text
 
+from femtobot.cli.whimsy import pick_verb, resolve_spinner
+
 
 def _clear_current_line(console: Console) -> None:
     """Erase a transient status line before printing persistent output."""
@@ -43,13 +45,48 @@ def _make_console() -> Console:
 
 
 class ThinkingSpinner:
-    """Spinner that shows '<bot_name> is thinking...' with pause support."""
+    """Spinner that shows '<bot_name> is thinking...' with pause support.
 
-    def __init__(self, console: Console | None = None, bot_name: str = "Femtobot"):
+    When ``verbs_enabled`` is True (Camada 1 default), the spinner message
+    uses a randomly-picked verb (e.g. "Femtobot is cogitating...") instead
+    of the literal "thinking". Pass ``verb`` to force a specific one, or
+    ``spinner_style`` to pick a non-default Rich spinner.
+    """
+
+    def __init__(
+        self,
+        console: Console | None = None,
+        bot_name: str = "Femtobot",
+        verb: str | None = None,
+        spinner_style: str | None = None,
+        verbs_enabled: bool = True,
+        seed: int | None = None,
+    ):
         c = console or _make_console()
         self._console = c
-        self._spinner = c.status(f"[dim]{bot_name} is thinking...[/dim]", spinner="dots")
+        self._bot_name = bot_name
+        self._verbs_enabled = verbs_enabled
+        self._verb = verb or pick_verb(seed)
+        text = self._render_text()
+        spinner_name = resolve_spinner(spinner_style, seed=seed)
+        self._spinner_name = spinner_name
+        self._spinner = c.status(text, spinner=spinner_name)
         self._active = False
+
+    def _render_text(self) -> str:
+        if self._verbs_enabled and self._verb:
+            return f"[dim]{self._bot_name} is {self._verb.lower()}...[/dim]"
+        return f"[dim]{self._bot_name} is thinking...[/dim]"
+
+    @property
+    def verb(self) -> str | None:
+        """The currently-displayed verb (None if whimsy is disabled)."""
+        return self._verb if self._verbs_enabled else None
+
+    @property
+    def spinner_name(self) -> str:
+        """The Rich spinner style currently in use."""
+        return self._spinner_name
 
     def __enter__(self):
         self._spinner.start()

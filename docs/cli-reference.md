@@ -170,6 +170,96 @@ femtobot gateway --port 9001 --suffix prod
 
 ---
 
+## Roadmap Camada 1 — Quick Wins (input + slash discoverability)
+
+Implementado em `agents.cli.*` no `config.json`. Todos os defaults são
+backward-compatíveis: o comportamento atual é preservado quando o bloco
+`cli` está ausente.
+
+### Multiline
+
+Termine a linha com `\` + `Enter` para inserir uma nova linha sem submeter.
+Use `Ctrl+D` para submeter o bloco, `Ctrl+C` para cancelar. A flag é
+`agents.cli.multiline` (`"off" | "backslash"`, default `"backslash"`).
+
+### Slash completer
+
+Digite `/` no REPL para ver os comandos disponíveis. O ranking é
+**exato > prefixo > substring** (a lição do [GitHub issue #20537 do
+Claude Code](https://github.com/anthropics/claude-code/issues/20537):
+um match exato sempre vence um fuzzy). Flag: `agents.cli.completerEnabled`
+e `agents.cli.completerMaxResults`.
+
+### Bash mode
+
+Digite `!` seguido do comando (ex: `!git log --oneline -5`). O output
+fica visível no terminal mas não entra automaticamente no loop do agente
+— assim você pode inspecionar sem queimar tokens. Flag:
+`agents.cli.bashModeEnabled` e `agents.cli.bashModeTimeoutS` (default 30s).
+
+### File mention
+
+Digite `@` seguido do path (com `Tab` para completar). O token literal
+`@path` é preservado no buffer. Flag: `agents.cli.fileMentionEnabled`.
+
+### Whimsy (verbos caprichados)
+
+Em vez de "thinking…", o spinner mostra "Percolating…", "Moonwalking…",
+"Reticulating…". Flag: `agents.cli.whimsy.verbsEnabled` (default `true`).
+Estilos de spinner suportados: `dots`, `dots2`, `dots3`, `line`,
+`aesthetic`, `simpleDots` (`auto` = random).
+
+### Themes
+
+Quatro presets: `terracotta-claude` (default), `solarized-light`,
+`cyber-dark`, `monochrome`. Mude em `agents.cli.theme` no `config.json`.
+A flag aceita qualquer string; nomes inválidos caem no default.
+
+### `/status` enriquecido
+
+O comando `/status` agora renderiza um `rich.Panel` com 4 seções:
+- **Context**: tokens usados / janela total + barra horizontal colorida.
+- **Session**: modelo + tokens + elapsed.
+- **Provider**: nome do modelo + `max_output_tokens`.
+- **MCP**: servidores conectados / configurados + tools totais.
+
+### Status line leve
+
+Linha curta exibida no fim de cada turno com modelo, tokens e elapsed.
+Flag: `agents.cli.sessionStatus.enabled`.
+
+### Bloco de configuração (default)
+
+```json5
+{
+  "agents": {
+    "defaults": {
+      "cli": {
+        "multiline": "backslash",
+        "completerEnabled": true,
+        "completerMaxResults": 10,
+        "bashModeEnabled": true,
+        "bashModeTimeoutS": 30.0,
+        "fileMentionEnabled": true,
+        "theme": "terracotta-claude",
+        "whimsy": {
+          "verbsEnabled": true,
+          "spinnerStyle": "auto",
+          "verbPoolSize": 40
+        },
+        "sessionStatus": {
+          "enabled": true,
+          "showTokens": true,
+          "showElapsed": true
+        }
+      }
+    }
+  }
+}
+```
+
+---
+
 ## See also
 
 - [configuration.md](./configuration.md) — full `config.json` reference

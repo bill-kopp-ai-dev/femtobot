@@ -171,7 +171,13 @@ def _restore_terminal() -> None:
 
 
 def _init_prompt_session() -> None:
-    """Create the prompt_toolkit session with persistent file history."""
+    """Create the prompt_toolkit session with persistent file history.
+
+    Camada 1 wires the multiline filter, slash completer, and file-mention
+    completer into the underlying ``PromptSession``. All three are
+    feature-flagged by ``agents.cli.*`` and gracefully degrade to the
+    pre-Camada-1 behavior if the active config is missing or malformed.
+    """
     global _PROMPT_SESSION, _SAVED_TERM_ATTRS
 
     # Save terminal state so we can restore it on exit
@@ -185,11 +191,83 @@ def _init_prompt_session() -> None:
     history_file = get_cli_history_path()
     history_file.parent.mkdir(parents=True, exist_ok=True)
 
-    _PROMPT_SESSION = PromptSession(
-        history=SafeFileHistory(str(history_file)),
-        enable_open_in_editor=False,
-        multiline=False,  # Enter submits (single line mode)
-    )
+    multiline_mode, completer = _build_prompt_session_features()
+    session_kwargs: dict = {
+        "history": SafeFileHistory(str(history_file)),
+        "enable_open_in_editor": False,
+    }
+    if completer is not None:
+        session_kwargs["completer"] = completer
+        session_kwargs["complete_while_typing"] = True
+    if multiline_mode == "off":
+        session_kwargs["multiline"] = False
+    else:
+        from prompt_toolkit.filters import Condition
+
+        def _wants_multiline(buf) -> bool:
+            text = buf.text
+            if not text:
+                return False
+            if text.endswith("\\"):
+                return True
+            if text.rstrip().endswith("[EOF]"):
+                return True
+            return False
+
+        session_kwargs["multiline"] = Condition(_wants_multiline)
+
+    _PROMPT_SESSION = PromptSession(**session_kwargs)
+
+
+def _build_prompt_session_features() -> tuple[str, object | None]:
+    """Return ``(multiline_mode, completer)`` honoring the active config."""
+    multiline_mode = "backslash"
+    completer: object | None = None
+    try:
+        from prompt_toolkit.completion import merge_completers
+
+        from femtobot.cli.completer import SlashCompleter
+        from femtobot.cli.file_mention import FileMentionCompleter
+        from femtobot.config.loader import get_active_config
+
+        cfg = get_active_config()
+        cli_cfg = cfg.agents.defaults.cli
+        multiline_mode = cli_cfg.multiline
+        completers: list = []
+        if cli_cfg.completer_enabled:
+            completers.append(
+                SlashCompleter(max_results=cli_cfg.completer_max_results)
+            )
+        if cli_cfg.file_mention_enabled:
+            completers.append(FileMentionCompleter())
+        if completers:
+            completer = merge_completers(completers)
+    except Exception:
+        # Config not loaded yet (e.g. during tests) — keep features off.
+        return multiline_mode, None
+    return multiline_mode, completer
+
+
+def submit_multiline_transform(text: str) -> str:
+    """Strip trailing ``\\`` escape markers, collapsing them into newlines.
+
+    For each ``\\\n`` in the buffer, replace with ``\\n``. Called right before
+    submitting input when multiline mode is on, so the trailing backslash
+    used as a 'continue' signal is converted into the literal newline the
+    user intended.
+    """
+    return text.replace("\\\n", "\n")
+
+
+def _get_cli_multiline_mode() -> str:
+    """Read ``agents.cli.multiline`` from the active config, defaulting to 'backslash'."""
+    try:
+        from femtobot.config.loader import get_active_config
+
+        cfg = get_active_config()
+        return cfg.agents.defaults.cli.multiline
+    except Exception:
+        return "backslash"
 
 
 def _make_console() -> Console:
@@ -417,6 +495,44 @@ async def _read_interactive_input_async() -> str:
             )
     except EOFError as exc:
         raise KeyboardInterrupt from exc
+
+
+async def _handle_bash_mode(
+    user_input: str, config, console
+) -> bool:
+    """Run a bash-mode command if ``user_input`` looks like one.
+
+    Returns True when the input was handled (and should NOT enter the
+    agent loop), False otherwise. Respects
+    ``agents.cli.bashModeEnabled`` and surfaces timeouts / non-zero exit
+    codes inline.
+    """
+    from femtobot.cli.bash_mode import (
+        extract_command,
+        format_bash_output,
+        is_repeat_request,
+        looks_like_bash_mode,
+        parse_timeout,
+        run_bash_command,
+    )
+
+    if not looks_like_bash_mode(user_input):
+        return False
+    if not getattr(config.agents.defaults.cli, "bash_mode_enabled", True):
+        console.print("[red]![/red] Bash mode is disabled in config (agents.cli.bashModeEnabled=false).")
+        return True
+    if is_repeat_request(user_input):
+        console.print("[yellow]![/yellow] Repeat history is not yet wired (T8 follow-up).")
+        return True
+    cmd = extract_command(user_input)
+    if not cmd:
+        console.print("[yellow]![/yellow] Empty bash command. Type `!<command>` to run one.")
+        return True
+    timeout_s = parse_timeout(config)
+    console.print(f"[dim]$ {cmd}[/dim]")
+    result = await run_bash_command(cmd, timeout_s=timeout_s)
+    console.print(format_bash_output(result))
+    return True
 
 
 def version_callback(value: bool):
@@ -1072,7 +1188,10 @@ def agent(
                         # Stop spinner before user input to avoid prompt_toolkit conflicts
                         if renderer:
                             renderer.stop_for_input()
-                        user_input = _sanitize_surrogates(await _read_interactive_input_async())
+                        raw_input = await _read_interactive_input_async()
+                        if _get_cli_multiline_mode() != "off":
+                            raw_input = submit_multiline_transform(raw_input)
+                        user_input = _sanitize_surrogates(raw_input)
                         command = user_input.strip()
                         if not command:
                             continue
@@ -1081,6 +1200,18 @@ def agent(
                             _restore_terminal()
                             console.print("\nGoodbye!")
                             break
+
+                        # Bash mode: prefix '!' executes a subprocess directly.
+                        # Output is captured and printed; it does NOT enter the
+                        # agent loop on its own (avoids burning LLM tokens on
+                        # inspection). The user can `/mention` the output into
+                        # a subsequent turn by typing `!git status` and then
+                        # describing what they want.
+                        bash_handled = await _handle_bash_mode(
+                            user_input, config, console
+                        )
+                        if bash_handled:
+                            continue
 
                         turn_done.clear()
                         turn_response.clear()
