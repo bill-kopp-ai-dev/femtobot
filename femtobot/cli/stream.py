@@ -154,10 +154,21 @@ class StreamRenderer:
         self._start_spinner()
 
     def _renderable(self):
-        """Create a renderable from the current buffer."""
+        """Create a renderable from the current buffer.
+
+        Camada 5 — when a spacing renderer is wired in with margin_x > 0,
+        the rendered Markdown is wrapped in a Padding so the agent's reply
+        doesn't sit flush against the terminal edges.
+        """
         if self._md and self._buf:
-            return Markdown(self._buf)
-        return Text(self._buf or "")
+            inner: RenderableType = Markdown(self._buf)
+        else:
+            inner = Text(self._buf or "")
+        if self._spacing is not None and self._spacing.margin_x > 0:
+            from rich.padding import Padding
+
+            inner = Padding(inner, pad=(0, self._spacing.margin_x))
+        return inner
 
     def _render_str(self) -> str:
         """Render current buffer to a plain string via Rich."""
@@ -231,6 +242,23 @@ class StreamRenderer:
                 return
 
         return _pause()
+
+    def print_input_gap(self) -> None:
+        """Print blank lines before the user input prompt (Camada 5 P2 fix).
+
+        No-op when no spacing renderer is configured (legacy behaviour).
+        """
+        if self._spacing is not None:
+            self._spacing.print_input_gap(self._console)
+
+    def print_user_box(self) -> None:
+        """Print the user-turn box (Camada 5 P3 fix).
+
+        Called by the REPL just before reading user input, replacing the
+        legacy plain "You:" prompt when ``turn_box=True``.
+        """
+        if self._spacing is not None:
+            self._spacing.print_user_box(self._console)
 
     async def on_delta(self, delta: str) -> None:
         self.streamed = True

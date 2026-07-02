@@ -240,6 +240,22 @@ A Camada 4 introduziu melhorias para reduzir o ruído visual entre turnos:
 - **`user_separator`** (bool, default `true`): linha fina `· · ·` que
   separa visualmente o input humano do reply do agente.
 
+### Camada 5 — Margins, breathing room e box delimiters
+
+A Camada 5 adiciona três knobs para resolver os 3 problemas de layout
+restantes (texto colado na lateral, sem respiração no rodapé,
+agente e humano indistinguíveis):
+
+- **`margin_x`** (0–8, default `2`): caracteres de padding lateral
+  aplicados via `rich.Padding` ao redor do conteúdo do agente. Resolve
+  o texto colado nas extremidades do terminal.
+- **`gap_before_input`** (0–5, default `2`): linhas em branco extras
+  antes do `You:` prompt. Resolve a última mensagem colada na base.
+- **`turn_box`** (bool, default `true`): render role headers como boxes
+  `[🤖 Femtobot]` (agente, cor terracotta) e `[👤 You]` (humano, cor
+  azul). Cada turno vira um bloco visualmente delimitado. Use `false`
+  para voltar ao `You:` em ciano legacy.
+
 Exemplo de uso no `config.json`:
 
 ```json5
@@ -247,9 +263,12 @@ Exemplo de uso no `config.json`:
   "agents": {
     "defaults": {
       "cli": {
-        "gap_after_turn": 2,
+        "gap_after_turn": 1,
         "role_header": "always",
-        "user_separator": true
+        "user_separator": true,
+        "margin_x": 2,
+        "gap_before_input": 2,
+        "turn_box": true
       }
     }
   }

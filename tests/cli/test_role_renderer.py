@@ -135,11 +135,29 @@ def test_spacing_renderer_prints_role_header_in_always_mode() -> None:
         user_separator=True,
         accent_color="#ff0000",
         bot_name="Femtobot",
+        turn_box=False,  # legacy bar style for this test
     )
     spacing.print_role_header(console)
     out = buf.getvalue()
     assert "Femtobot" in out
     assert "🤖" in out
+
+
+def test_spacing_renderer_prints_role_header_in_box_mode() -> None:
+    """Camada 5 — when turn_box=True, the header becomes ``[🤖 Femtobot]``."""
+    console, buf = _capture_console()
+    spacing = TurnSpacingRenderer(
+        gap_after_turn=1,
+        role_header_mode="always",
+        user_separator=True,
+        accent_color="#d77757",
+        bot_name="Femtobot",
+        turn_box=True,
+    )
+    spacing.print_role_header(console)
+    out = buf.getvalue()
+    assert "[" in out and "]" in out
+    assert "Femtobot" in out
 
 
 def test_spacing_renderer_skips_role_header_when_off() -> None:
@@ -148,10 +166,65 @@ def test_spacing_renderer_skips_role_header_when_off() -> None:
         gap_after_turn=0,
         role_header_mode="off",
         user_separator=False,
+        turn_box=False,
     )
     spacing.print_role_header(console)
     out = buf.getvalue()
     assert out.strip() == ""
+
+
+def test_spacing_renderer_user_box_no_op_when_disabled() -> None:
+    """``print_user_box`` should be a no-op when ``turn_box=False``."""
+    console, buf = _capture_console()
+    spacing = TurnSpacingRenderer(turn_box=False)
+    spacing.print_user_box(console)
+    assert buf.getvalue().strip() == ""
+
+
+def test_spacing_renderer_user_box_default() -> None:
+    """With ``turn_box=True``, the user box prints ``[👤 You]``."""
+    console, buf = _capture_console()
+    spacing = TurnSpacingRenderer(turn_box=True)
+    spacing.print_user_box(console)
+    out = buf.getvalue()
+    assert "[" in out and "]" in out
+    assert "You" in out
+
+
+def test_spacing_renderer_input_gap_default() -> None:
+    """Default ``gap_before_input`` should produce 2 blank lines."""
+    console, buf = _capture_console()
+    spacing = TurnSpacingRenderer(gap_before_input=2)
+    spacing.print_input_gap(console)
+    assert buf.getvalue().endswith("\n\n")
+
+
+def test_spacing_renderer_margin_default_is_2() -> None:
+    """Camada 5 — margin_x defaults to 2 chars."""
+    spacing = TurnSpacingRenderer()
+    assert spacing.margin_x == 2
+
+
+def test_spacing_renderer_apply_margin_returns_console() -> None:
+    """apply_margin should return a Console with reduced width."""
+    parent = Console(file=__import__("io").StringIO(), width=80, force_terminal=False)
+    spacing = TurnSpacingRenderer(margin_x=2)
+    child = spacing.apply_margin(parent)
+    # New width is parent.width - 2 * margin_x = 80 - 4 = 76
+    assert child.width == 76
+
+
+def test_spacing_renderer_apply_margin_min_width_clamp() -> None:
+    """When parent.width <= margin*2, the width is clamped to MIN_OUTPUT_WIDTH.
+
+    Widths too small for the requested padding must not crash and must
+    not produce an unreadable console.
+    """
+    parent = Console(file=__import__("io").StringIO(), width=10, force_terminal=False)
+    spacing = TurnSpacingRenderer(margin_x=4)
+    child = spacing.apply_margin(parent)
+    # width would have gone below 40 → clamp to 40
+    assert child.width == 40
 
 
 def test_spacing_renderer_skips_user_separator_when_disabled() -> None:

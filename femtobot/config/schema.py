@@ -158,6 +158,14 @@ class CliConfig(Base):
     gap_after_turn: int = 1
     role_header: Literal["always", "minimal", "off"] = "always"
     user_separator: bool = True
+    # Camada 5 — visual separation (Issue UX-3 / UX-4 / UX-5)
+    # margin_x: padding lateral aplicado a todo o output (0-8 chars).
+    # gap_before_input: linhas em branco extras antes do "You:" prompt.
+    # turn_box: render role header como box [🤖 Femtobot] (agent)
+    #           e [👤 You] (user). Visual block delimiter.
+    margin_x: int = 2
+    gap_before_input: int = 2
+    turn_box: bool = True
 
 
 class AgentDefaults(Base):

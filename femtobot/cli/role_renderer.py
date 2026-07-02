@@ -70,6 +70,7 @@ def role_header(
     *,
     mode: str = DEFAULT_HEADER_MODE,
     accent_color: str = "#d77757",
+    as_box: bool = False,
 ) -> Text:
     """Build the per-turn role header rendered before an agent reply.
 
@@ -80,13 +81,30 @@ def role_header(
     ``off``     — empty renderable
 
     The bar uses ``accent_color`` so it picks up the active CliTheme.
+
+    When ``as_box=True`` (Camada 5), the header is wrapped in a
+    bracketed box: ``[🤖 Femtobot]``. This is the recommended visual
+    for telling agent turns apart from user turns at a glance.
     """
     normalized = _normalize_header_mode(mode)
     if normalized == "off":
         return Text("")
     if normalized == "minimal":
+        if as_box:
+            return Text.assemble(
+                ("[ ", f"bold {accent_color}"),
+                (f"{bot_icon} ", "bold"),
+                ("] ", "bold"),
+            )
         return Text(f"{bot_icon} ", style="bold")
-    # 'always' — full colored bar
+    # 'always'
+    if as_box:
+        return Text.assemble(
+            ("[ ", f"bold {accent_color}"),
+            (f"{bot_icon} ", "bold"),
+            (f"{bot_name} ", "bold"),
+            ("]", f"bold {accent_color}"),
+        )
     return Text.assemble(
         (f"  {bot_icon} ", "bold"),
         (f"{bot_name} ", "bold"),
@@ -117,6 +135,80 @@ def turn_gap(gap: int | None = None) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Camada 5 — visual separation helpers
+# ---------------------------------------------------------------------------
+
+MIN_MARGIN = 0
+MAX_MARGIN = 8
+DEFAULT_MARGIN = 2
+
+MIN_INPUT_GAP = 0
+MAX_INPUT_GAP = 5
+DEFAULT_INPUT_GAP = 2
+
+# Minimum output width when applying margins. Below this the console
+# becomes unreadable, so we keep the parent width unchanged.
+MIN_OUTPUT_WIDTH = 40
+
+
+def _normalize_margin(value: int | None) -> int:
+    """Clamp margin_x into [0, 8]."""
+    if value is None:
+        return DEFAULT_MARGIN
+    return max(MIN_MARGIN, min(MAX_MARGIN, int(value)))
+
+
+def _normalize_input_gap(value: int | None) -> int:
+    """Clamp gap_before_input into [0, 5]."""
+    if value is None:
+        return DEFAULT_INPUT_GAP
+    return max(MIN_INPUT_GAP, min(MAX_INPUT_GAP, int(value)))
+
+
+def margin_padding(margin: int | None = None) -> tuple[int, int]:
+    """Return ``(left, right)`` padding in chars for the active console.
+
+    Use with Rich ``Console(padding=...)`` or with `print(..., padding=...)`
+    to leave breathing room on both sides of the terminal.
+
+    ``margin`` is clamped to ``[0, 8]``.
+    """
+    m = _normalize_margin(margin)
+    return (m, m)
+
+
+def margin_line(margin: int | None = None) -> str:
+    """Return ``" " * margin`` — useful when prepending indent manually."""
+    m = _normalize_margin(margin)
+    return " " * m
+
+
+def input_gap_lines(gap: int | None = None) -> list[str]:
+    """Return N blank lines to print BEFORE the ``You:`` prompt.
+
+    ``gap`` is clamped to ``[0, 5]``.
+    """
+    n = _normalize_input_gap(gap)
+    return [""] * n
+
+
+def user_box(user_name: str = "You", user_icon: str = "👤", *, accent_color: str = "#5fafff") -> Text:
+    """Render the user-turn box header.
+
+    Default: ``[👤 You]`` in user-blue, matching the agent's box style.
+
+    The agent-side counterpart is :func:`role_header` with ``as_box=True``.
+    Together they form two visually distinct blocks (Camada 5 P3 fix).
+    """
+    return Text.assemble(
+        ("[ ", f"bold {accent_color}"),
+        (f"{user_icon} ", "bold"),
+        (f"{user_name} ", "bold"),
+        ("]", f"bold {accent_color}"),
+    )
+
+
+# ---------------------------------------------------------------------------
 # One-shot printer helpers
 # ---------------------------------------------------------------------------
 
@@ -128,6 +220,7 @@ def print_role_header(
     *,
     mode: str = DEFAULT_HEADER_MODE,
     accent_color: str = "#d77757",
+    as_box: bool = False,
 ) -> None:
     """Print the role header to ``console`` (no-op when mode == 'off')."""
     header = role_header(
@@ -135,6 +228,7 @@ def print_role_header(
         bot_icon=bot_icon,
         mode=mode,
         accent_color=accent_color,
+        as_box=as_box,
     )
     if not header.plain:
         return
@@ -171,10 +265,16 @@ def print_turn_gap(
 
 
 class TurnSpacingRenderer:
-    """Coordinates role-header + user-separator + turn-gap.
+    """Coordinates role-header + user-separator + turn-gap + margins.
 
     Reads the active ``agents.cli.*`` config (or accepts explicit kwargs).
     Use this from ``StreamRenderer`` so the REPL stays config-driven.
+
+    Camada 5 adds:
+      * ``margin_x`` — horizontal padding applied via console.padding
+      * ``gap_before_input`` — extra blank lines before the ``You:`` prompt
+      * ``turn_box`` — render the role header as ``[🤖 Femtobot]`` style
+        box, paired with :func:`user_box` for the user side
     """
 
     def __init__(
@@ -186,6 +286,13 @@ class TurnSpacingRenderer:
         accent_color: str = "#d77757",
         bot_name: str = "Femtobot",
         bot_icon: str = "🤖",
+        # Camada 5 fields
+        margin_x: int | None = None,
+        gap_before_input: int | None = None,
+        turn_box: bool | None = None,
+        user_name: str = "You",
+        user_icon: str = "👤",
+        user_accent_color: str = "#5fafff",
     ):
         self.gap_after_turn = _normalize_gap(gap_after_turn)
         self.role_header_mode = _normalize_header_mode(role_header_mode)
@@ -195,19 +302,24 @@ class TurnSpacingRenderer:
         self.accent_color = accent_color
         self.bot_name = bot_name
         self.bot_icon = bot_icon
+        # Camada 5
+        self.margin_x = _normalize_margin(margin_x)
+        self.gap_before_input = _normalize_input_gap(gap_before_input)
+        self.turn_box = True if turn_box is None else bool(turn_box)
+        self.user_name = user_name
+        self.user_icon = user_icon
+        self.user_accent_color = user_accent_color
 
     @classmethod
     def from_config(cls, config_obj: object, **overrides) -> "TurnSpacingRenderer":
         """Build a renderer from a Femtobot Config object.
 
-        Reads ``agents.defaults.cli.gap_after_turn``,
-        ``agents.defaults.cli.role_header``, and
-        ``agents.defaults.cli.user_separator``. Any failure falls back to
-        the module defaults (backward-compatible).
+        Reads the active ``agents.defaults.cli.*`` block. Any failure
+        falls back to the module defaults (backward-compatible).
         """
-        gap: int | None = None
-        mode: str | None = None
-        sep: bool | None = None
+        gap = mode = sep = None
+        margin = input_gap = None
+        turn_box: bool | None = None
         try:
             cli_cfg = getattr(
                 getattr(getattr(config_obj, "agents", None), "defaults", None),
@@ -218,6 +330,9 @@ class TurnSpacingRenderer:
                 gap = getattr(cli_cfg, "gap_after_turn", None)
                 mode = getattr(cli_cfg, "role_header", None)
                 sep = getattr(cli_cfg, "user_separator", None)
+                margin = getattr(cli_cfg, "margin_x", None)
+                input_gap = getattr(cli_cfg, "gap_before_input", None)
+                turn_box = getattr(cli_cfg, "turn_box", None)
         except Exception:
             pass
 
@@ -225,6 +340,9 @@ class TurnSpacingRenderer:
             "gap_after_turn": gap,
             "role_header_mode": mode,
             "user_separator": sep,
+            "margin_x": margin,
+            "gap_before_input": input_gap,
+            "turn_box": turn_box,
         }
         kwargs.update(overrides)
         return cls(**kwargs)
@@ -236,6 +354,7 @@ class TurnSpacingRenderer:
             bot_icon=self.bot_icon,
             mode=self.role_header_mode,
             accent_color=self.accent_color,
+            as_box=self.turn_box,
         )
 
     def print_user_separator(self, console: Console, width: int = 60) -> None:
@@ -243,3 +362,49 @@ class TurnSpacingRenderer:
 
     def print_turn_gap(self, console: Console) -> None:
         print_turn_gap(console, gap=self.gap_after_turn)
+
+    def print_user_box(self, console: Console) -> None:
+        """Print the user-turn box header (Camada 5).
+
+        Companion to :meth:`print_role_header` when ``turn_box=True``.
+        No-op when ``turn_box=False`` (legacy text "You:" prompt).
+        """
+        if not self.turn_box:
+            return
+        console.print(
+            user_box(
+                user_name=self.user_name,
+                user_icon=self.user_icon,
+                accent_color=self.user_accent_color,
+            )
+        )
+
+    def print_input_gap(self, console: Console) -> None:
+        """Print blank lines before the user input prompt (Camada 5)."""
+        for line in input_gap_lines(self.gap_before_input):
+            console.print(line)
+
+    def apply_margin(self, console: Console) -> Console:
+        """Return a child Console with reduced width (simulates horizontal margin).
+
+        Rich's ``Console`` doesn't accept ``pad_left``/``pad_right`` at
+        construction time, so we shrink the rendered ``width`` instead.
+        Callers should print through this child console to get indented
+        content; the ``margin_x`` value is honored on both sides.
+
+        Example::
+
+            child = self.apply_margin(parent_console)
+            child.print("[bold]Hello[/bold]")
+        """
+        left, right = margin_padding(self.margin_x)
+        new_width = max(MIN_OUTPUT_WIDTH, console.width - left - right)
+        try:
+            return Console(
+                file=console.file,
+                width=new_width,
+                color_system=console.color_system,
+                force_terminal=console.is_terminal,
+            )
+        except Exception:
+            return console
