@@ -228,47 +228,44 @@ O comando `/status` agora renderiza um `rich.Panel` com 4 seções:
 Linha curta exibida no fim de cada turno com modelo, tokens e elapsed.
 Flag: `agents.cli.sessionStatus.enabled`.
 
-### Role header e turn spacing
+### Role header e turn spacing (Camada 4)
 
-A Camada 4 introduziu melhorias para reduzir o ruído visual entre turnos:
+A Camada 4 introduziu melhorias para reduzir o ruído visual entre turnos.
+Todos os knobs ficam sob `agents.defaults.cli.*` e têm defaults seguros
+que podem ser sobrescritos em três caminhos (ver "Precedência" abaixo).
 
-- **`gap_after_turn`** (0–3, default 1): linhas em branco após cada turno.
-  Resolve a última mensagem colada na base do terminal.
-- **`role_header`** (`"always" | "minimal" | "off"`, default `"always"`):
-  barra colorida `🤖 Femtobot ▌` antes de cada resposta do agente.
-  Use `"minimal"` para apenas o emoji (legacy) ou `"off"` para silenciar.
-- **`user_separator`** (bool, default `true`): linha fina `· · ·` que
-  separa visualmente o input humano do reply do agente.
+| Knob | Tipo | Range | Default | O que faz |
+|---|---|---|---|---|
+| `gap_after_turn` | int | 0..3 | `1` | Linhas em branco impressas **após** cada turno do agente. Resolve a UX-1 ("última mensagem colada na base do terminal"). `0` = sem gap, `3` = respiração generosa. |
+| `role_header` | enum | `always` \| `minimal` \| `off` | `always` | Estilo do cabeçalho do agente impresso **antes** de cada turno. `always` (default) = barra colorida `🤖 Femtobot ▌`. `minimal` = só o emoji (legacy Camada 1). `off` = silencioso. |
+| `user_separator` | bool | — | `true` | Quando `true`, imprime uma linha fina dim `· · · ·` logo após o usuário submeter input, emoldurando o reply do agente. `false` = conversa sem bordas. |
 
-### Camada 5 — Margins, breathing room e box delimiters
+### Margins, breathing room e box delimiters (Camada 5)
 
 A Camada 5 adiciona três knobs para resolver os 3 problemas de layout
-restantes (texto colado na lateral, sem respiração no rodapé,
-agente e humano indistinguíveis):
+restantes:
 
-- **`margin_x`** (0–8, default `4`): caracteres de padding lateral
-  aplicados via `rich.Padding` ao redor do conteúdo do agente. Resolve
-  o texto colado nas extremidades do terminal.
-- **`gap_before_input`** (0–5, default `2`): linhas em branco extras
-  antes do `You:` prompt. Resolve a última mensagem colada na base.
-- **`turn_box`** (bool, default `true`): render role headers como boxes
-  `[🤖 Femtobot]` (agente, cor terracotta) e `[👤 You]` (humano, cor
-  azul). Cada turno vira um bloco visualmente delimitado. Use `false`
-  para voltar ao `You:` em ciano legacy.
+| Knob | Tipo | Range | Default | O que faz |
+|---|---|---|---|---|
+| `margin_x` | int | 0..8 | `4` | Caracteres de padding lateral (esquerda **e** direita) aplicados via `rich.Padding` ao redor de **todo** o output do agente. Resolve P1 ("texto colado nas extremidades"). `0` = sem padding (legacy). `8` ≈ metade de um terminal de 80 cols — máximo útil. |
+| `gap_before_input` | int | 0..5 | `2` | Linhas em branco extras **antes** do `You:` prompt. Resolve P2 ("última mensagem colada na base"). `0` = prompt logo abaixo do reply. `5` = muito espaço, recomendado só para terminais altos. |
+| `turn_box` | bool | — | `true` | Quando `true`, renderiza os cabeçalhos como boxes `[🤖 Femtobot]` (agente, cor terracotta) e `[👤 You]` (humano, cor azul). Cada turno vira um bloco visualmente delimitado — resolve P3 ("agente/humano indistinguíveis"). `false` = voltar à barra + `You:` legacy em ciano. |
 
-Exemplo de uso no `config.json`:
+Exemplo completo no `config.json`:
 
 ```json5
 {
   "agents": {
     "defaults": {
       "cli": {
-        "gap_after_turn": 1,
-        "role_header": "always",
+        // Camada 4 — turn spacing
+        "gap_after_turn": 1,         // 0..3
+        "role_header": "always",     // "always" | "minimal" | "off"
         "user_separator": true,
-        "margin_x": 4,
-        "gap_before_input": 2,
-        "turn_box": true
+        // Camada 5 — visual separation
+        "margin_x": 4,               // 0..8 (chars de padding lateral)
+        "gap_before_input": 2,       // 0..5 (linhas antes do "You:")
+        "turn_box": true             // [🤖 Femtobot] / [👤 You] boxes
       }
     }
   }
@@ -290,6 +287,11 @@ reiniciar o femtobot, através do slash command `/style`:
 /style reset                           # reverte para os defaults do schema
 ```
 
+Cada chamada valida os bounds (0..8 para `margin_x`, 0..3 para
+`gap_after_turn`, 0..5 para `gap_before_input`, `always`/`minimal`/`off`
+para `role_header`, bool para os demais). Valores fora da faixa são
+rejeitados com mensagem de erro clara e o valor anterior é preservado.
+
 Mudanças feitas com `/style` valem para a sessão atual (não persistem
 em `config.json` nem em `.env`). Para persistir, edite `config.json`
 ou exporte a env var correspondente.
@@ -301,10 +303,14 @@ delimitador `__`, então qualquer knob pode ser sobrescrito sem editar
 `config.json`:
 
 ```bash
+# Padding lateral generoso + mais respiro entre turnos
 export FEMTOBOT_AGENTS__DEFAULTS__CLI__MARGIN_X=6
 export FEMTOBOT_AGENTS__DEFAULTS__CLI__GAP_AFTER_TURN=2
-export FEMTOBOT_AGENTS__DEFAULTS__CLI__TURN_BOX=true
-femtobot
+export FEMTOBOT_AGENTS__DEFAULTS__CLI__GAP_BEFORE_INPUT=3
+
+# Desliga o visual "box" e usa apenas o cabeçalho emoji
+export FEMTOBOT_AGENTS__DEFAULTS__CLI__TURN_BOX=false
+export FEMTOBOT_AGENTS__DEFAULTS__CLI__ROLE_HEADER=minimal
 ```
 
 Ou, equivalentemente, em um `.env` co-located com a instance directory:
@@ -320,6 +326,15 @@ FEMTOBOT_AGENTS__DEFAULTS__CLI__TURN_BOX=true
 2. env var / `.env`
 3. `config.json`
 4. Defaults do schema (`CLI_DEFAULT_*` em `config/schema.py`)
+
+### Onde editar os defaults hard-coded
+
+Se você quer mudar o **default de fábrica** (afetando instalações novas),
+edite o bloco `CLI_DEFAULT_*` e `CLI_MIN/MAX_*` no topo de
+[`femtobot/config/schema.py`](file:///home/bill/Codes/CLI-router-project/femtobot/femtobot/config/schema.py#L18-L122).
+Esse é o único lugar que vale editar — `femtobot/cli/role_renderer.py`
+re-exporta essas constantes como alias e há testes que validam a
+identidade (`is`, não `==`) entre as duas.
 
 ### Migration: cli.* → agents.defaults.cli.*
 

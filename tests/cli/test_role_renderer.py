@@ -397,3 +397,37 @@ def test_schema_field_defaults_capture_schema_constants() -> None:
     assert fields["margin_x"].default == CLI_DEFAULT_MARGIN_X
     assert fields["gap_before_input"].default == CLI_DEFAULT_GAP_BEFORE_INPUT
     assert fields["turn_box"].default is CLI_DEFAULT_TURN_BOX
+
+
+def test_spacing_field_descriptions_are_present_and_informative() -> None:
+    """Every spacing knob on CliConfig must carry a ``Field(description=...)``.
+
+    The description is what shows up in JSON schemas and IDE tooltips, so
+    a missing or empty description here is a documentation regression
+    (users wouldn't know what the knob does or what range is valid).
+    """
+    from femtobot.config.schema import CliConfig
+
+    spacing_fields = (
+        "gap_after_turn",
+        "role_header",
+        "user_separator",
+        "margin_x",
+        "gap_before_input",
+        "turn_box",
+    )
+    # Each description should be at least 30 chars of useful prose. Long
+    # enough to actually describe the knob; short enough to not be a
+    # placeholder. We also check the integer-typed knobs explicitly carry
+    # "Range:" because that's the most useful piece of info for them.
+    int_fields = ("gap_after_turn", "margin_x", "gap_before_input")
+    for name in spacing_fields:
+        field = CliConfig.model_fields[name]
+        desc = (field.description or "").strip()
+        assert len(desc) >= 30, (
+            f"{name} description is too short: {desc!r}"
+        )
+        if name in int_fields:
+            assert "Range:" in desc, (
+                f"{name} is an int knob but its description lacks 'Range:': {desc!r}"
+            )

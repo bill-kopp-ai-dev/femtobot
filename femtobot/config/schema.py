@@ -29,21 +29,110 @@ if TYPE_CHECKING:
 #   2. env var — e.g. ``FEMTOBOT_AGENTS__DEFAULTS__CLI__MARGIN_X=6``
 #   3. .env file co-located with the active instance
 #   4. the schema defaults declared below
+#
+# Knob semantics (visual impact on the CLI REPL):
+#
+# :data:`CLI_DEFAULT_GAP_AFTER_TURN`
+#     Blank lines printed *after* each completed agent turn. Gives the
+#     terminal room to breathe between replies so the next ``You:``
+#     prompt doesn't sit glued to the bottom of the previous answer.
+#     Range: ``CLI_MIN_GAP``..``CLI_MAX_GAP`` (0..3).
+#
+# :data:`CLI_DEFAULT_ROLE_HEADER_MODE`
+#     Visibility / style of the bar shown *before* each agent turn.
+#     Three modes:
+#       ``"always"``  — bold colored bar ``🤖 Femtobot ▌`` (default).
+#       ``"minimal"`` — emoji only (legacy Camada 1 behavior).
+#       ``"off"``     — no header at all (silent).
+#
+# :data:`CLI_DEFAULT_USER_SEPARATOR`
+#     When ``True``, prints a thin dim divider line (``· · · ·``) right
+#     after the user submits input, so the agent's reply is framed.
+#     Set to ``False`` for a borderless conversation look.
+#
+# :data:`CLI_DEFAULT_MARGIN_X`
+#     Horizontal padding (in chars) applied to the left *and* right of
+#     every agent reply via ``rich.Padding``. Solves the "text glued to
+#     terminal edges" complaint from P1. Range:
+#     ``CLI_MIN_MARGIN``..``CLI_MAX_MARGIN`` (0..8).
+#
+# :data:`CLI_DEFAULT_GAP_BEFORE_INPUT`
+#     Extra blank lines printed *before* the ``You:`` prompt. Gives the
+#     user visual space to read the last reply before starting to type.
+#     Range: ``CLI_MIN_INPUT_GAP``..``CLI_MAX_INPUT_GAP`` (0..5).
+#
+# :data:`CLI_DEFAULT_TURN_BOX`
+#     When ``True``, the role headers are rendered as bracketed boxes
+#     (``[🤖 Femtobot]`` for the agent, ``[👤 You]`` for the user).
+#     Each turn becomes a visually distinct block, solving the
+#     "agent/human indistinguishable" complaint from P3. Set to
+#     ``False`` for the legacy bar + plain ``You:`` style.
 # ---------------------------------------------------------------------------
-CLI_DEFAULT_GAP_AFTER_TURN: int = 1
-CLI_DEFAULT_ROLE_HEADER_MODE: str = "always"
-CLI_DEFAULT_USER_SEPARATOR: bool = True
-CLI_DEFAULT_MARGIN_X: int = 4
-CLI_DEFAULT_GAP_BEFORE_INPUT: int = 2
-CLI_DEFAULT_TURN_BOX: bool = True
 
-# Bounds (clamped by ``_normalize_*`` helpers in role_renderer).
+# -- Per-turn gaps ---------------------------------------------------------
+# Each constant has a paired comment describing its semantics, visual
+# impact, and range. Module-level ``__doc__`` is not preserved for
+# primitive literals (Python rebinds ``int.__doc__`` / ``str.__doc__``
+# at import time), so the per-constant docs live as side-comments
+# instead. The matching fields on :class:`CliConfig` carry the same
+# descriptions via Pydantic ``Field(description=...)`` so they show up
+# in JSON schemas and IDE tooltips.
+
+CLI_DEFAULT_GAP_AFTER_TURN: int = 1
+# Blank lines after each agent turn. Solves "last message glued to
+# bottom" (UX-1). Range: 0..3 (CLI_MIN_GAP..CLI_MAX_GAP). Default: 1.
+
+CLI_DEFAULT_ROLE_HEADER_MODE: str = "always"
+# Agent role-header visibility. One of "always" | "minimal" | "off".
+#   "always"  — full colored bar "🤖 Femtobot ▌" (default).
+#   "minimal" — emoji only (legacy Camada 1 behavior).
+#   "off"     — no header at all.
+
+CLI_DEFAULT_USER_SEPARATOR: bool = True
+# Print a thin "· · ·" divider after each user turn. Default: True.
+# Disable for a borderless conversation.
+
+# -- Camada 5 visual separation -------------------------------------------
+CLI_DEFAULT_MARGIN_X: int = 4
+# Lateral padding (chars) on both sides of agent output. Solves "text
+# glued to terminal edges" (P1). Range: 0..8 (CLI_MIN_MARGIN..CLI_MAX_MARGIN).
+# Default: 4.
+
+CLI_DEFAULT_GAP_BEFORE_INPUT: int = 2
+# Extra blank lines before the "You:" prompt. Solves "last message
+# glued to bottom" (P2). Range: 0..5 (CLI_MIN_INPUT_GAP..CLI_MAX_INPUT_GAP).
+# Default: 2.
+
+CLI_DEFAULT_TURN_BOX: bool = True
+# Render role headers as bracketed boxes "[🤖 Femtobot]" / "[👤 You]"
+# so agent and human turns are visually distinct blocks. Solves
+# "agent/human indistinguishable" (P3). Default: True.
+
+# -- Bounds (clamped by ``_normalize_*`` helpers in role_renderer) ---------
 CLI_MIN_GAP: int = 0
+# Inclusive lower bound for ``gap_after_turn``. 0 = no gap.
+
 CLI_MAX_GAP: int = 3
+# Inclusive upper bound for ``gap_after_turn``. 3 is the largest number
+# of blank lines the renderer will print — beyond that the terminal
+# feels empty.
+
 CLI_MIN_MARGIN: int = 0
+# Inclusive lower bound for ``margin_x``. 0 = no lateral padding
+# (legacy behavior).
+
 CLI_MAX_MARGIN: int = 8
+# Inclusive upper bound for ``margin_x``. 8 chars (~half of a typical
+# 80-col terminal) is the widest that still leaves room for content.
+
 CLI_MIN_INPUT_GAP: int = 0
+# Inclusive lower bound for ``gap_before_input``. 0 = the prompt sits
+# directly under the last reply.
+
 CLI_MAX_INPUT_GAP: int = 5
+# Inclusive upper bound for ``gap_before_input``. 5 blank lines is
+# enough for tall terminals without making the user scroll back to
+# find context.
 
 
 class Base(BaseModel):
@@ -167,38 +256,161 @@ class CliConfig(Base):
 
     All fields default to safe backward-compatible values. See
     FEMTOBOT_CLI_REFACTOR_PLAN.md Camada 1.
+
+    The per-turn spacing knobs (``gap_after_turn``, ``role_header``,
+    ``user_separator``, ``margin_x``, ``gap_before_input``, ``turn_box``)
+    are documented in detail at the top of this module — look for the
+    ``CLI_DEFAULT_*`` and ``CLI_MIN/MAX_*`` block. Override the defaults
+    in three ways (highest priority first):
+      1. ``/style set margin_x=6 gap_after_turn=2`` (REPL, session-only)
+      2. env var — e.g. ``FEMTOBOT_AGENTS__DEFAULTS__CLI__MARGIN_X=6``
+      3. ``config.json`` -> ``agents.defaults.cli.*`` (persistent)
     """
 
+    # ------------------------------------------------------------------
+    # Input handling
+    # ------------------------------------------------------------------
     multiline: Literal["off", "backslash"] = "backslash"
+    """How multi-line input is collected.
+
+    ``"backslash"`` (default) — a trailing ``\\`` continues the input on
+    the next line; pressing Enter on its own submits. Backward-compat
+    with the pre-Camada-1 behavior.
+
+    ``"off"`` — every Enter submits a single-line input. Multi-line
+    content must be pasted as a single block."""
+
     completer_enabled: bool = True
+    """Enable the tab-completion popup for slash commands, file
+    mentions, and command palette suggestions. Disable for a quieter
+    REPL on slow terminals."""
+
     completer_max_results: int = 10
+    """Maximum number of completion candidates shown at once. Lower this
+    on narrow terminals if the popup overflows."""
+
     bash_mode_enabled: bool = True
+    """Allow the user to invoke a shell command directly by prefixing
+    the input with ``!`` (e.g. ``!git status``). Output is captured and
+    printed inline; it does NOT enter the agent loop on its own (so
+    inspection commands don't burn LLM tokens)."""
+
     bash_mode_timeout_s: float = 30.0
+    """Maximum runtime (seconds) for a ``!bash`` invocation before it's
+    killed. Helps prevent runaway commands from blocking the REPL."""
+
     file_mention_enabled: bool = True
+    """When the user types ``@``, suggest files from the active
+    workspace so they can be pasted into the prompt as mentions."""
+
+    # ------------------------------------------------------------------
+    # Visuals
+    # ------------------------------------------------------------------
     theme: str = "terracotta-claude"
+    """Name of the active CliTheme (accent colors for the role header,
+    status line, and the agent/user turn boxes). Built-in themes:
+    ``"terracotta-claude"``. Custom themes live in
+    ``femtobot.cli.theme``."""
+
     whimsy: CliWhimsyConfig = Field(default_factory=CliWhimsyConfig)
+    """Whimsical loading-state verbs and spinner style (e.g. "Pondering…",
+    "Brewing thoughts…"). See :class:`CliWhimsyConfig`."""
+
     session_status: CliSessionStatusConfig = Field(default_factory=CliSessionStatusConfig)
+    """Lightweight end-of-turn indicators (model, tokens, elapsed). See
+    :class:`CliSessionStatusConfig`."""
+
     btw: CliBtwConfig = Field(default_factory=CliBtwConfig)
+    """Configuration for the ``/btw`` side-question handler. See
+    :class:`CliBtwConfig`."""
+
+    # ------------------------------------------------------------------
     # Camada 4 — turn-spacing aesthetics (Issue UX-1 / UX-2)
-    # Defaults come from CLI_DEFAULT_* constants at the top of this module
-    # (single source of truth — also re-exported by role_renderer).
-    # gap_after_turn: blank lines printed after each completed turn (0-3).
-    # role_header: visibility of the per-turn role header.
-    #   'always' — bold colored bar before every agent turn (default)
-    #   'minimal' — emoji only (legacy behavior)
-    #   'off' — no header at all
-    # user_separator: divider line between human input and agent reply.
-    gap_after_turn: int = CLI_DEFAULT_GAP_AFTER_TURN
-    role_header: Literal["always", "minimal", "off"] = CLI_DEFAULT_ROLE_HEADER_MODE
-    user_separator: bool = CLI_DEFAULT_USER_SEPARATOR
-    # Camada 5 — visual separation (Issue UX-3 / UX-4 / UX-5)
-    # margin_x: padding lateral aplicado a todo o output (0-8 chars).
-    # gap_before_input: linhas em branco extras antes do "You:" prompt.
-    # turn_box: render role header como box [🤖 Femtobot] (agent)
-    #           e [👤 You] (user). Visual block delimiter.
-    margin_x: int = CLI_DEFAULT_MARGIN_X
-    gap_before_input: int = CLI_DEFAULT_GAP_BEFORE_INPUT
-    turn_box: bool = CLI_DEFAULT_TURN_BOX
+    # ------------------------------------------------------------------
+    # These three knobs are the Camada 4 fixes for "messages glued to
+    # the bottom of the terminal" (UX-1) and "agent vs human messages
+    # look the same" (UX-2). Defaults match the ``CLI_DEFAULT_*``
+    # constants at the top of this module.
+    gap_after_turn: int = Field(
+        default=CLI_DEFAULT_GAP_AFTER_TURN,
+        description=(
+            "Blank lines printed after each completed agent turn. "
+            "Solves UX-1 ('last message glued to bottom'). "
+            f"Range: {CLI_MIN_GAP}..{CLI_MAX_GAP}. "
+            f"Default: {CLI_DEFAULT_GAP_AFTER_TURN}."
+        ),
+    )
+    """Blank lines printed after each completed agent turn. Range:
+    ``CLI_MIN_GAP``..``CLI_MAX_GAP``. Default:
+    :data:`CLI_DEFAULT_GAP_AFTER_TURN`."""
+
+    role_header: Literal["always", "minimal", "off"] = Field(
+        default=CLI_DEFAULT_ROLE_HEADER_MODE,
+        description=(
+            "Agent role-header visibility. "
+            "'always' = bold colored bar (default), "
+            "'minimal' = emoji only, "
+            "'off' = no header."
+        ),
+    )
+    """Visibility / style of the agent-side role header. One of
+    ``"always"``, ``"minimal"`` or ``"off"``. Default:
+    :data:`CLI_DEFAULT_ROLE_HEADER_MODE` (``"always"``)."""
+
+    user_separator: bool = Field(
+        default=CLI_DEFAULT_USER_SEPARATOR,
+        description=(
+            "Print a thin '· · ·' divider after each user turn so the "
+            "agent's reply is framed. Disable for a borderless look."
+        ),
+    )
+    """When ``True``, prints a thin dim divider line (``· · · ·``)
+    right after the user submits input. Default:
+    :data:`CLI_DEFAULT_USER_SEPARATOR` (``True``)."""
+
+    # ------------------------------------------------------------------
+    # Camada 5 — visual separation (Issue P1 / P2 / P3)
+    # ------------------------------------------------------------------
+    # These three knobs are the Camada 5 fixes for "text glued to
+    # terminal edges" (P1), "last message glued to bottom" (P2), and
+    # "agent/human messages indistinguishable" (P3).
+    margin_x: int = Field(
+        default=CLI_DEFAULT_MARGIN_X,
+        description=(
+            "Lateral padding (chars) on both sides of agent output via "
+            "rich.Padding. Solves P1 ('text glued to terminal edges'). "
+            f"Range: {CLI_MIN_MARGIN}..{CLI_MAX_MARGIN}. "
+            f"Default: {CLI_DEFAULT_MARGIN_X}."
+        ),
+    )
+    """Lateral padding (chars) on both sides of agent output. Range:
+    ``CLI_MIN_MARGIN``..``CLI_MAX_MARGIN``. Default:
+    :data:`CLI_DEFAULT_MARGIN_X`."""
+
+    gap_before_input: int = Field(
+        default=CLI_DEFAULT_GAP_BEFORE_INPUT,
+        description=(
+            "Extra blank lines printed before the 'You:' prompt. "
+            "Solves P2 ('last message glued to bottom'). "
+            f"Range: {CLI_MIN_INPUT_GAP}..{CLI_MAX_INPUT_GAP}. "
+            f"Default: {CLI_DEFAULT_GAP_BEFORE_INPUT}."
+        ),
+    )
+    """Extra blank lines printed before the ``You:`` prompt. Range:
+    ``CLI_MIN_INPUT_GAP``..``CLI_MAX_INPUT_GAP``. Default:
+    :data:`CLI_DEFAULT_GAP_BEFORE_INPUT`."""
+
+    turn_box: bool = Field(
+        default=CLI_DEFAULT_TURN_BOX,
+        description=(
+            "Render role headers as bracketed boxes '[🤖 Femtobot]' / "
+            "'[👤 You]'. Solves P3 ('agent/human indistinguishable'). "
+            "Set to false to revert to the legacy bar + plain 'You:'."
+        ),
+    )
+    """When ``True``, render role headers as bracketed boxes
+    (``[🤖 Femtobot]`` for the agent, ``[👤 You]`` for the user).
+    Default: :data:`CLI_DEFAULT_TURN_BOX` (``True``)."""
 
 
 class AgentDefaults(Base):
