@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from femtobot.cli.plugins.loader import PluginLoader, PluginSpec
+from .loader import PluginLoader, PluginSpec
 
 
 class PluginRegistry:
