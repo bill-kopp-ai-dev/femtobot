@@ -246,7 +246,7 @@ A Camada 5 adiciona três knobs para resolver os 3 problemas de layout
 restantes (texto colado na lateral, sem respiração no rodapé,
 agente e humano indistinguíveis):
 
-- **`margin_x`** (0–8, default `2`): caracteres de padding lateral
+- **`margin_x`** (0–8, default `4`): caracteres de padding lateral
   aplicados via `rich.Padding` ao redor do conteúdo do agente. Resolve
   o texto colado nas extremidades do terminal.
 - **`gap_before_input`** (0–5, default `2`): linhas em branco extras
@@ -266,7 +266,7 @@ Exemplo de uso no `config.json`:
         "gap_after_turn": 1,
         "role_header": "always",
         "user_separator": true,
-        "margin_x": 2,
+        "margin_x": 4,
         "gap_before_input": 2,
         "turn_box": true
       }
@@ -277,6 +277,49 @@ Exemplo de uso no `config.json`:
 
 Defaults são backward-compatíveis: usuários existentes que não
 configurarem esses campos veem o novo visual imediatamente.
+
+### Tweak rápido via `/style` (REPL)
+
+Os seis knobs acima podem ser ajustados **em tempo de execução** sem
+reiniciar o femtobot, através do slash command `/style`:
+
+```text
+/style                                 # lista os valores atuais
+/style set margin_x=6                  # aplica um knob
+/style set margin_x=6 gap_after_turn=2 # aplica vários de uma vez
+/style reset                           # reverte para os defaults do schema
+```
+
+Mudanças feitas com `/style` valem para a sessão atual (não persistem
+em `config.json` nem em `.env`). Para persistir, edite `config.json`
+ou exporte a env var correspondente.
+
+### Override via env var / `.env`
+
+O schema Pydantic herda de `BaseSettings` com prefixo `FEMTOBOT_` e
+delimitador `__`, então qualquer knob pode ser sobrescrito sem editar
+`config.json`:
+
+```bash
+export FEMTOBOT_AGENTS__DEFAULTS__CLI__MARGIN_X=6
+export FEMTOBOT_AGENTS__DEFAULTS__CLI__GAP_AFTER_TURN=2
+export FEMTOBOT_AGENTS__DEFAULTS__CLI__TURN_BOX=true
+femtobot
+```
+
+Ou, equivalentemente, em um `.env` co-located com a instance directory:
+
+```dotenv
+FEMTOBOT_AGENTS__DEFAULTS__CLI__MARGIN_X=6
+FEMTOBOT_AGENTS__DEFAULTS__CLI__GAP_AFTER_TURN=2
+FEMTOBOT_AGENTS__DEFAULTS__CLI__TURN_BOX=true
+```
+
+**Precedência** (maior → menor):
+1. `/style set …` (mutação em runtime, sessão-local)
+2. env var / `.env`
+3. `config.json`
+4. Defaults do schema (`CLI_DEFAULT_*` em `config/schema.py`)
 
 ### Migration: cli.* → agents.defaults.cli.*
 

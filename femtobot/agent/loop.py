@@ -378,6 +378,11 @@ class AgentLoop:
             preset_snapshot_loader=preset_snapshot_loader,
             **extra,
         )
+        # Keep a back-reference to the full Config so slash commands (e.g.
+        # ``/style``) can mutate live settings at runtime. See
+        # ``femtobot.command.builtin.cmd_style``.
+        instance._config = config
+        return instance
 
     def _apply_provider_snapshot(
         self,

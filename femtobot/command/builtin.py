@@ -125,6 +125,13 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "message-circle",
     ),
     BuiltinCommandSpec(
+        "/style",
+        "Tweak CLI spacing",
+        "Show or set per-turn CLI spacing knobs (margin_x, gap_after_turn, etc.).",
+        "sliders-horizontal",
+        "[set key=value ... | reset]",
+    ),
+    BuiltinCommandSpec(
         "/tasks",
         "Show background tasks",
         "List and manage background tasks started with Ctrl+B.",
@@ -1043,6 +1050,227 @@ async def cmd_mcp(ctx: CommandContext) -> OutboundMessage | None:
     )
 
 
+# ---------------------------------------------------------------------------
+# /style — CLI spacing tweaks (Camada 5 P1-P3)
+# ---------------------------------------------------------------------------
+# Lets the user inspect and override the per-turn spacing knobs at runtime
+# without restarting femtobot or editing the config file. The next turn
+# rebuilds its ``TurnSpacingRenderer`` from the live config, so changes
+# take effect on the *next* agent reply (not retroactively).
+#
+# Examples
+# --------
+#   /style                       -> show all current values
+#   /style set margin_x=6        -> set one knob
+#   /style set margin_x=6 gap_after_turn=2
+#   /style reset                 -> revert to schema defaults
+# ---------------------------------------------------------------------------
+
+
+# Map of slash-command-facing keys -> (config attribute, parser).
+# Bounds are enforced here too (so a bad value never reaches the schema).
+_STYLE_KEYS: dict[str, tuple[str, str]] = {
+    "margin_x":         ("margin_x", "int"),
+    "gap_after_turn":   ("gap_after_turn", "int"),
+    "gap_before_input": ("gap_before_input", "int"),
+    "role_header":      ("role_header", "literal"),
+    "user_separator":   ("user_separator", "bool"),
+    "turn_box":         ("turn_box", "bool"),
+}
+
+_STYLE_LITERALS = ("always", "minimal", "off")
+
+
+def _style_format_current(cli_cfg) -> list[str]:
+    """Return a markdown-formatted listing of the current spacing values."""
+    lines: list[str] = ["**CLI spacing (live)**"]
+    for key, (attr, _kind) in _STYLE_KEYS.items():
+        value = getattr(cli_cfg, attr, None)
+        lines.append(f"  - `{key}` = `{value}`")
+    lines.append("")
+    lines.append(
+        "Override with `/style set key=value` (e.g. "
+        "`/style set margin_x=6 gap_after_turn=2`)."
+    )
+    lines.append("Revert with `/style reset`.")
+    return lines
+
+
+def _style_parse_value(key: str, raw: str):
+    """Validate and coerce a user-supplied value for the given key.
+
+    Returns the coerced value, or raises ``ValueError`` on bad input.
+    """
+    if key not in _STYLE_KEYS:
+        raise ValueError(
+            f"Unknown key: {key!r}. Valid keys: {', '.join(_STYLE_KEYS)}"
+        )
+    attr, kind = _STYLE_KEYS[key]
+    if kind == "int":
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"{key} must be an integer (got {raw!r})") from None
+        # Clamp using the schema bounds.
+        from femtobot.config.schema import (
+            CLI_MAX_GAP,
+            CLI_MAX_INPUT_GAP,
+            CLI_MAX_MARGIN,
+            CLI_MIN_GAP,
+            CLI_MIN_INPUT_GAP,
+            CLI_MIN_MARGIN,
+        )
+        bounds = {
+            "margin_x": (CLI_MIN_MARGIN, CLI_MAX_MARGIN),
+            "gap_after_turn": (CLI_MIN_GAP, CLI_MAX_GAP),
+            "gap_before_input": (CLI_MIN_INPUT_GAP, CLI_MAX_INPUT_GAP),
+        }
+        lo, hi = bounds[attr]
+        if value < lo or value > hi:
+            raise ValueError(
+                f"{key}={value} is out of bounds. Allowed range: [{lo}, {hi}]"
+            )
+        return value
+    if kind == "literal":
+        value = raw.strip().lower()
+        if value not in _STYLE_LITERALS:
+            raise ValueError(
+                f"{key} must be one of {', '.join(_STYLE_LITERALS)} (got {raw!r})"
+            )
+        return value
+    if kind == "bool":
+        normalized = raw.strip().lower()
+        if normalized in ("1", "true", "yes", "on"):
+            return True
+        if normalized in ("0", "false", "no", "off"):
+            return False
+        raise ValueError(f"{key} must be a boolean (true/false, got {raw!r})")
+    raise ValueError(f"Unhandled kind for {key!r}: {kind}")
+
+
+async def cmd_style(ctx: CommandContext) -> OutboundMessage:
+    """Show or set CLI spacing knobs (Camada 5).
+
+    Usage:
+        /style                  — list all current values
+        /style set key=value    — set one or more knobs (space-separated)
+        /style reset            — restore schema defaults
+    """
+    loop = ctx.loop
+    args = ctx.args.strip()
+    metadata = {**dict(ctx.msg.metadata or {}), "render_as": "markdown"}
+
+    config = getattr(loop, "_config", None)
+    if config is None or not hasattr(config, "agents"):
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=(
+                "/style is unavailable: the active loop is not carrying a "
+                "Config reference (legacy AgentLoop?)."
+            ),
+            metadata=metadata,
+        )
+
+    cli_cfg = config.agents.defaults.cli
+    from femtobot.config.schema import (
+        CLI_DEFAULT_GAP_AFTER_TURN,
+        CLI_DEFAULT_GAP_BEFORE_INPUT,
+        CLI_DEFAULT_MARGIN_X,
+        CLI_DEFAULT_ROLE_HEADER_MODE,
+        CLI_DEFAULT_TURN_BOX,
+        CLI_DEFAULT_USER_SEPARATOR,
+    )
+
+    def _reset() -> None:
+        cli_cfg.gap_after_turn = CLI_DEFAULT_GAP_AFTER_TURN
+        cli_cfg.role_header = CLI_DEFAULT_ROLE_HEADER_MODE
+        cli_cfg.user_separator = CLI_DEFAULT_USER_SEPARATOR
+        cli_cfg.margin_x = CLI_DEFAULT_MARGIN_X
+        cli_cfg.gap_before_input = CLI_DEFAULT_GAP_BEFORE_INPUT
+        cli_cfg.turn_box = CLI_DEFAULT_TURN_BOX
+
+    # No-arg form: just show the current values.
+    if not args:
+        lines = _style_format_current(cli_cfg)
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content="\n".join(lines),
+            metadata=metadata,
+        )
+
+    parts = args.split()
+    sub = parts[0].lower()
+
+    if sub == "reset":
+        _reset()
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=(
+                "CLI spacing reset to schema defaults. Next turn will pick "
+                "them up."
+            ),
+            metadata=metadata,
+        )
+
+    if sub != "set":
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=(
+                f"Unknown subcommand: {sub!r}. Use `/style`, "
+                "`/style set key=value ...`, or `/style reset`."
+            ),
+            metadata=metadata,
+        )
+
+    if len(parts) < 2:
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content="Usage: `/style set key=value [key=value ...]`",
+            metadata=metadata,
+        )
+
+    # Parse and apply.
+    applied: list[str] = []
+    failed: list[str] = []
+    for token in parts[1:]:
+        if "=" not in token:
+            failed.append(f"  - {token!r}: missing '=' (expected key=value)")
+            continue
+        key, _, raw_val = token.partition("=")
+        key = key.strip()
+        raw_val = raw_val.strip()
+        try:
+            value = _style_parse_value(key, raw_val)
+        except ValueError as exc:
+            failed.append(f"  - {token!r}: {exc}")
+            continue
+        setattr(cli_cfg, _STYLE_KEYS[key][0], value)
+        applied.append(f"  - `{key}` = `{value}`")
+
+    if failed and not applied:
+        header = "No changes applied:"
+    elif failed and applied:
+        header = "Some changes applied; failures:"
+    else:
+        header = "Changes queued (effective on next turn):"
+
+    lines = [header, *applied, *failed]
+    # Always re-print the active values so the user sees the post-state.
+    lines.append("")
+    lines.extend(_style_format_current(cli_cfg))
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content="\n".join(lines),
+        metadata=metadata,
+    )
+
+
 def register_builtin_commands(router: CommandRouter) -> None:
     """Register the default set of slash commands."""
     router.priority("/stop", cmd_stop)
@@ -1065,6 +1293,8 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.prefix("/effort ", cmd_effort)
     router.exact("/btw", cmd_btw)
     router.prefix("/btw ", cmd_btw)
+    router.exact("/style", cmd_style)
+    router.prefix("/style ", cmd_style)
     router.exact("/tasks", cmd_tasks)
     router.exact("/help", cmd_help)
     router.exact("/mcp", cmd_mcp)

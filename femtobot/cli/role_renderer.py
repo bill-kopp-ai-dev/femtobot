@@ -36,12 +36,29 @@ from rich.text import Text
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+# These names are *aliases* of the canonical defaults in
+# ``femtobot.config.schema`` (the single source of truth for the CLI
+# spacing knobs). Editing the schema constants changes the runtime
+# defaults everywhere — no more dead constants.
+#
+# See the ``CLI_DEFAULT_*`` block at the top of ``config/schema.py`` for
+# override order (env vars, .env, /style slash command, schema defaults).
+from femtobot.config.schema import (
+    CLI_DEFAULT_GAP_AFTER_TURN as DEFAULT_GAP,
+    CLI_DEFAULT_GAP_BEFORE_INPUT as DEFAULT_INPUT_GAP,
+    CLI_DEFAULT_MARGIN_X as DEFAULT_MARGIN,
+    CLI_DEFAULT_ROLE_HEADER_MODE as DEFAULT_HEADER_MODE,
+    CLI_DEFAULT_TURN_BOX as DEFAULT_TURN_BOX,
+    CLI_DEFAULT_USER_SEPARATOR as DEFAULT_USER_SEPARATOR,
+    CLI_MAX_GAP as MAX_GAP,
+    CLI_MAX_INPUT_GAP as MAX_INPUT_GAP,
+    CLI_MAX_MARGIN as MAX_MARGIN,
+    CLI_MIN_GAP as MIN_GAP,
+    CLI_MIN_INPUT_GAP as MIN_INPUT_GAP,
+    CLI_MIN_MARGIN as MIN_MARGIN,
+)
 
-DEFAULT_GAP = 1
-MIN_GAP = 0
-MAX_GAP = 3
-
-DEFAULT_HEADER_MODE = "always"
+DEFAULT_GAP_AFTER_TURN = DEFAULT_GAP
 VALID_HEADER_MODES = ("always", "minimal", "off")
 
 
@@ -137,14 +154,10 @@ def turn_gap(gap: int | None = None) -> list[str]:
 # ---------------------------------------------------------------------------
 # Camada 5 — visual separation helpers
 # ---------------------------------------------------------------------------
-
-MIN_MARGIN = 0
-MAX_MARGIN = 8
-DEFAULT_MARGIN = 4
-
-MIN_INPUT_GAP = 0
-MAX_INPUT_GAP = 5
-DEFAULT_INPUT_GAP = 2
+# Bounds (MIN_*/MAX_*) and defaults (DEFAULT_*) are re-exported from
+# ``femtobot.config.schema`` at the top of this module — single source of
+# truth. The legacy per-module constants have been removed; use the
+# canonical names from the schema (or from the re-exports above) instead.
 
 # Minimum output width when applying margins. Below this the console
 # becomes unreadable, so we keep the parent width unchanged.

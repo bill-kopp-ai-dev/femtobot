@@ -12,8 +12,17 @@ from rich.console import Console
 
 from femtobot.cli.role_renderer import (
     DEFAULT_GAP,
+    DEFAULT_HEADER_MODE,
+    DEFAULT_INPUT_GAP,
+    DEFAULT_MARGIN,
+    DEFAULT_TURN_BOX,
+    DEFAULT_USER_SEPARATOR,
     MAX_GAP,
+    MAX_INPUT_GAP,
+    MAX_MARGIN,
     MIN_GAP,
+    MIN_INPUT_GAP,
+    MIN_MARGIN,
     TurnSpacingRenderer,
     role_header,
     turn_gap,
@@ -293,3 +302,98 @@ def test_spacing_renderer_overrides_take_precedence() -> None:
     spacing = TurnSpacingRenderer.from_config(cfg, gap_after_turn=0)
     assert spacing.gap_after_turn == 0  # override
     assert spacing.role_header_mode == "off"  # from config
+
+
+# ---------------------------------------------------------------------------
+# Schema ↔ role_renderer linkage
+# ---------------------------------------------------------------------------
+# These tests guard against the previous failure mode where the
+# module-level constants in role_renderer were dead code (never read by
+# the runtime). The schema is now the single source of truth and the
+# role_renderer constants are aliases — these tests pin that contract.
+# ---------------------------------------------------------------------------
+
+
+def test_module_constants_are_aliases_of_schema_defaults() -> None:
+    """role_renderer constants must be the *same object* as the schema defaults.
+
+    Identity (==, not ==) so a drift between the two surfaces immediately
+    during a refactor.
+    """
+    from femtobot.config.schema import (
+        CLI_DEFAULT_GAP_AFTER_TURN,
+        CLI_DEFAULT_GAP_BEFORE_INPUT,
+        CLI_DEFAULT_MARGIN_X,
+        CLI_DEFAULT_ROLE_HEADER_MODE,
+        CLI_DEFAULT_TURN_BOX,
+        CLI_DEFAULT_USER_SEPARATOR,
+        CLI_MAX_GAP,
+        CLI_MAX_INPUT_GAP,
+        CLI_MAX_MARGIN,
+        CLI_MIN_GAP,
+        CLI_MIN_INPUT_GAP,
+        CLI_MIN_MARGIN,
+    )
+
+    assert DEFAULT_GAP is CLI_DEFAULT_GAP_AFTER_TURN
+    assert DEFAULT_HEADER_MODE is CLI_DEFAULT_ROLE_HEADER_MODE
+    assert DEFAULT_USER_SEPARATOR is CLI_DEFAULT_USER_SEPARATOR
+    assert DEFAULT_MARGIN is CLI_DEFAULT_MARGIN_X
+    assert DEFAULT_INPUT_GAP is CLI_DEFAULT_GAP_BEFORE_INPUT
+    assert DEFAULT_TURN_BOX is CLI_DEFAULT_TURN_BOX
+    assert MIN_GAP is CLI_MIN_GAP
+    assert MAX_GAP is CLI_MAX_GAP
+    assert MIN_MARGIN is CLI_MIN_MARGIN
+    assert MAX_MARGIN is CLI_MAX_MARGIN
+    assert MIN_INPUT_GAP is CLI_MIN_INPUT_GAP
+    assert MAX_INPUT_GAP is CLI_MAX_INPUT_GAP
+
+
+def test_cli_config_defaults_match_schema_constants() -> None:
+    """CliConfig() must inherit the schema default values verbatim."""
+    from femtobot.config.schema import (
+        CLI_DEFAULT_GAP_AFTER_TURN,
+        CLI_DEFAULT_GAP_BEFORE_INPUT,
+        CLI_DEFAULT_MARGIN_X,
+        CLI_DEFAULT_ROLE_HEADER_MODE,
+        CLI_DEFAULT_TURN_BOX,
+        CLI_DEFAULT_USER_SEPARATOR,
+        CliConfig,
+    )
+
+    cli = CliConfig()
+    assert cli.gap_after_turn == CLI_DEFAULT_GAP_AFTER_TURN
+    assert cli.role_header == CLI_DEFAULT_ROLE_HEADER_MODE
+    assert cli.user_separator is CLI_DEFAULT_USER_SEPARATOR
+    assert cli.margin_x == CLI_DEFAULT_MARGIN_X
+    assert cli.gap_before_input == CLI_DEFAULT_GAP_BEFORE_INPUT
+    assert cli.turn_box is CLI_DEFAULT_TURN_BOX
+
+
+def test_schema_field_defaults_capture_schema_constants() -> None:
+    """CliConfig field defaults are the schema constants (captured at class
+    definition time, by design).
+
+    The actual runtime override paths (env vars, /style slash command,
+    config.json) all work at Pydantic instantiation or via live mutation
+    on the config object — those are tested elsewhere. This test pins
+    the *field default* contract so a future refactor that breaks it
+    (e.g. reintroducing hard-coded literals in CliConfig) is caught.
+    """
+    from femtobot.config.schema import (
+        CLI_DEFAULT_GAP_AFTER_TURN,
+        CLI_DEFAULT_GAP_BEFORE_INPUT,
+        CLI_DEFAULT_MARGIN_X,
+        CLI_DEFAULT_ROLE_HEADER_MODE,
+        CLI_DEFAULT_TURN_BOX,
+        CLI_DEFAULT_USER_SEPARATOR,
+        CliConfig,
+    )
+
+    fields = CliConfig.model_fields
+    assert fields["gap_after_turn"].default == CLI_DEFAULT_GAP_AFTER_TURN
+    assert fields["role_header"].default == CLI_DEFAULT_ROLE_HEADER_MODE
+    assert fields["user_separator"].default is CLI_DEFAULT_USER_SEPARATOR
+    assert fields["margin_x"].default == CLI_DEFAULT_MARGIN_X
+    assert fields["gap_before_input"].default == CLI_DEFAULT_GAP_BEFORE_INPUT
+    assert fields["turn_box"].default is CLI_DEFAULT_TURN_BOX

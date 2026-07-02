@@ -15,6 +15,37 @@ if TYPE_CHECKING:
     from femtobot.agent.tools.web import WebToolsConfig
 
 
+# ---------------------------------------------------------------------------
+# CLI spacing defaults — single source of truth (Camada 4 / Camada 5)
+# ---------------------------------------------------------------------------
+# These constants are the canonical defaults for the per-turn CLI spacing
+# knobs (``margin_x``, ``gap_after_turn``, ``role_header``, etc.). They are
+# re-exported by ``femtobot.cli.role_renderer`` as aliases, so editing this
+# block is the *only* place needed to change the runtime defaults — no more
+# "I changed a constant and the CLI didn't budge" surprises.
+#
+# Override at runtime (highest priority first):
+#   1. ``/style set margin_x=6 gap_after_turn=2`` (REPL, session-only)
+#   2. env var — e.g. ``FEMTOBOT_AGENTS__DEFAULTS__CLI__MARGIN_X=6``
+#   3. .env file co-located with the active instance
+#   4. the schema defaults declared below
+# ---------------------------------------------------------------------------
+CLI_DEFAULT_GAP_AFTER_TURN: int = 1
+CLI_DEFAULT_ROLE_HEADER_MODE: str = "always"
+CLI_DEFAULT_USER_SEPARATOR: bool = True
+CLI_DEFAULT_MARGIN_X: int = 4
+CLI_DEFAULT_GAP_BEFORE_INPUT: int = 2
+CLI_DEFAULT_TURN_BOX: bool = True
+
+# Bounds (clamped by ``_normalize_*`` helpers in role_renderer).
+CLI_MIN_GAP: int = 0
+CLI_MAX_GAP: int = 3
+CLI_MIN_MARGIN: int = 0
+CLI_MAX_MARGIN: int = 8
+CLI_MIN_INPUT_GAP: int = 0
+CLI_MAX_INPUT_GAP: int = 5
+
+
 class Base(BaseModel):
     """Base model that accepts both camelCase and snake_case keys."""
 
@@ -149,23 +180,25 @@ class CliConfig(Base):
     session_status: CliSessionStatusConfig = Field(default_factory=CliSessionStatusConfig)
     btw: CliBtwConfig = Field(default_factory=CliBtwConfig)
     # Camada 4 — turn-spacing aesthetics (Issue UX-1 / UX-2)
-    # gap_after_turn: blank lines printed after each completed turn (1-3).
+    # Defaults come from CLI_DEFAULT_* constants at the top of this module
+    # (single source of truth — also re-exported by role_renderer).
+    # gap_after_turn: blank lines printed after each completed turn (0-3).
     # role_header: visibility of the per-turn role header.
     #   'always' — bold colored bar before every agent turn (default)
     #   'minimal' — emoji only (legacy behavior)
     #   'off' — no header at all
     # user_separator: divider line between human input and agent reply.
-    gap_after_turn: int = 1
-    role_header: Literal["always", "minimal", "off"] = "always"
-    user_separator: bool = True
+    gap_after_turn: int = CLI_DEFAULT_GAP_AFTER_TURN
+    role_header: Literal["always", "minimal", "off"] = CLI_DEFAULT_ROLE_HEADER_MODE
+    user_separator: bool = CLI_DEFAULT_USER_SEPARATOR
     # Camada 5 — visual separation (Issue UX-3 / UX-4 / UX-5)
     # margin_x: padding lateral aplicado a todo o output (0-8 chars).
     # gap_before_input: linhas em branco extras antes do "You:" prompt.
     # turn_box: render role header como box [🤖 Femtobot] (agent)
     #           e [👤 You] (user). Visual block delimiter.
-    margin_x: int = 4
-    gap_before_input: int = 2
-    turn_box: bool = True
+    margin_x: int = CLI_DEFAULT_MARGIN_X
+    gap_before_input: int = CLI_DEFAULT_GAP_BEFORE_INPUT
+    turn_box: bool = CLI_DEFAULT_TURN_BOX
 
 
 class AgentDefaults(Base):
