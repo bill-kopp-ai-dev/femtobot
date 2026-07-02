@@ -134,6 +134,10 @@ def _heartbeat_has_active_tasks(content: str) -> bool:
 
 _PROMPT_SESSION: PromptSession | None = None
 _SAVED_TERM_ATTRS = None  # original termios settings, restored on exit
+# Camada 5 — track the most recently created StreamRenderer so we can
+# print the user-box + input-gap before the next prompt. Set by the
+# REPL when a new turn starts; cleared on exit.
+_ACTIVE_RENDERER: StreamRenderer | None = None
 
 
 def _flush_pending_tty_input() -> None:
@@ -225,6 +229,41 @@ def _init_prompt_session() -> None:
         session_kwargs["multiline"] = Condition(_multiline_filter)
 
     _PROMPT_SESSION = PromptSession(**session_kwargs)
+
+
+def _make_spacing_renderer(config_obj: object) -> object | None:
+    """Build a TurnSpacingRenderer from the active Femtobot config.
+
+    Camada 5 — wires the role-header / user-box / margin / input-gap
+    helpers into the StreamRenderer. Returns ``None`` if the
+    ``TurnSpacingRenderer`` cannot be built (defensive: legacy fallback).
+    """
+    try:
+        from femtobot.cli.role_renderer import TurnSpacingRenderer
+    except Exception:
+        return None
+    try:
+        accent = "#d77757"  # default accent (terracotta-claude)
+        try:
+            theme_name = getattr(
+                getattr(
+                    getattr(config_obj, "agents", None), "defaults", None
+                ),
+                "cli",
+                None,
+            ).theme
+        except Exception:
+            theme_name = "terracotta-claude"
+        try:
+            from femtobot.cli.theme import get_theme
+
+            theme = get_theme(theme_name)
+            accent = theme.primary
+        except Exception:
+            pass
+        return TurnSpacingRenderer.from_config(config_obj, accent_color=accent)
+    except Exception:
+        return None
 
 
 def _build_prompt_session_features() -> tuple[str, object | None]:
@@ -513,9 +552,21 @@ async def _read_interactive_input_async() -> str:
     - Multiline paste (bracketed paste mode)
     - History navigation (up/down arrows)
     - Clean display (no ghost characters or artifacts)
+
+    Camada 5 — prints the input gap + user-box header before each
+    prompt, so there's clear separation from the previous turn.
     """
     if _PROMPT_SESSION is None:
         raise RuntimeError("Call _init_prompt_session() first")
+    # Camada 5 — visual setup before user input. Done OUTSIDE patch_stdout
+    # so it survives across the prompt_toolkit context.
+    renderer = _ACTIVE_RENDERER
+    if renderer is not None:
+        try:
+            renderer.print_input_gap()
+            renderer.print_user_box()
+        except Exception:
+            pass
     try:
         with patch_stdout():
             return await _PROMPT_SESSION.prompt_async(
@@ -1102,7 +1153,10 @@ def agent(
                 render_markdown=markdown,
                 bot_name=config.agents.defaults.bot_name,
                 bot_icon=config.agents.defaults.bot_icon,
+                spacing_renderer=_make_spacing_renderer(config),
             )
+            global _ACTIVE_RENDERER
+            _ACTIVE_RENDERER = renderer
             response = await agent_loop.process_direct(
                 message,
                 session_id,
@@ -1248,7 +1302,10 @@ def agent(
                             render_markdown=markdown,
                             bot_name=config.agents.defaults.bot_name,
                             bot_icon=config.agents.defaults.bot_icon,
+                            spacing_renderer=_make_spacing_renderer(config),
                         )
+                        global _ACTIVE_RENDERER
+                        _ACTIVE_RENDERER = renderer
 
                         await bus.publish_inbound(
                             InboundMessage(
