@@ -1,7 +1,7 @@
 """Transcript buffer for the CLI REPL — supports collapsed/verbose tool call rendering.
 
 Inspired by Claude Code's transcript viewer (Ctrl+O toggle):
-``FEMTOBOT_CLI_REFACTOR_PLAN.md`` Camada 2, T2.3.
+``FEMTOBOT_CLI_REFACTOR_PLAN.md`` Camada 2, T2.3 and Camada 3, T3.2.
 
 Concept
 ~~~~~~~
@@ -12,6 +12,16 @@ REPL switches between collapsed (default) and verbose (full output) mode.
 
 :class:`TranscriptBuffer` holds the last N completed turns in a deque.
 It is updated by the REPL after each turn ends.
+
+Camada 3 (T3.2) — virtual scrolling
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Once a turn is committed, it is "frozen" (rendered once via
+``console.print`` with newline freeze) and appended to ``self.committed``
+as plain text.  Only the *current* turn lives in the live area
+(``self._current``).  ``get_visible_window`` returns only the slice of
+lines that fits in the viewport, which is what the renderer iterates over
+on each frame — never the whole transcript.  This keeps render cost
+O(viewport) instead of O(transcript).
 """
 
 from __future__ import annotations
@@ -19,12 +29,18 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
-    from rich.console import Console
+    from rich.console import Console, RenderableType
     from rich.table import Table
     from rich.text import Text
+
+# Lines stored in the frozen area are plain strings (already rendered).
+# Lines stored in the live area may still be Rich renderables that need
+# ``.plain`` extraction for the viewport query.
+FrozenLine = str
+LiveLine = Union[str, "RenderableType"]
 
 
 # ---------------------------------------------------------------------------
