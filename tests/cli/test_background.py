@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -61,11 +63,11 @@ async def test_status_ordering() -> None:
 async def test_prune_removes_old_done() -> None:
     pool = BackgroundPool()
     # Manually insert a done task with old timestamp (bypass submit).
-    import time
+    # Use AsyncMock as a dummy awaitable to avoid unawaited coroutine warnings.
     entry = BackgroundTask(
         task_id="old",
         label="old",
-        coroutine=asyncio.sleep(0),  # valid awaitable
+        coroutine=AsyncMock(),
     )
     entry.state = TaskState.DONE
     entry.finished_at = time.monotonic() - 400
