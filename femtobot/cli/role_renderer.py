@@ -234,8 +234,16 @@ def print_role_header(
     mode: str = DEFAULT_HEADER_MODE,
     accent_color: str = "#d77757",
     as_box: bool = False,
+    margin_x: int | None = None,
 ) -> None:
-    """Print the role header to ``console`` (no-op when mode == 'off')."""
+    """Print the role header to ``console`` (no-op when mode == 'off').
+
+    ``margin_x`` — left padding (in chars) applied to the header. This
+    keeps the ``[🤖 Femtobot]`` box aligned with the agent's reply
+    (which already gets padding in :meth:`StreamRenderer._renderable`).
+    Defaults to 0 — the Camada 5 wiring in :mod:`femtobot.cli.commands`
+    passes the live ``spacing.margin_x`` from the active config.
+    """
     header = role_header(
         bot_name=bot_name,
         bot_icon=bot_icon,
@@ -245,7 +253,7 @@ def print_role_header(
     )
     if not header.plain:
         return
-    console.print(header)
+    console.print(_pad_left(header, margin_x))
 
 
 def print_user_separator(
@@ -253,14 +261,19 @@ def print_user_separator(
     width: int = 60,
     *,
     enabled: bool = True,
+    margin_x: int | None = None,
 ) -> None:
-    """Print the user separator line (no-op when disabled)."""
+    """Print the user separator line (no-op when disabled).
+
+    ``margin_x`` — left padding in chars so the divider aligns with the
+    rest of the agent's framed reply.
+    """
     if not enabled:
         return
     sep = user_separator_line(width=width, enabled=True)
     if not sep.plain:
         return
-    console.print(sep)
+    console.print(_pad_left(sep, margin_x))
 
 
 def print_turn_gap(
@@ -270,6 +283,26 @@ def print_turn_gap(
     """Print N blank lines after a completed turn."""
     for line in turn_gap(gap):
         console.print(line)
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _pad_left(text: Text, margin: int | None) -> Text:
+    """Return a new ``Text`` with ``margin`` chars of whitespace prepended.
+
+    Used to align role headers / separators / user boxes with the agent
+    reply that already receives ``Padding(..., pad=(0, margin_x))`` in
+    :meth:`StreamRenderer._renderable`. Without this helper the
+    bracketed boxes and ``· · ·`` dividers would sit flush against the
+    terminal's left edge while the agent's reply stayed indented.
+    """
+    n = _normalize_margin(margin)
+    if n <= 0:
+        return text
+    return Text.assemble((" " * n, ""), text)
 
 
 # ---------------------------------------------------------------------------
@@ -368,10 +401,16 @@ class TurnSpacingRenderer:
             mode=self.role_header_mode,
             accent_color=self.accent_color,
             as_box=self.turn_box,
+            margin_x=self.margin_x,
         )
 
     def print_user_separator(self, console: Console, width: int = 60) -> None:
-        print_user_separator(console, width=width, enabled=self.user_separator)
+        print_user_separator(
+            console,
+            width=width,
+            enabled=self.user_separator,
+            margin_x=self.margin_x,
+        )
 
     def print_turn_gap(self, console: Console) -> None:
         print_turn_gap(console, gap=self.gap_after_turn)
@@ -385,10 +424,13 @@ class TurnSpacingRenderer:
         if not self.turn_box:
             return
         console.print(
-            user_box(
-                user_name=self.user_name,
-                user_icon=self.user_icon,
-                accent_color=self.user_accent_color,
+            _pad_left(
+                user_box(
+                    user_name=self.user_name,
+                    user_icon=self.user_icon,
+                    accent_color=self.user_accent_color,
+                ),
+                self.margin_x,
             )
         )
 

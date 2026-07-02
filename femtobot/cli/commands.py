@@ -545,7 +545,7 @@ def _is_exit_command(command: str) -> bool:
     return command.lower() in EXIT_COMMANDS
 
 
-async def _read_interactive_input_async() -> str:
+async def _read_interactive_input_async(config=None) -> str:
     """Read user input using prompt_toolkit (handles paste, history, display).
 
     prompt_toolkit natively handles:
@@ -555,6 +555,11 @@ async def _read_interactive_input_async() -> str:
 
     Camada 5 — prints the input gap + user-box header before each
     prompt, so there's clear separation from the previous turn.
+
+    ``config`` — the active Femtobot config (used to read the live
+    ``margin_x`` so the ``You:`` prompt lines up with the agent reply).
+    Optional for backward-compat with any legacy call site that hasn't
+    been updated yet.
     """
     if _PROMPT_SESSION is None:
         raise RuntimeError("Call _init_prompt_session() first")
@@ -567,10 +572,22 @@ async def _read_interactive_input_async() -> str:
             renderer.print_user_box()
         except Exception:
             pass
+    # Camada 5 — apply lateral margin to the "You:" prompt so it lines
+    # up with the agent reply (which already receives padding via the
+    # Markdown renderer). Without this the prompt sits flush against the
+    # terminal's left edge while the agent's reply stays indented.
+    margin_spaces = ""
+    spacing_obj = None
+    if renderer is not None and getattr(renderer, "_spacing", None) is not None:
+        spacing_obj = renderer._spacing
+    elif config is not None:
+        spacing_obj = _make_spacing_renderer(config)
+    if spacing_obj is not None:
+        margin_spaces = " " * spacing_obj.margin_x
     try:
         with patch_stdout():
             return await _PROMPT_SESSION.prompt_async(
-                HTML("<b fg='ansiblue'>You:</b> "),
+                HTML(f"<b fg='ansiblue'>{margin_spaces}You:</b> "),
             )
     except EOFError as exc:
         raise KeyboardInterrupt from exc
@@ -1270,7 +1287,7 @@ def agent(
                         # Stop spinner before user input to avoid prompt_toolkit conflicts
                         if renderer:
                             renderer.stop_for_input()
-                        raw_input = await _read_interactive_input_async()
+                        raw_input = await _read_interactive_input_async(config)
                         if _get_cli_multiline_mode() != "off":
                             raw_input = submit_multiline_transform(raw_input)
                         user_input = _sanitize_surrogates(raw_input)

@@ -9,6 +9,7 @@ from io import StringIO
 from types import SimpleNamespace
 
 from rich.console import Console
+from rich.text import Text
 
 from femtobot.cli.role_renderer import (
     DEFAULT_GAP,
@@ -236,6 +237,128 @@ def test_spacing_renderer_apply_margin_min_width_clamp() -> None:
     assert child.width == 40
 
 
+# ---------------------------------------------------------------------------
+# Camada 5 — margin on role header / user box / separator
+# ---------------------------------------------------------------------------
+# These cover the P1-fix follow-up: agent/user boxes and the
+# "· · ·" separator must also receive the lateral margin so they line
+# up with the agent reply (which gets Padding via StreamRenderer).
+# Without this, the bracketed boxes sit flush against the terminal's
+# left edge while the reply stays indented — visually inconsistent.
+# ---------------------------------------------------------------------------
+
+
+def test_role_header_box_includes_margin_left_padding() -> None:
+    """``print_role_header`` prefixes ``margin_x`` spaces to the box.
+
+    Regression test for the user-reported "boxes still glued to the
+    terminal edge while agent reply is indented".
+    """
+    console, buf = _capture_console()
+    spacing = TurnSpacingRenderer(
+        gap_after_turn=1,
+        role_header_mode="always",
+        user_separator=True,
+        accent_color="#d77757",
+        bot_name="Femtobot",
+        turn_box=True,
+        margin_x=4,
+    )
+    spacing.print_role_header(console)
+    out = buf.getvalue()
+    # 4 spaces of margin + the bracketed box content.
+    assert out.startswith("    [")
+    assert "Femtobot" in out
+
+
+def test_user_box_includes_margin_left_padding() -> None:
+    """``print_user_box`` prefixes ``margin_x`` spaces to the user box."""
+    console, buf = _capture_console()
+    spacing = TurnSpacingRenderer(
+        gap_after_turn=1,
+        role_header_mode="always",
+        user_separator=True,
+        margin_x=4,
+        turn_box=True,
+    )
+    spacing.print_user_box(console)
+    out = buf.getvalue()
+    assert out.startswith("    [")
+    assert "You" in out
+
+
+def test_user_separator_includes_margin_left_padding() -> None:
+    """``print_user_separator`` prefixes ``margin_x`` spaces to the divider."""
+    console, buf = _capture_console()
+    spacing = TurnSpacingRenderer(
+        gap_after_turn=1,
+        role_header_mode="always",
+        user_separator=True,
+        margin_x=4,
+    )
+    spacing.print_user_separator(console, width=20)
+    out = buf.getvalue()
+    # 4 spaces of margin + the divider body (which itself starts with "·").
+    assert out.startswith("    ·")
+
+
+def test_zero_margin_emits_no_left_padding() -> None:
+    """When margin_x=0 the header / user box / separator start at column 0.
+
+    This protects the legacy look: a user who disables the margin
+    (or never had Camada 5) shouldn't see a phantom leading space.
+    """
+    console, buf = _capture_console()
+    spacing = TurnSpacingRenderer(
+        gap_after_turn=1,
+        role_header_mode="always",
+        user_separator=True,
+        accent_color="#d77757",
+        bot_name="Femtobot",
+        turn_box=True,
+        margin_x=0,
+    )
+    spacing.print_role_header(console)
+    spacing.print_user_box(console)
+    out = buf.getvalue()
+    # The header box must start exactly at "[".
+    assert "Femtobot" in out
+    assert out.startswith("[")
+
+
+def test_padding_helper_clamps_above_max_margin() -> None:
+    """``_pad_left`` clamps the margin to CLI_MAX_MARGIN (8).
+
+    Prevents a user typo (`margin_x=99`) from injecting 99 chars of
+    whitespace and pushing the box off the right edge of the terminal.
+    """
+    from femtobot.cli.role_renderer import _pad_left
+
+    txt = _pad_left(Text("hello"), 99)
+    assert txt.plain.startswith(" " * 8 + "hello")
+    assert len(txt.plain) == 8 + len("hello")
+
+
+def test_padding_helper_zero_or_none_returns_input_unchanged() -> None:
+    """``_pad_left`` is a no-op for ``margin=0``.
+
+    ``margin=None`` falls through to the schema default
+    (:data:`CLI_DEFAULT_MARGIN_X`), which we don't pin here — we only
+    verify the helper produces the schema default when called with
+    ``None`` rather than an explicit value.
+    """
+    from femtobot.cli.role_renderer import _pad_left
+    from femtobot.config.schema import CLI_DEFAULT_MARGIN_X
+
+    base = Text("hello")
+    # ``margin=0`` is a true no-op (input is returned unchanged).
+    result_zero = _pad_left(base, 0)
+    assert result_zero.plain == "hello"
+    # ``None`` → schema default (currently 4 chars).
+    result_none = _pad_left(base, None)
+    assert result_none.plain.startswith(" " * CLI_DEFAULT_MARGIN_X + "hello")
+
+
 def test_spacing_renderer_skips_user_separator_when_disabled() -> None:
     console, buf = _capture_console()
     spacing = TurnSpacingRenderer(
@@ -397,6 +520,46 @@ def test_schema_field_defaults_capture_schema_constants() -> None:
     assert fields["margin_x"].default == CLI_DEFAULT_MARGIN_X
     assert fields["gap_before_input"].default == CLI_DEFAULT_GAP_BEFORE_INPUT
     assert fields["turn_box"].default is CLI_DEFAULT_TURN_BOX
+
+
+def test_cli_spacing_bounds_have_zero_lower_limit() -> None:
+    """All three knobs (``gap_after_turn``, ``margin_x``, ``gap_before_input``)
+    must allow zero so users can disable the visual treatment without
+    editing the schema.
+
+    Regression: a previous refactor accidentally set ``CLI_MIN_GAP=1`` /
+    ``CLI_MIN_MARGIN=2`` / ``CLI_MIN_INPUT_GAP=2``, which forced a
+    non-zero minimum and broke the "no padding" / "no gap" experience.
+    """
+    from femtobot.config.schema import (
+        CLI_MIN_GAP,
+        CLI_MIN_INPUT_GAP,
+        CLI_MIN_MARGIN,
+    )
+
+    assert CLI_MIN_GAP == 0
+    assert CLI_MIN_MARGIN == 0
+    assert CLI_MIN_INPUT_GAP == 0
+
+
+def test_cli_spacing_defaults_match_documented_values() -> None:
+    """Pin the exact default values so a regression that bumps them
+    surfaces immediately.
+
+    Values must match:
+      - ``gap_after_turn``     = 1  (one blank line after each turn)
+      - ``margin_x``           = 4  (4 chars of lateral padding)
+      - ``gap_before_input``   = 2  (2 blank lines before the prompt)
+    """
+    from femtobot.config.schema import (
+        CLI_DEFAULT_GAP_AFTER_TURN,
+        CLI_DEFAULT_GAP_BEFORE_INPUT,
+        CLI_DEFAULT_MARGIN_X,
+    )
+
+    assert CLI_DEFAULT_GAP_AFTER_TURN == 1
+    assert CLI_DEFAULT_MARGIN_X == 4
+    assert CLI_DEFAULT_GAP_BEFORE_INPUT == 2
 
 
 def test_spacing_field_descriptions_are_present_and_informative() -> None:

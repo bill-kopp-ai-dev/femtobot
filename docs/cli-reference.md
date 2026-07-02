@@ -247,7 +247,7 @@ restantes:
 
 | Knob | Tipo | Range | Default | O que faz |
 |---|---|---|---|---|
-| `margin_x` | int | 0..8 | `4` | Caracteres de padding lateral (esquerda **e** direita) aplicados via `rich.Padding` ao redor de **todo** o output do agente. Resolve P1 ("texto colado nas extremidades"). `0` = sem padding (legacy). `8` ≈ metade de um terminal de 80 cols — máximo útil. |
+| `margin_x` | int | 0..8 | `4` | Caracteres de padding lateral (esquerda **e** direita) aplicados via `rich.Padding` ao redor de **todo** o output do agente. Resolve P1 ("texto colado nas extremidades"). `0` = sem padding (legacy). `8` ≈ metade de um terminal de 80 cols — máximo útil. **Aplica-se também ao box `[🤖 Femtobot]` / `[👤 You]` e ao separador `· · ·`** para que tudo fique alinhado visualmente (não só o corpo da resposta). |
 | `gap_before_input` | int | 0..5 | `2` | Linhas em branco extras **antes** do `You:` prompt. Resolve P2 ("última mensagem colada na base"). `0` = prompt logo abaixo do reply. `5` = muito espaço, recomendado só para terminais altos. |
 | `turn_box` | bool | — | `true` | Quando `true`, renderiza os cabeçalhos como boxes `[🤖 Femtobot]` (agente, cor terracotta) e `[👤 You]` (humano, cor azul). Cada turno vira um bloco visualmente delimitado — resolve P3 ("agente/humano indistinguíveis"). `false` = voltar à barra + `You:` legacy em ciano. |
 
