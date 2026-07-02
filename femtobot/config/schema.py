@@ -124,6 +124,13 @@ class CliSessionStatusConfig(Base):
     show_elapsed: bool = True
 
 
+class CliBtwConfig(Base):
+    """Configuration for the /btw side-question handler."""
+
+    max_history_messages: int = 10
+    include_tools_result: bool = False
+
+
 class CliConfig(Base):
     """CLI behavior configuration.
 
@@ -140,6 +147,7 @@ class CliConfig(Base):
     theme: str = "terracotta-claude"
     whimsy: CliWhimsyConfig = Field(default_factory=CliWhimsyConfig)
     session_status: CliSessionStatusConfig = Field(default_factory=CliSessionStatusConfig)
+    btw: CliBtwConfig = Field(default_factory=CliBtwConfig)
 
 
 class AgentDefaults(Base):

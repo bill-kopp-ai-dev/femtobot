@@ -17,8 +17,11 @@ session ends. It is purely ephemeral context from the LLM.
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from femtobot.bus.events import OutboundMessage
 
@@ -57,13 +60,23 @@ async def run_btw(
             pass
 
         messages: list = []
+        max_msgs = 10
         if session:
             try:
-                raw_hist = session.get_history(max_messages=0)
+                cli_cfg = getattr(getattr(getattr(loop, "config", None), "agents", None) or {}, "cli", None) or {}
+                btw_cfg = getattr(cli_cfg, "btw", None) or {}
+                max_msgs = getattr(btw_cfg, "max_history_messages", 10)
+                raw_hist = session.get_history(max_messages=max_msgs)
                 if isinstance(raw_hist, list):
                     messages = raw_hist
             except Exception:
                 pass
+
+        logger.info("btw invoked", extra={
+            "question_len": len(question),
+            "history_len": len(messages) if isinstance(messages, list) else 0,
+            "max_history": max_msgs,
+        })
 
         # Append the /btw question as a user message (no tools allowed).
         messages.append({
