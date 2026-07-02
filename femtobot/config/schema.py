@@ -163,7 +163,7 @@ class CliConfig(Base):
     # gap_before_input: linhas em branco extras antes do "You:" prompt.
     # turn_box: render role header como box [🤖 Femtobot] (agent)
     #           e [👤 You] (user). Visual block delimiter.
-    margin_x: int = 2
+    margin_x: int = 4
     gap_before_input: int = 2
     turn_box: bool = True
 

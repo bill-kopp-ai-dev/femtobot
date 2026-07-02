@@ -199,10 +199,10 @@ def test_spacing_renderer_input_gap_default() -> None:
     assert buf.getvalue().endswith("\n\n")
 
 
-def test_spacing_renderer_margin_default_is_2() -> None:
-    """Camada 5 — margin_x defaults to 2 chars."""
+def test_spacing_renderer_margin_default_is_4() -> None:
+    """Camada 5 — margin_x defaults to 4 chars."""
     spacing = TurnSpacingRenderer()
-    assert spacing.margin_x == 2
+    assert spacing.margin_x == 4
 
 
 def test_spacing_renderer_apply_margin_returns_console() -> None:

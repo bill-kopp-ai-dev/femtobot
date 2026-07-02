@@ -140,7 +140,7 @@ def turn_gap(gap: int | None = None) -> list[str]:
 
 MIN_MARGIN = 0
 MAX_MARGIN = 8
-DEFAULT_MARGIN = 2
+DEFAULT_MARGIN = 4
 
 MIN_INPUT_GAP = 0
 MAX_INPUT_GAP = 5
