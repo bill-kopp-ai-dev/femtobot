@@ -228,6 +228,23 @@ O comando `/status` agora renderiza um `rich.Panel` com 4 seções:
 Linha curta exibida no fim de cada turno com modelo, tokens e elapsed.
 Flag: `agents.cli.sessionStatus.enabled`.
 
+### Migration: cli.* → agents.defaults.cli.*
+
+O schema Pydantic do Camada 1 **não aceita** `cli.*` no nível raiz
+(`extra="forbidden"`). Configs legadas com `cli.*` precisam ser migradas.
+
+**Precedência**: `agents.defaults.cli.*` vence (caminho Pydantic mais específico).
+
+Guia de migração:
+1. Mova `cli.theme` → `agents.defaults.cli.theme`
+2. Mova `cli.whimsy.*` → `agents.defaults.cli.whimsy.*`
+3. Adicione os novos campos do Camada 1 (`bashModeEnabled`, `fileMentionEnabled`, etc.)
+
+Valide sua config com:
+```bash
+uv run python3 scripts/check_cli_schema_compat.py
+```
+
 ### Bloco de configuração (default)
 
 ```json5
