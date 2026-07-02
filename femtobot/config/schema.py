@@ -148,6 +148,16 @@ class CliConfig(Base):
     whimsy: CliWhimsyConfig = Field(default_factory=CliWhimsyConfig)
     session_status: CliSessionStatusConfig = Field(default_factory=CliSessionStatusConfig)
     btw: CliBtwConfig = Field(default_factory=CliBtwConfig)
+    # Camada 4 — turn-spacing aesthetics (Issue UX-1 / UX-2)
+    # gap_after_turn: blank lines printed after each completed turn (1-3).
+    # role_header: visibility of the per-turn role header.
+    #   'always' — bold colored bar before every agent turn (default)
+    #   'minimal' — emoji only (legacy behavior)
+    #   'off' — no header at all
+    # user_separator: divider line between human input and agent reply.
+    gap_after_turn: int = 1
+    role_header: Literal["always", "minimal", "off"] = "always"
+    user_separator: bool = True
 
 
 class AgentDefaults(Base):

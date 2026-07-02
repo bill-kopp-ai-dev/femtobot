@@ -18,6 +18,7 @@ from rich.markdown import Markdown
 from rich.text import Text
 
 from femtobot.cli.whimsy import pick_verb, resolve_spinner
+from femtobot.cli.role_renderer import TurnSpacingRenderer
 
 
 def _clear_current_line(console: Console) -> None:
@@ -134,6 +135,7 @@ class StreamRenderer:
         show_spinner: bool = True,
         bot_name: str = "Femtobot",
         bot_icon: str = "🐈",
+        spacing_renderer: "TurnSpacingRenderer | None" = None,
     ):
         self._md = render_markdown
         self._show_spinner = show_spinner
@@ -145,6 +147,10 @@ class StreamRenderer:
         self._live: Live | None = None
         self._spinner: ThinkingSpinner | None = None
         self._header_printed = False
+        # Camada 4 — turn-spacing aesthetics. Default to legacy behaviour
+        # (no extra spacing) when no renderer is supplied, so callers that
+        # haven't migrated still see the original UX.
+        self._spacing = spacing_renderer
         self._start_spinner()
 
     def _renderable(self):
@@ -188,8 +194,20 @@ class StreamRenderer:
         if self._header_printed:
             return
         self._console.print()
-        header = f"{self._bot_icon} {self._bot_name}" if self._bot_icon else self._bot_name
-        self._console.print(f"[cyan]{header}[/cyan]")
+        # Camada 4 — when a spacing renderer is wired in, prefer its
+        # role_header (colored bar) and the user-separator above the bar
+        # so the agent's reply is visually framed against the previous
+        # user input. Otherwise fall back to the legacy single-line header.
+        if self._spacing is not None:
+            self._spacing.print_user_separator(self._console)
+            self._spacing.print_role_header(self._console)
+        else:
+            header = (
+                f"{self._bot_icon} {self._bot_name}"
+                if self._bot_icon
+                else self._bot_name
+            )
+            self._console.print(f"[cyan]{header}[/cyan]")
         self._header_printed = True
 
     def pause_spinner(self):
@@ -246,6 +264,10 @@ class StreamRenderer:
             out = sys.stdout
             out.write(self._render_str())
             out.flush()
+            # Camada 4 — print N blank lines after the completed turn so the
+            # next ``You:`` prompt has room to breathe (issue UX-1).
+            if self._spacing is not None:
+                self._spacing.print_turn_gap(self._console)
         if resuming:
             self._buf = ""
             self._start_spinner()

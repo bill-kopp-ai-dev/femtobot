@@ -109,6 +109,15 @@ to several short-cuts in the REPL (Camada 1 of
 - **Themes**: configure `agents.cli.theme` in `config.json`. Four
   presets: `terracotta-claude` (default), `solarized-light`,
   `cyber-dark`, `monochrome`.
+- **Turn spacing** (Camada 4): the CLI prints a colored `🤖 Femtobot ▌`
+  bar before every agent reply, a thin `· · ·` divider between the
+  user's input and the agent's response, and a blank line after each
+  completed turn. This solves two common complaints: the last agent
+  message sitting glued to the bottom of the terminal, and humans
+  having trouble distinguishing their own messages from the agent's.
+  Tunable via `agents.cli.gap_after_turn` (0-3),
+  `agents.cli.role_header` (`always` | `minimal` | `off`),
+  `agents.cli.user_separator` (bool).
 
 ## See Also
 

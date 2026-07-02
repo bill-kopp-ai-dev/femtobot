@@ -228,6 +228,37 @@ O comando `/status` agora renderiza um `rich.Panel` com 4 seções:
 Linha curta exibida no fim de cada turno com modelo, tokens e elapsed.
 Flag: `agents.cli.sessionStatus.enabled`.
 
+### Role header e turn spacing
+
+A Camada 4 introduziu melhorias para reduzir o ruído visual entre turnos:
+
+- **`gap_after_turn`** (0–3, default 1): linhas em branco após cada turno.
+  Resolve a última mensagem colada na base do terminal.
+- **`role_header`** (`"always" | "minimal" | "off"`, default `"always"`):
+  barra colorida `🤖 Femtobot ▌` antes de cada resposta do agente.
+  Use `"minimal"` para apenas o emoji (legacy) ou `"off"` para silenciar.
+- **`user_separator`** (bool, default `true`): linha fina `· · ·` que
+  separa visualmente o input humano do reply do agente.
+
+Exemplo de uso no `config.json`:
+
+```json5
+{
+  "agents": {
+    "defaults": {
+      "cli": {
+        "gap_after_turn": 2,
+        "role_header": "always",
+        "user_separator": true
+      }
+    }
+  }
+}
+```
+
+Defaults são backward-compatíveis: usuários existentes que não
+configurarem esses campos veem o novo visual imediatamente.
+
 ### Migration: cli.* → agents.defaults.cli.*
 
 O schema Pydantic do Camada 1 **não aceita** `cli.*` no nível raiz
