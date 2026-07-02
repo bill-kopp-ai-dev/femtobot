@@ -154,6 +154,9 @@ ignore = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+filterwarnings = [
+    "error::RuntimeWarning",
+]
 
 [tool.coverage.run]
 source = ["femtobot"]
