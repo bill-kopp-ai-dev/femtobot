@@ -1,0 +1,158 @@
+"""Voice input for the Femtobot CLI via system microphone + Whisper transcription.
+
+Inspired by Claude Code Voice:
+FEMTOBOT_CLI_REFACTOR_PLAN.md Camada 3, T3.3.
+
+MVP behaviour:
+  1. User presses Alt+V (configurable keybind)
+  2. CLI shows "Recording..." indicator
+  3. Audio is captured via arecord (Linux) / sox / ffmpeg
+  4. Audio is saved to a temp WAV file
+  5. The temp file is sent to GroqTranscriptionProvider (already exists)
+  6. Transcribed text is inserted into the input buffer
+  7. User edits or submits as usual
+
+Security: audio is NEVER saved permanently. Temp file is deleted after use.
+
+Dependencies:
+  - Linux: arecord (alsa-utils) or ffmpeg
+  - macOS: ffmpeg / sox
+  - Windows: ffmpeg
+
+Config:
+  voiceEnabled: bool (default False)
+  voiceKey: str (default "alt-v")
+  voiceTimeout: float (default 30.0 seconds)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import subprocess
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+
+
+DEFAULT_TIMEOUT_S = 30.0
+
+
+@dataclass
+class VoiceConfig:
+    """Configuration for voice input."""
+    enabled: bool = False
+    keybind: str = "alt-v"  # key that triggers recording
+    timeout_s: float = DEFAULT_TIMEOUT_S
+    sample_rate: int = 16000
+    channels: int = 1
+
+
+def _detect_audio_recorder() -> str | None:
+    """Find the best available audio recorder on this system."""
+    for cmd in ["ffmpeg", "arecord", "sox"]:
+        try:
+            result = subprocess.run(
+                ["which", cmd], capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return cmd
+        except Exception:
+            pass
+    return None
+
+
+async def record_audio(
+    config: VoiceConfig,
+    output_path: Path,
+    *,
+    on_duration: asyncio.AbstractEventLoop | None = None,
+) -> bool:
+    """Record audio from the system microphone to output_path (WAV format).
+
+    Returns True if recording succeeded, False otherwise.
+    Deletes output_path on failure.
+    """
+    recorder = _detect_audio_recorder()
+    if recorder is None:
+        return False
+
+    cmd: list[str]
+    if recorder == "ffmpeg":
+        cmd = [
+            recorder,
+            "-f", "alsa",           # ALSA input (Linux); use "-f avfoundation" on macOS
+            "-i", "default",
+            "-ar", str(config.sample_rate),
+            "-ac", str(config.channels),
+            "-t", str(config.timeout_s),
+            "-y",                   # overwrite output
+            str(output_path),
+        ]
+    elif recorder == "arecord":
+        cmd = [
+            recorder,
+            "-f", "cd",             # 16-bit, 44100 Hz, stereo
+            "-r", str(config.sample_rate),
+            "-c", str(config.channels),
+            "-d", str(int(config.timeout_s)),
+            "-Y",                   # non-blocking
+            str(output_path),
+        ]
+    else:  # sox
+        cmd = [
+            recorder, "rec",
+            str(output_path),
+            "rate", str(config.sample_rate),
+            "channels", str(config.channels),
+            "trim", "0", str(config.timeout_s),
+        ]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=config.timeout_s + 2)
+        return output_path.exists() and output_path.stat().st_size > 0
+    except Exception:
+        try:
+            output_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+
+def transcribe_audio(
+    audio_path: Path,
+    transcription_provider: object,
+) -> str:
+    """Send audio to the transcription provider and return the text.
+
+    ``transcription_provider`` must implement:
+        async def transcribe(audio_path: Path) -> str
+
+    The Femtobot GroqTranscriptionProvider (femtobot/providers/transcription.py)
+    satisfies this interface.
+    """
+    transcribe_fn = getattr(transcription_provider, "transcribe", None)
+    if transcribe_fn is None:
+        return ""
+    try:
+        result = asyncio.run(transcribe_fn(audio_path))
+        if isinstance(result, str):
+            return result.strip()
+        if isinstance(result, dict):
+            return str(result.get("text", "")).strip()
+        return str(result).strip()
+    except Exception:
+        return ""
+
+
+def cleanup_audio(audio_path: Path) -> None:
+    """Delete the temporary audio file. Safe to call even if file doesn't exist."""
+    try:
+        audio_path.unlink(missing_ok=True)
+    except OSError:
+        pass
