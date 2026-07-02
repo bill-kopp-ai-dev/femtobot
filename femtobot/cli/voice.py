@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -79,10 +80,15 @@ async def record_audio(
 
     cmd: list[str]
     if recorder == "ffmpeg":
+        if sys.platform == "darwin":
+            input_args = ["-f", "avfoundation", "-i", ":0"]
+        elif sys.platform == "win32":
+            input_args = ["-f", "dshow", "-i", "audio=Microphone"]
+        else:
+            input_args = ["-f", "alsa", "-i", "default"]
         cmd = [
             recorder,
-            "-f", "alsa",           # ALSA input (Linux); use "-f avfoundation" on macOS
-            "-i", "default",
+            *input_args,
             "-ar", str(config.sample_rate),
             "-ac", str(config.channels),
             "-t", str(config.timeout_s),
@@ -96,7 +102,7 @@ async def record_audio(
             "-r", str(config.sample_rate),
             "-c", str(config.channels),
             "-d", str(int(config.timeout_s)),
-            "-Y",                   # non-blocking
+            "-N",                   # non-blocking
             str(output_path),
         ]
     else:  # sox
@@ -124,7 +130,7 @@ async def record_audio(
         return False
 
 
-def transcribe_audio(
+async def transcribe_audio(
     audio_path: Path,
     transcription_provider: object,
 ) -> str:
@@ -140,7 +146,7 @@ def transcribe_audio(
     if transcribe_fn is None:
         return ""
     try:
-        result = asyncio.run(transcribe_fn(audio_path))
+        result = await transcribe_fn(audio_path)
         if isinstance(result, str):
             return result.strip()
         if isinstance(result, dict):
