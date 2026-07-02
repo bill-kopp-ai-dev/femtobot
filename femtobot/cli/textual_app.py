@@ -53,15 +53,38 @@ from typing import Callable
 from rich.console import RenderableType
 from rich.markdown import Markdown
 from rich.text import Text
-from textual.app import App, ComposeResult
-from textual.binding import Binding
-from textual.color import Color
-from textual.css.query import NoMatches
-from textual.events import Mount
-from textual.message import Message
-from textual.reactive import reactive
-from textual.widget import Widget
-from textual.widgets import Footer, Static, TextArea
+try:
+    from textual.app import App, ComposeResult
+    from textual.binding import Binding
+    from textual.color import Color
+    from textual.css.query import NoMatches
+    from textual.events import Mount
+    from textual.message import Message
+    from textual.reactive import reactive
+    from textual.widget import Widget
+    from textual.widgets import Footer, Static, TextArea
+
+    _TEXTUAL_AVAILABLE = True
+except ImportError:
+    _TEXTUAL_AVAILABLE = False
+
+    class _TStub:  # type: ignore[no-redef]
+        def __init__(self, *a, **kw):
+            pass
+
+        def __init_subclass__(cls, **kwargs):
+            super().__init_subclass__(**kwargs)
+
+    def _callable_stub(*a, **kw):  # type: ignore[no-redef]
+        return None
+
+    App = Static = TextArea = Widget = Footer = _TStub  # type: ignore[assignment,misc]
+    ComposeResult = NoMatches = Mount = Message = Color = None  # type: ignore[assignment]
+    Binding = reactive = _callable_stub  # type: ignore[assignment]
+
+
+class TextualNotAvailable(RuntimeError):
+    """Raised when textual is not installed."""
 
 # ---------------------------------------------------------------------------
 # Types & data models
@@ -316,6 +339,12 @@ class FemtobotTextualApp(App):
         theme_name: str = "terracotta-claude",
         **textual_kwargs,
     ):
+        if not _TEXTUAL_AVAILABLE:
+            raise TextualNotAvailable(
+                "T3.1 Textual TUI requires 'textual'. "
+                "Install with: uv pip install 'femtobot[tui]' "
+                "or: uv sync --extra tui"
+            )
         super().__init__(**textual_kwargs)
         self._bot_name = bot_name
         self._model = model
@@ -471,9 +500,8 @@ class FemtobotTextualApp(App):
                 "text-muted": "#808080",
             },
         }
-        colors = theme_colors.get(self._theme_name, theme_colors["terracotta-claude"])
-        for var, value in colors.items():
-            self.styles.set_var(var, value)
+        # Textual 8.x StylesBase has no set_var; theme vars applied via CSS string (T3.2)
+        _ = theme_colors.get(self._theme_name, theme_colors["terracotta-claude"])
 
     # ------------------------------------------------------------------
     # Actions
@@ -500,7 +528,8 @@ class FemtobotTextualApp(App):
 
     def action_toggle_fullscreen(self) -> None:
         """Toggle fullscreen mode."""
-        self.toggle_fullscreen()
+        # Textual 8.x has no App.toggle_fullscreen/full_screen API; no-op until T3.2
+        pass
 
     def action_accept_suggestion(self) -> None:
         """Accept the first suggestion with Tab."""
@@ -508,7 +537,7 @@ class FemtobotTextualApp(App):
             suggestion = self._suggestions[0]
             try:
                 ta = self.query_one("#input-area", InputArea)
-                ta.insert_text_at_cursor(suggestion)
+                ta.insert(suggestion)
                 self.set_suggestions([])
             except NoMatches:
                 pass
