@@ -71,18 +71,18 @@ async def test_style_no_args_lists_current_values() -> None:
 @pytest.mark.asyncio
 async def test_style_set_updates_config() -> None:
     loop = _make_loop()
-    ctx = _make_ctx(loop, args="set margin_x=6")
+    ctx = _make_ctx(loop, args="set margin_x=4")
     await cmd_style(ctx)
-    assert loop._config.agents.defaults.cli.margin_x == 6
+    assert loop._config.agents.defaults.cli.margin_x == 4
 
 
 @pytest.mark.asyncio
 async def test_style_set_multiple_keys() -> None:
     loop = _make_loop()
-    ctx = _make_ctx(loop, args="set margin_x=6 gap_after_turn=2 turn_box=false")
+    ctx = _make_ctx(loop, args="set margin_x=4 gap_after_turn=2 turn_box=false")
     await cmd_style(ctx)
     cli = loop._config.agents.defaults.cli
-    assert cli.margin_x == 6
+    assert cli.margin_x == 4
     assert cli.gap_after_turn == 2
     assert cli.turn_box is False
 

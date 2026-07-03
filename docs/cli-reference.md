@@ -236,7 +236,7 @@ que podem ser sobrescritos em três caminhos (ver "Precedência" abaixo).
 
 | Knob | Tipo | Range | Default | O que faz |
 |---|---|---|---|---|
-| `gap_after_turn` | int | 0..3 | `1` | Linhas em branco impressas **após** cada turno do agente. Resolve a UX-1 ("última mensagem colada na base do terminal"). `0` = sem gap, `3` = respiração generosa. |
+| `gap_after_turn` | int | 0..2 | `1` | Linhas em branco impressas **após** cada turno do agente. Resolve a UX-1 ("última mensagem colada na base do terminal"). `0` = sem gap, `2` = respiração generosa (acima disso o terminal fica vazio demais). |
 | `role_header` | enum | `always` \| `minimal` \| `off` | `always` | Estilo do cabeçalho do agente impresso **antes** de cada turno. `always` (default) = barra colorida `🤖 Femtobot ▌`. `minimal` = só o emoji (legacy Camada 1). `off` = silencioso. |
 | `user_separator` | bool | — | `true` | Quando `true`, imprime uma linha fina dim `· · · ·` logo após o usuário submeter input, emoldurando o reply do agente. `false` = conversa sem bordas. |
 
@@ -247,8 +247,8 @@ restantes:
 
 | Knob | Tipo | Range | Default | O que faz |
 |---|---|---|---|---|
-| `margin_x` | int | 0..8 | `4` | Caracteres de padding lateral (esquerda **e** direita) aplicados via `rich.Padding` ao redor de **todo** o output do agente. Resolve P1 ("texto colado nas extremidades"). `0` = sem padding (legacy). `8` ≈ metade de um terminal de 80 cols — máximo útil. **Aplica-se também ao box `[🤖 Femtobot]` / `[👤 You]` e ao separador `· · ·`** para que tudo fique alinhado visualmente (não só o corpo da resposta). |
-| `gap_before_input` | int | 0..5 | `2` | Linhas em branco extras **antes** do `You:` prompt. Resolve P2 ("última mensagem colada na base"). `0` = prompt logo abaixo do reply. `5` = muito espaço, recomendado só para terminais altos. |
+| `margin_x` | int | 2..4 | `2` | Caracteres de padding lateral (esquerda **e** direita) aplicados via `rich.Padding` ao redor de **todo** o output do agente. Resolve P1 ("texto colado nas extremidades"). **Mínimo de 2 chars é obrigatório** (enforces P1 — não aceitamos `margin_x=0`). `4` é o máximo útil num terminal de 80 cols. **Aplica-se também ao box `[🤖 Femtobot]` / `[👤 You]` e ao separador `· · ·`** para que tudo fique alinhado visualmente. |
+| `gap_before_input` | int | 0..4 | `0` | Linhas em branco extras **antes** do `You:` prompt. Resolve P2 ("última mensagem colada na base"). `0` = prompt logo abaixo do reply (default — o `margin_x` mínimo + `gap_after_turn=1` já dão respiro suficiente). `4` = respiração generosa para terminais altos. |
 | `turn_box` | bool | — | `true` | Quando `true`, renderiza os cabeçalhos como boxes `[🤖 Femtobot]` (agente, cor terracotta) e `[👤 You]` (humano, cor azul). Cada turno vira um bloco visualmente delimitado — resolve P3 ("agente/humano indistinguíveis"). `false` = voltar à barra + `You:` legacy em ciano. |
 
 Exemplo completo no `config.json`:
@@ -259,12 +259,12 @@ Exemplo completo no `config.json`:
     "defaults": {
       "cli": {
         // Camada 4 — turn spacing
-        "gap_after_turn": 1,         // 0..3
+        "gap_after_turn": 1,         // 0..2
         "role_header": "always",     // "always" | "minimal" | "off"
         "user_separator": true,
         // Camada 5 — visual separation
-        "margin_x": 4,               // 0..8 (chars de padding lateral)
-        "gap_before_input": 2,       // 0..5 (linhas antes do "You:")
+        "margin_x": 2,               // 2..4 (chars de padding lateral, min=2 enforced)
+        "gap_before_input": 0,       // 0..4 (linhas antes do "You:")
         "turn_box": true             // [🤖 Femtobot] / [👤 You] boxes
       }
     }
@@ -287,8 +287,8 @@ reiniciar o femtobot, através do slash command `/style`:
 /style reset                           # reverte para os defaults do schema
 ```
 
-Cada chamada valida os bounds (0..8 para `margin_x`, 0..3 para
-`gap_after_turn`, 0..5 para `gap_before_input`, `always`/`minimal`/`off`
+Cada chamada valida os bounds (2..4 para `margin_x`, 0..2 para
+`gap_after_turn`, 0..4 para `gap_before_input`, `always`/`minimal`/`off`
 para `role_header`, bool para os demais). Valores fora da faixa são
 rejeitados com mensagem de erro clara e o valor anterior é preservado.
 
@@ -304,9 +304,9 @@ delimitador `__`, então qualquer knob pode ser sobrescrito sem editar
 
 ```bash
 # Padding lateral generoso + mais respiro entre turnos
-export FEMTOBOT_AGENTS__DEFAULTS__CLI__MARGIN_X=6
+export FEMTOBOT_AGENTS__DEFAULTS__CLI__MARGIN_X=4
 export FEMTOBOT_AGENTS__DEFAULTS__CLI__GAP_AFTER_TURN=2
-export FEMTOBOT_AGENTS__DEFAULTS__CLI__GAP_BEFORE_INPUT=3
+export FEMTOBOT_AGENTS__DEFAULTS__CLI__GAP_BEFORE_INPUT=2
 
 # Desliga o visual "box" e usa apenas o cabeçalho emoji
 export FEMTOBOT_AGENTS__DEFAULTS__CLI__TURN_BOX=false
@@ -316,7 +316,7 @@ export FEMTOBOT_AGENTS__DEFAULTS__CLI__ROLE_HEADER=minimal
 Ou, equivalentemente, em um `.env` co-located com a instance directory:
 
 ```dotenv
-FEMTOBOT_AGENTS__DEFAULTS__CLI__MARGIN_X=6
+FEMTOBOT_AGENTS__DEFAULTS__CLI__MARGIN_X=4
 FEMTOBOT_AGENTS__DEFAULTS__CLI__GAP_AFTER_TURN=2
 FEMTOBOT_AGENTS__DEFAULTS__CLI__TURN_BOX=true
 ```

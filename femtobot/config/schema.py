@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 #     Blank lines printed *after* each completed agent turn. Gives the
 #     terminal room to breathe between replies so the next ``You:``
 #     prompt doesn't sit glued to the bottom of the previous answer.
-#     Range: ``CLI_MIN_GAP``..``CLI_MAX_GAP`` (0..3).
+#     Range: ``CLI_MIN_GAP``..``CLI_MAX_GAP`` (0..2).
 #
 # :data:`CLI_DEFAULT_ROLE_HEADER_MODE`
 #     Visibility / style of the bar shown *before* each agent turn.
@@ -54,12 +54,12 @@ if TYPE_CHECKING:
 #     Horizontal padding (in chars) applied to the left *and* right of
 #     every agent reply via ``rich.Padding``. Solves the "text glued to
 #     terminal edges" complaint from P1. Range:
-#     ``CLI_MIN_MARGIN``..``CLI_MAX_MARGIN`` (0..8).
+#     ``CLI_MIN_MARGIN``..``CLI_MAX_MARGIN`` (2..4).
 #
 # :data:`CLI_DEFAULT_GAP_BEFORE_INPUT`
 #     Extra blank lines printed *before* the ``You:`` prompt. Gives the
 #     user visual space to read the last reply before starting to type.
-#     Range: ``CLI_MIN_INPUT_GAP``..``CLI_MAX_INPUT_GAP`` (0..5).
+#     Range: ``CLI_MIN_INPUT_GAP``..``CLI_MAX_INPUT_GAP`` (0..4).
 #
 # :data:`CLI_DEFAULT_TURN_BOX`
 #     When ``True``, the role headers are rendered as bracketed boxes
@@ -93,15 +93,15 @@ CLI_DEFAULT_USER_SEPARATOR: bool = True
 # Disable for a borderless conversation.
 
 # -- Camada 5 visual separation -------------------------------------------
-CLI_DEFAULT_MARGIN_X: int = 4
+CLI_DEFAULT_MARGIN_X: int = 2
 # Lateral padding (chars) on both sides of agent output. Solves "text
-# glued to terminal edges" (P1). Range: 0..8 (CLI_MIN_MARGIN..CLI_MAX_MARGIN).
-# Default: 4.
-
-CLI_DEFAULT_GAP_BEFORE_INPUT: int = 2
-# Extra blank lines before the "You:" prompt. Solves "last message
-# glued to bottom" (P2). Range: 0..5 (CLI_MIN_INPUT_GAP..CLI_MAX_INPUT_GAP).
+# glued to terminal edges" (P1). Range: 2..4 (CLI_MIN_MARGIN..CLI_MAX_MARGIN).
 # Default: 2.
+
+CLI_DEFAULT_GAP_BEFORE_INPUT: int = 0
+# Extra blank lines before the "You:" prompt. Solves "last message
+# glued to bottom" (P2). Range: 0..4 (CLI_MIN_INPUT_GAP..CLI_MAX_INPUT_GAP).
+# Default: 0.
 
 CLI_DEFAULT_TURN_BOX: bool = True
 # Render role headers as bracketed boxes "[🤖 Femtobot]" / "[👤 You]"
@@ -112,26 +112,28 @@ CLI_DEFAULT_TURN_BOX: bool = True
 CLI_MIN_GAP: int = 0
 # Inclusive lower bound for ``gap_after_turn``. 0 = no gap.
 
-CLI_MAX_GAP: int = 3
-# Inclusive upper bound for ``gap_after_turn``. 3 is the largest number
+CLI_MAX_GAP: int = 2
+# Inclusive upper bound for ``gap_after_turn``. 2 is the largest number
 # of blank lines the renderer will print — beyond that the terminal
 # feels empty.
 
-CLI_MIN_MARGIN: int = 0
-# Inclusive lower bound for ``margin_x``. 0 = no lateral padding
-# (legacy behavior).
+CLI_MIN_MARGIN: int = 2
+# Inclusive lower bound for ``margin_x``. 2 = the visual minimum that
+# keeps text off the terminal edge. Setting to 0 is not allowed because
+# it would defeat P1 ("text glued to terminal edges").
 
-CLI_MAX_MARGIN: int = 8
-# Inclusive upper bound for ``margin_x``. 8 chars (~half of a typical
-# 80-col terminal) is the widest that still leaves room for content.
+CLI_MAX_MARGIN: int = 4
+# Inclusive upper bound for ``margin_x``. 4 chars is the widest
+# lateral padding that still leaves room for content on a typical
+# 80-col terminal.
 
 CLI_MIN_INPUT_GAP: int = 0
 # Inclusive lower bound for ``gap_before_input``. 0 = the prompt sits
 # directly under the last reply.
 
-CLI_MAX_INPUT_GAP: int = 5
-# Inclusive upper bound for ``gap_before_input``. 5 blank lines is
-# enough for tall terminals without making the user scroll back to
+CLI_MAX_INPUT_GAP: int = 4
+# Inclusive upper bound for ``gap_before_input``. 4 blank lines is
+# enough breathing room without making the user scroll back to
 # find context.
 
 

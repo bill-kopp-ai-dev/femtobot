@@ -108,8 +108,9 @@ def test_turn_gap_explicit_zero() -> None:
     assert turn_gap(0) == []
 
 
-def test_turn_gap_explicit_three() -> None:
-    assert turn_gap(3) == ["", "", ""]
+def test_turn_gap_explicit_max() -> None:
+    """MAX_GAP blanks lines exactly."""
+    assert turn_gap(MAX_GAP) == [""] * MAX_GAP
 
 
 def test_turn_gap_clamps_above_max() -> None:
@@ -209,10 +210,10 @@ def test_spacing_renderer_input_gap_default() -> None:
     assert buf.getvalue().endswith("\n\n")
 
 
-def test_spacing_renderer_margin_default_is_4() -> None:
-    """Camada 5 — margin_x defaults to 4 chars."""
+def test_spacing_renderer_margin_default_is_2() -> None:
+    """Camada 5 — margin_x defaults to 2 chars (minimum required by P1)."""
     spacing = TurnSpacingRenderer()
-    assert spacing.margin_x == 4
+    assert spacing.margin_x == 2
 
 
 def test_spacing_renderer_apply_margin_returns_console() -> None:
@@ -302,12 +303,41 @@ def test_user_separator_includes_margin_left_padding() -> None:
     assert out.startswith("    ·")
 
 
-def test_zero_margin_emits_no_left_padding() -> None:
-    """When margin_x=0 the header / user box / separator start at column 0.
+def test_min_margin_emits_minimum_left_padding() -> None:
+    """``margin_x=CLI_MIN_MARGIN`` produces exactly that many spaces.
 
-    This protects the legacy look: a user who disables the margin
-    (or never had Camada 5) shouldn't see a phantom leading space.
+    The minimum margin (currently 2) enforces P1: text must never sit
+    flush against the terminal's left edge. The renderer normalizes
+    smaller values up to the minimum.
     """
+    from femtobot.config.schema import CLI_MIN_MARGIN
+
+    console, buf = _capture_console()
+    spacing = TurnSpacingRenderer(
+        gap_after_turn=1,
+        role_header_mode="always",
+        user_separator=True,
+        accent_color="#d77757",
+        bot_name="Femtobot",
+        turn_box=True,
+        margin_x=CLI_MIN_MARGIN,
+    )
+    spacing.print_role_header(console)
+    spacing.print_user_box(console)
+    out = buf.getvalue()
+    # Exactly CLI_MIN_MARGIN chars of leading whitespace.
+    assert out.startswith(" " * CLI_MIN_MARGIN + "[")
+    assert "Femtobot" in out
+
+
+def test_below_min_margin_is_clamped_up() -> None:
+    """``margin_x < CLI_MIN_MARGIN`` is clamped up to the minimum.
+
+    We don't allow ``margin_x=0`` because that would defeat P1. Users
+    who insist on no padding can edit ``CLI_MIN_MARGIN`` directly.
+    """
+    from femtobot.config.schema import CLI_MIN_MARGIN
+
     console, buf = _capture_console()
     spacing = TurnSpacingRenderer(
         gap_after_turn=1,
@@ -319,42 +349,43 @@ def test_zero_margin_emits_no_left_padding() -> None:
         margin_x=0,
     )
     spacing.print_role_header(console)
-    spacing.print_user_box(console)
     out = buf.getvalue()
-    # The header box must start exactly at "[".
-    assert "Femtobot" in out
-    assert out.startswith("[")
+    # 0 was clamped up to CLI_MIN_MARGIN (2) — header gets 2 spaces of padding.
+    assert out.startswith(" " * CLI_MIN_MARGIN + "[")
 
 
 def test_padding_helper_clamps_above_max_margin() -> None:
-    """``_pad_left`` clamps the margin to CLI_MAX_MARGIN (8).
+    """``_pad_left`` clamps the margin to ``CLI_MAX_MARGIN``.
 
     Prevents a user typo (`margin_x=99`) from injecting 99 chars of
     whitespace and pushing the box off the right edge of the terminal.
     """
     from femtobot.cli.role_renderer import _pad_left
+    from femtobot.config.schema import CLI_MAX_MARGIN
 
     txt = _pad_left(Text("hello"), 99)
-    assert txt.plain.startswith(" " * 8 + "hello")
-    assert len(txt.plain) == 8 + len("hello")
+    assert txt.plain.startswith(" " * CLI_MAX_MARGIN + "hello")
+    assert len(txt.plain) == CLI_MAX_MARGIN + len("hello")
 
 
-def test_padding_helper_zero_or_none_returns_input_unchanged() -> None:
-    """``_pad_left`` is a no-op for ``margin=0``.
+def test_padding_helper_zero_is_clamped_to_min() -> None:
+    """``_pad_left`` clamps ``margin=0`` up to ``CLI_MIN_MARGIN``.
 
-    ``margin=None`` falls through to the schema default
-    (:data:`CLI_DEFAULT_MARGIN_X`), which we don't pin here — we only
-    verify the helper produces the schema default when called with
-    ``None`` rather than an explicit value.
+    The minimum margin enforces P1: text must never sit flush against
+    the terminal's left edge. ``margin=None`` falls through to the
+    schema default (:data:`CLI_DEFAULT_MARGIN_X`).
     """
     from femtobot.cli.role_renderer import _pad_left
-    from femtobot.config.schema import CLI_DEFAULT_MARGIN_X
+    from femtobot.config.schema import (
+        CLI_DEFAULT_MARGIN_X,
+        CLI_MIN_MARGIN,
+    )
 
     base = Text("hello")
-    # ``margin=0`` is a true no-op (input is returned unchanged).
+    # ``margin=0`` is clamped up to the minimum (2 chars).
     result_zero = _pad_left(base, 0)
-    assert result_zero.plain == "hello"
-    # ``None`` → schema default (currently 4 chars).
+    assert result_zero.plain.startswith(" " * CLI_MIN_MARGIN + "hello")
+    # ``None`` → schema default (currently 2 chars).
     result_none = _pad_left(base, None)
     assert result_none.plain.startswith(" " * CLI_DEFAULT_MARGIN_X + "hello")
 
@@ -522,24 +553,34 @@ def test_schema_field_defaults_capture_schema_constants() -> None:
     assert fields["turn_box"].default is CLI_DEFAULT_TURN_BOX
 
 
-def test_cli_spacing_bounds_have_zero_lower_limit() -> None:
-    """All three knobs (``gap_after_turn``, ``margin_x``, ``gap_before_input``)
-    must allow zero so users can disable the visual treatment without
-    editing the schema.
+def test_cli_spacing_bounds_match_documented_ranges() -> None:
+    """Pin the exact bounds so a regression that changes them surfaces
+    immediately and the JSON schema / Field descriptions stay honest.
 
-    Regression: a previous refactor accidentally set ``CLI_MIN_GAP=1`` /
-    ``CLI_MIN_MARGIN=2`` / ``CLI_MIN_INPUT_GAP=2``, which forced a
-    non-zero minimum and broke the "no padding" / "no gap" experience.
+    Documented ranges:
+      - ``gap_after_turn``     — 0..2 (blank lines after each turn)
+      - ``margin_x``           — 2..4 (lateral padding, enforces P1)
+      - ``gap_before_input``   — 0..4 (blank lines before the prompt)
     """
     from femtobot.config.schema import (
+        CLI_MAX_GAP,
+        CLI_MAX_INPUT_GAP,
+        CLI_MAX_MARGIN,
         CLI_MIN_GAP,
         CLI_MIN_INPUT_GAP,
         CLI_MIN_MARGIN,
     )
 
+    # gap_after_turn: 0..2
     assert CLI_MIN_GAP == 0
-    assert CLI_MIN_MARGIN == 0
+    assert CLI_MAX_GAP == 2
+    # margin_x: 2..4 (P1 enforces a minimum visual margin so text
+    # doesn't sit flush against the terminal edge).
+    assert CLI_MIN_MARGIN == 2
+    assert CLI_MAX_MARGIN == 4
+    # gap_before_input: 0..4
     assert CLI_MIN_INPUT_GAP == 0
+    assert CLI_MAX_INPUT_GAP == 4
 
 
 def test_cli_spacing_defaults_match_documented_values() -> None:
@@ -548,8 +589,8 @@ def test_cli_spacing_defaults_match_documented_values() -> None:
 
     Values must match:
       - ``gap_after_turn``     = 1  (one blank line after each turn)
-      - ``margin_x``           = 4  (4 chars of lateral padding)
-      - ``gap_before_input``   = 2  (2 blank lines before the prompt)
+      - ``margin_x``           = 2  (2 chars of lateral padding)
+      - ``gap_before_input``   = 0  (no extra blank lines before prompt)
     """
     from femtobot.config.schema import (
         CLI_DEFAULT_GAP_AFTER_TURN,
@@ -558,8 +599,8 @@ def test_cli_spacing_defaults_match_documented_values() -> None:
     )
 
     assert CLI_DEFAULT_GAP_AFTER_TURN == 1
-    assert CLI_DEFAULT_MARGIN_X == 4
-    assert CLI_DEFAULT_GAP_BEFORE_INPUT == 2
+    assert CLI_DEFAULT_MARGIN_X == 2
+    assert CLI_DEFAULT_GAP_BEFORE_INPUT == 0
 
 
 def test_spacing_field_descriptions_are_present_and_informative() -> None:
