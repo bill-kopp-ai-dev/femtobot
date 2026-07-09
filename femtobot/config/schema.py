@@ -179,9 +179,9 @@ class DreamConfig(Base):
     model_override: str | None = Field(
         default=None
     )  # Override model for Dream sessions (pending implementation)
-    max_batch_size: int = Field(default=20, ge=1)  # Deprecated: no longer used
-    max_iterations: int = Field(default=15, ge=1)  # Deprecated: no longer used
-    annotate_line_ages: bool = True  # Deprecated: no longer used
+    max_batch_size: int = Field(default=20, ge=1, exclude=True)  # Deprecated: no longer used
+    max_iterations: int = Field(default=15, ge=1, exclude=True)  # Deprecated: no longer used
+    annotate_line_ages: bool = Field(default=True, exclude=True)  # Deprecated: no longer used
 
     def describe_schedule(self) -> str:
         """Return a human-readable summary for logs and startup output."""
