@@ -899,6 +899,18 @@ class AgentRunner:
         tool_results: list[tuple[Any, dict[str, str], BaseException | None]] = []
         for batch in batches:
             if spec.concurrent_tools and len(batch) > 1:
+                # Audit (H6 of the v0.0.9 fourth-pass review):
+                # ``asyncio.gather`` defaults to
+                # ``return_exceptions=False`` and *cancels* the
+                # remaining tasks when one raises, leading to
+                # half-applied side effects (e.g. one tool wrote
+                # to disk, another was cancelled mid-write).  We
+                # now use ``return_exceptions=True`` so each
+                # tool's error surfaces in the result list and
+                # peers can finish cleanly.  ``_run_tool`` itself
+                # catches ``Exception`` (not ``BaseException``) so
+                # ``CancelledError`` still propagates as
+                # designed.
                 batch_results = await asyncio.gather(
                     *(
                         self._run_tool(
@@ -908,9 +920,20 @@ class AgentRunner:
                             workspace_violation_counts,
                         )
                         for tool_call in batch
-                    )
+                    ),
+                    return_exceptions=True,
                 )
-                tool_results.extend(batch_results)
+                # ``_run_tool`` returns a tuple on success; if
+                # it raised (now an ``Exception`` instance in
+                # the result list), we synthesize an error tuple
+                # so the rest of the loop can handle it.
+                normalized: list[Any] = []
+                for r in batch_results:
+                    if isinstance(r, BaseException):
+                        normalized.append((None, {}, r))
+                    else:
+                        normalized.append(r)
+                tool_results.extend(normalized)
             else:
                 batch_results = []
                 for tool_call in batch:

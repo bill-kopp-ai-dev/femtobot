@@ -1195,9 +1195,26 @@ async def connect_missing_servers(state: Any, registry: ToolRegistry) -> None:
         else:
             logger.warning("No MCP servers connected successfully (will retry next message)")
     except asyncio.CancelledError:
+        # Audit (H4 of the v0.0.9 fourth-pass review): this
+        # branch was shadowed by the ``except BaseException``
+        # below (BaseException is a superclass of
+        # CancelledError).  Python picks the first matching
+        # except clause, so when CancelledError was raised, the
+        # first branch ran as expected — *but* the dead code
+        # confused readers and made the cancel path
+        # ungrep-able.  We re-raise after logging so cancellation
+        # propagates as designed (the outer
+        # ``state._mcp_connecting = False`` in the ``finally``
+        # block still runs).
         logger.warning("MCP connection cancelled (will retry next message)")
         state._mcp_connected = bool(state._mcp_stacks)
-    except BaseException as e:
+        raise
+    except Exception as e:
+        # ``BaseException`` was used here previously, but that
+        # also caught ``CancelledError`` (shadowing the explicit
+        # branch above) and ``SystemExit`` / ``KeyboardInterrupt``,
+        # which should propagate.  ``Exception`` is the right
+        # boundary for "MCP failed, log and continue".
         logger.warning("Failed to connect MCP servers (will retry next message): {}", e)
         state._mcp_connected = bool(state._mcp_stacks)
     finally:

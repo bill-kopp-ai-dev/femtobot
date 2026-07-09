@@ -121,7 +121,11 @@ class ContextBuilder:
     _RUNTIME_CONTEXT_END = "[/Runtime Context]"
 
     def __init__(
-        self, workspace: Path, timezone: str | None = None, disabled_skills: list[str] | None = None
+        self,
+        workspace: Path,
+        timezone: str | None = None,
+        disabled_skills: list[str] | None = None,
+        agents_config: Any = None,
     ):
         self.workspace = workspace
         self.timezone = timezone
@@ -129,6 +133,16 @@ class ContextBuilder:
         self.skills = SkillsLoader(
             workspace, disabled_skills=set(disabled_skills) if disabled_skills else None
         )
+        # Audit (H1 of the v0.0.9 fourth-pass review): the
+        # previous code read ``self.agents_config.defaults.X``
+        # in the ``_build_*_block`` method but never assigned
+        # ``self.agents_config`` anywhere in ``__init__``.  The
+        # ``try/except Exception`` wrapper silently caught the
+        # resulting ``AttributeError`` and disabled the
+        # ``include_mcp_context`` feature flag in production.
+        # The AgentLoop now passes the live ``config.agents`` so
+        # this is no longer dead code.
+        self.agents_config = agents_config
 
     def build_system_prompt(
         self,
@@ -157,12 +171,17 @@ class ContextBuilder:
             parts.append(mcp_protocol_block)
 
         # Phase 8: opt-in sync of AGENTS.md / MEMORY.md headers from MCPs.
-        try:
-            include_mcp = bool(
-                self.agents_config.defaults.include_mcp_context  # type: ignore[attr-defined]
-            )
-        except Exception:
+        # Audit (H1 of the v0.0.9 fourth-pass review): the previous
+        # ``try/except Exception`` wrapper silently caught
+        # ``AttributeError`` because ``self.agents_config`` was never
+        # assigned in ``__init__``.  Now that AgentLoop passes the
+        # live ``config.agents`` we can read the flag directly.
+        if self.agents_config is None:
             include_mcp = False
+        else:
+            include_mcp = bool(
+                self.agents_config.defaults.include_mcp_context
+            )
         if include_mcp and getattr(self, "tools_config", None) is not None:
             mcp_persistence_snippets = _collect_mcp_persistence_snippets(
                 getattr(self.tools_config, "mcp_servers", None)

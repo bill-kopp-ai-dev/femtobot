@@ -1620,8 +1620,18 @@ def tools_list(
         console.print(f"[yellow]{msg}[/yellow]")
         raise SystemExit(0)
     for tool in tools:
-        suffix = ""
+        # Audit (H3 of the v0.0.9 fourth-pass review): the
+        # previous code did ``suffix = ""`` which shadowed the
+        # ``suffix`` Typer parameter (used to locate the
+        # instance folder).  The outer ``suffix`` was no longer
+        # ``None`` (default) but a string; the existing
+        # ``resolve_runtime_location(...)`` call had already
+        # captured the original, so this was a latent bug (the
+        # Typer parameter still worked, but the inner ``suffix``
+        # binding was a confusing shadow).  We rename the inner
+        # binding to ``cap_suffix`` for clarity.
+        cap_suffix = ""
         if show_capabilities:
             caps = tool.get_capabilities()
-            suffix = f"  [dim]({', '.join(caps)})[/dim]" if caps else ""
-        console.print(f"- {tool.name}{suffix}")
+            cap_suffix = f"  [dim]({', '.join(caps)})[/dim]" if caps else ""
+        console.print(f"- {tool.name}{cap_suffix}")

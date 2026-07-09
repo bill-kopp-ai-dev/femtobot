@@ -286,7 +286,23 @@ class AgentLoop:
         self._last_usage: dict[str, int] = {}
         self._extra_hooks: list[AgentHook] = hooks or []
 
-        self.context = ContextBuilder(workspace, timezone=timezone, disabled_skills=disabled_skills)
+        # Audit (H1 of the v0.0.9 fourth-pass review): assign
+        # ``self.agents_config`` *before* the ``ContextBuilder``
+        # call so the context builder can read the live flag
+        # (``include_mcp_context``) without falling back to a
+        # silent default.  Default to a fresh ``AgentsConfig``
+        # so direct ``__init__`` callers (e.g. tests) still get
+        # a usable object; ``from_config`` overrides this with
+        # the live ``config.agents`` after the loop is built.
+        from femtobot.config.schema import AgentsConfig
+
+        self.agents_config: Any = AgentsConfig()
+        self.context = ContextBuilder(
+            workspace,
+            timezone=timezone,
+            disabled_skills=disabled_skills,
+            agents_config=self.agents_config,
+        )
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         # One file-read/write tracker per logical session. The tool registry is
@@ -320,7 +336,21 @@ class AgentLoop:
         # are routed here instead of creating a new task.
         self._pending_queues: dict[str, asyncio.Queue] = {}
         # FEMTOBOT_MAX_CONCURRENT_REQUESTS: <=0 means unlimited; default 3.
-        _max = int(os.environ.get("FEMTOBOT_MAX_CONCURRENT_REQUESTS", "3"))
+        # Audit (H2 of the v0.0.9 fourth-pass review): the
+        # previous ``int(os.environ.get(...))`` crashed startup
+        # with ``ValueError`` if the env var was set to a
+        # non-integer (e.g. ``"many"``).  We now fall back to
+        # the default and log a warning so operators notice.
+        raw = os.environ.get("FEMTOBOT_MAX_CONCURRENT_REQUESTS", "3")
+        try:
+            _max = int(raw)
+        except (ValueError, TypeError):
+            logger.warning(
+                "FEMTOBOT_MAX_CONCURRENT_REQUESTS={!r} is not an integer;"
+                " falling back to default of 3.",
+                raw,
+            )
+            _max = 3
         self._concurrency_gate: asyncio.Semaphore | None = (
             asyncio.Semaphore(_max) if _max > 0 else None
         )
@@ -433,6 +463,11 @@ class AgentLoop:
         # ``/style``) can mutate live settings at runtime. See
         # ``femtobot.command.builtin.cmd_style``.
         instance._config = config
+        # Also expose ``config.agents`` directly so
+        # ``notify_mcp_startup_failures`` and
+        # ``include_mcp_context`` can read their flags without
+        # having to go through ``_config`` (audit H1).
+        instance.agents_config = config.agents
         return instance
 
     def _apply_provider_snapshot(
@@ -569,13 +604,14 @@ class AgentLoop:
         )
 
         # Opt-in user-facing warning (default: log only).
-        notify = False
-        try:
-            notify = bool(
-                self.agents_config.defaults.notify_mcp_startup_failures  # type: ignore[attr-defined]
-            )
-        except Exception:
-            notify = False
+        # Audit (H1 of the v0.0.9 fourth-pass review): the
+        # previous ``try/except Exception`` wrapper silently
+        # caught ``AttributeError`` because ``self.agents_config``
+        # was never assigned.  Now that ``__init__`` initializes
+        # the attribute, we can read the flag directly.
+        notify = bool(
+            self.agents_config.defaults.notify_mcp_startup_failures
+        )
         if not notify:
             return
 

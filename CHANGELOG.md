@@ -9,6 +9,57 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-07-09
+
+> Lote H: Fourth-pass hardening (5 fixes, 13 tests novos).
+> Compat 100% com v0.0.9. Bump minor para marcar o primeiro
+> release pós-multi-rodada de hardening.
+
+### Fixed
+- **(H1, CRITICAL) `self.agents_config` nunca era inicializado** em
+  [agent/loop.py](femtobot/agent/loop.py) e [agent/context.py](femtobot/agent/context.py).
+  Os métodos `notify_mcp_startup_failures` e
+  `include_mcp_context` liam `self.agents_config.defaults.X` mas o
+  atributo nunca era setado em `__init__`.  O `try/except Exception`
+  silenciosamente engolia `AttributeError`, desabilitando 2 feature
+  flags em produção.  Tests passavam porque monkey-patchavam o
+  atributo.  **Fix:** `__init__` agora inicializa
+  `self.agents_config = AgentsConfig()`; `from_config` substitui
+  com `config.agents`; `ContextBuilder` recebe o live flag.
+- **(H2, HIGH) `int(os.environ.get(...))` sem try/except** em
+  [agent/loop.py](femtobot/agent/loop.py).  `FEMTOBOT_MAX_CONCURRENT_REQUESTS=many`
+  crashava o startup com `ValueError`.  **Fix:** try/except com
+  fallback ao default (3) e warning logado.
+- **(H3, MEDIUM) Variable shadowing em `tools_list`** em
+  [cli/commands.py](femtobot/cli/commands.py).  `suffix = ""` no
+  loop for sobrescrevia o parâmetro Typer `suffix` (usado para
+  localizar o instance folder).  **Fix:** renomeado inner binding
+  para `cap_suffix`.
+- **(H4, MEDIUM) `except BaseException` shadowing `CancelledError`** em
+  [tools/mcp.py](femtobot/agent/tools/mcp.py).  O `except asyncio.CancelledError`
+  acima era shadowed por `except BaseException` (superclasse).
+  **Fix:** `CancelledError` re-raise após log; `Exception` (não
+  `BaseException`) para erros recuperáveis.
+- **(H6, HIGH) `asyncio.gather` sem `return_exceptions`** em
+  [agent/runner.py](femtobot/agent/runner.py).  Uma tool que
+  raise cancelava todas as peers em flight, deixando side-effects
+  parciais.  **Fix:** `return_exceptions=True` + sintetizar error
+  tuple para cada exception.
+
+### Added
+- 3 novos arquivos de test (13 testes de regressão):
+  - `tests/test_agents_config_init.py` (H1) — 4 testes
+  - `tests/test_env_var_parsing.py` (H2) — 6 testes
+  - `tests/test_concurrent_tools_isolation.py` (H6) — 3 testes
+
+### Tests
+- Suite: **608 passed, 0 failed** (13 testes a mais que v0.0.9).
+- Ruff: **All checks passed!**.
+
+### Migration
+Compat 100% com v0.0.9. Bump minor (0.0.9 → 0.1.0) marca a
+transição pós-multi-rodada de hardening; nenhuma breaking change.
+
 ## [0.0.9] — 2026-07-09
 
 > Lote G: Third-pass hardening (5 fixes, 39 tests novos).
@@ -483,7 +534,8 @@ Initial public alpha.
 - Multiple-instance support via `--suffix` / `--folder-path` /
   `FEMTOBOT_HOME`.
 
-[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.9...HEAD
+[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.9...v0.1.0
 [0.0.9]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.6...v0.0.7
