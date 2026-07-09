@@ -610,11 +610,21 @@ class MemoryStore:
         for message in messages:
             if not message.get("content"):
                 continue
+            # Audit (J8 of the v0.1.1 sixth-pass review):
+            # ``message['role']`` used to raise ``KeyError`` for
+            # entries that lack a ``role`` field (e.g. malformed
+            # imports or partially-written JSONL).  We now use
+            # ``.get('role', 'unknown')`` so the function
+            # degrades gracefully and the caller can still see
+            # the message content.
+            role = message.get("role", "unknown")
+            if not isinstance(role, str):
+                role = str(role)
             tools = (
                 f" [tools: {', '.join(message['tools_used'])}]" if message.get("tools_used") else ""
             )
             lines.append(
-                f"[{message.get('timestamp', '?')[:16]}] {message['role'].upper()}{tools}: {message['content']}"
+                f"[{message.get('timestamp', '?')[:16]}] {role.upper()}{tools}: {message['content']}"
             )
         return "\n".join(lines)
 

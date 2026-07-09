@@ -137,6 +137,27 @@ class Femtobot:
         prev = self._loop._extra_hooks
         base_hooks = list(hooks) if hooks is not None else list(prev or [])
         self._loop._extra_hooks = [capture, *base_hooks]
+        # Audit (J14 of the v0.1.1 sixth-pass review): validate
+        # ``_lock_timeout_s`` BEFORE the lock path so a NaN/inf
+        # value (which would have taken the ``else`` branch and
+        # called ``_acquire_session_lock``) raises
+        # ``ValueError`` early.  ``math.isfinite`` is False for
+        # NaN and both infinities; we also reject negatives
+        # explicitly.
+        import math
+
+        # Audit (J14): check the full set of bad values, not
+        # just ``> 0`` (NaN fails both ``> 0`` and ``<= 0``
+        # comparisons, so the first guard must reject *all*
+        # non-finite and negative values).
+        if (
+            not math.isfinite(self._lock_timeout_s)
+            or self._lock_timeout_s < 0
+        ):
+            raise ValueError(
+                f"lock_timeout_s must be a finite non-negative number;"
+                f" got {self._lock_timeout_s!r}"
+            )
         try:
             # B1: serialize concurrent calls on the same session_key.
             if self._lock_timeout_s <= 0:
@@ -145,7 +166,25 @@ class Femtobot:
                     session_key=session_key,
                 )
             else:
+                # Audit (J3 of the v0.1.1 sixth-pass review):
+                # ``_sdk_locks`` is a ``WeakValueDictionary`` so
+                # the lock value can be GC'd between the
+                # ``_acquire_session_lock`` return and the
+                # ``lock.acquire()`` call below.  If that
+                # happens, ``acquire()`` operates on a fresh
+                # lock (uncontended) and the original lock is
+                # never released, breaking serialization.
+                # We pin a strong reference in a local
+                # variable so the GC cannot collect the lock
+                # while we're waiting for it.
                 lock = await self._acquire_session_lock(session_key)
+                # ``_keep_alive`` is a strong reference
+                # retained for the lifetime of this function
+                # call; assigning it to ``self._sdk_locks[key]``
+                # is not enough because that only stores a
+                # weak reference.  The local ``lock`` is the
+                # strong reference.
+                _keep_alive = lock
                 try:
                     await asyncio.wait_for(lock.acquire(), timeout=self._lock_timeout_s)
                 except asyncio.TimeoutError:

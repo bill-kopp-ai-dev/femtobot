@@ -8,8 +8,8 @@
 
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.1-green.svg)](./pyproject.toml)
-[![Tests](https://img.shields.io/badge/tests-617%20passing-brightgreen.svg)](./tests/)
+[![Version](https://img.shields.io/badge/version-0.1.2-green.svg)](./pyproject.toml)
+[![Tests](https://img.shields.io/badge/tests-626%20passing-brightgreen.svg)](./tests/)
 [![Ruff](https://img.shields.io/badge/ruff-clean-brightgreen.svg)](./pyproject.toml)
 
 **A lightweight, CLI-first AI agent foundation for multi-agent systems.**
@@ -440,14 +440,14 @@ Femtobot follows the [REFACTOR_PLAN.md](./REFACTOR_PLAN.md) which tracks an upst
 
 | Lote | Version | Theme | Items | Tests added |
 |------|---------|-------|-------|-------------|
-| **E** | **v0.1.1** (current) | Hardening pós-release | 11 bugfixes E1–E11 | 30 regression |
+| **E** | **v0.1.2** (current) | Hardening pós-release | 11 bugfixes E1–E11 | 30 regression |
 | D | v0.0.6 | Provedores (Bedrock + proxy bypass) | 2 items (D1, D3) | 14 |
 | C | v0.0.5 | Refator de arquitetura (capabilities, extensions, wizard) | 5 items (C1–C5) | 37 |
 | B | v0.0.4 | Durabilidade e concorrência (locks, usage, goal) | 6 items (B1–B6) | 27 |
 | A | v0.0.3 | Estabilidade e segurança (SSRF, MCP probe, atomic) | 14 items (A1–A14) | 51 |
 | Initial | v0.0.2 | Public alpha | — | — |
 
-> **v0.1.1 (current):** Lote E is a hardening milestone — no new features, no breaking changes.  Audit ran `ruff` (zero errors), `pytest` (536 passing),  and a deep manual review (race conditions, security, AttributeError crash paths).  The full diff + regression coverage is in [CHANGELOG.md](./CHANGELOG.md).
+> **v0.1.2 (current):** Lote E is a hardening milestone — no new features, no breaking changes.  Audit ran `ruff` (zero errors), `pytest` (536 passing),  and a deep manual review (race conditions, security, AttributeError crash paths).  The full diff + regression coverage is in [CHANGELOG.md](./CHANGELOG.md).
 
 ## Development
 

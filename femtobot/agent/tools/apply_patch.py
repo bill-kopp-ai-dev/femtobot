@@ -256,22 +256,55 @@ class ApplyPatchTool(_FsTool):
                     _format_summary(summary) for summary in summaries
                 )
 
-            backups: dict[Path, bytes | None] = {}
+            # Audit (J1 of the v0.1.1 sixth-pass review): the
+            # previous backup stored only the file content
+            # (``read_bytes``), discarding the file's mode
+            # (chmod), uid, gid, and timestamps.  A rollback
+            # via ``write_bytes`` reopens the file with default
+            # permissions (``0o644``), so a script with the
+            # executable bit (``chmod +x``) loses it after
+            # rollback.  We now capture the ``stat_result``
+            # and restore the mode (chmod) on rollback.
+            import stat as _stat
+
+            backups: dict[Path, tuple[bytes | None, object | None]] = {}
             for path in writes:
-                backups[path] = path.read_bytes() if path.exists() else None
+                if path.exists():
+                    backups[path] = (path.read_bytes(), path.stat())
+                else:
+                    backups[path] = (None, None)
 
             try:
                 for path, content in writes.items():
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text(content, encoding="utf-8", newline="")
             except Exception:
-                for path, data in backups.items():
+                for path, (data, st) in backups.items():
                     if data is None:
                         if path.exists():
                             path.unlink()
                     else:
                         path.parent.mkdir(parents=True, exist_ok=True)
                         path.write_bytes(data)
+                        # Restore the original file mode so
+                        # the executable bit (and any other
+                        # permission bits the user had set)
+                        # is preserved across a rollback.
+                        if st is not None:
+                            try:
+                                # ``stat.S_IMODE`` masks out the
+                                # file-type bits; we only restore
+                                # the permission bits and leave
+                                # type bits to the OS.
+                                path.chmod(_stat.S_IMODE(st.st_mode))
+                            except OSError:  # pragma: no cover - defensive
+                                # Some filesystems don't support
+                                # chmod (e.g. Windows, FAT).
+                                # We swallow the error rather
+                                # than fail the rollback — the
+                                # content was restored, which is
+                                # the primary goal.
+                                pass
                 raise
 
             for path in writes:

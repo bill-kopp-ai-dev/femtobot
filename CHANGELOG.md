@@ -9,6 +9,51 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-07-09
+
+> Lote J: Sixth-pass hardening (4 fixes, 9 tests novos).
+> Compat 100% com v0.1.1.
+
+### Fixed
+- **(J1, HIGH) `apply_patch` rollback perdia permissões** em
+  [tools/apply_patch.py](femtobot/agent/tools/apply_patch.py).
+  `write_bytes` restaurava conteúdo mas perdia chmod bits.
+  **Fix:** backup agora salva `stat_result`; rollback chama
+  `path.chmod(stat.S_IMODE(st.st_mode))`.
+- **(J3, HIGH) `Femtobot._sdk_locks` GC race** em
+  [femtobot.py](femtobot/femtobot.py).  Lock em
+  `WeakValueDictionary` podia ser GC'd entre
+  `_acquire_session_lock` return e `lock.acquire()`.  **Fix:**
+  strong reference local `_keep_alive = lock`.
+- **(J8, MEDIUM) `_format_messages` KeyError** em
+  [agent/memory.py](femtobot/agent/memory.py).
+  `message['role']` levantava KeyError em entry sem role.
+  **Fix:** `message.get('role', 'unknown')` com fallback
+  para `str()` se não for string.
+- **(J14, LOW) `Femtobot.run` lock_timeout_s sem validação** em
+  [femtobot.py](femtobot/femtobot.py).  NaN/inf passava
+  silenciosamente, `asyncio.wait_for(..., nan)` levanta
+  `ValueError` indistinguível de timeout real.  **Fix:**
+  validação com `math.isfinite() and >= 0` antes do lock
+  path.
+
+### Not Fixed (Falsos Positivos ou Fora de Escopo)
+- **J2 (path traversal `\`)** — o regex `r"[\\/]+"` já
+  divide corretamente. Verificado com casos de teste.
+- **J4-J7, J9-J13, J15** — analisados, mas requerem refator
+  maiores ou estão cobertos por outras camadas.
+
+### Added
+- 1 novo arquivo de test (9 testes de regressão):
+  - `tests/test_sixth_pass_fixes.py` (J1, J3, J8, J14) — 9 testes
+
+### Tests
+- Suite: **626 passed, 0 failed** (9 testes a mais que v0.1.1).
+- Ruff: **All checks passed!**.
+
+### Migration
+Compat 100% com v0.1.1.
+
 ## [0.1.1] — 2026-07-09
 
 > Lote I: Fifth-pass hardening (5 fixes, 9 tests novos).
@@ -576,7 +621,8 @@ Initial public alpha.
 - Multiple-instance support via `--suffix` / `--folder-path` /
   `FEMTOBOT_HOME`.
 
-[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.9...v0.1.0
 [0.0.9]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.8...v0.0.9
