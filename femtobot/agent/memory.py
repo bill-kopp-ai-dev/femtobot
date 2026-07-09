@@ -391,7 +391,14 @@ class MemoryStore:
         """
         entries: list[dict[str, Any]] = []
         with suppress(FileNotFoundError):
-            with open(self.history_file, "r", encoding="utf-8") as f:
+            # Audit (B4 of the v0.0.8 third-pass review): the default
+            # UTF-8 codec does not strip a leading BOM.  When an editor
+            # (or a tar/gzip export that preserves BOM) saves
+            # ``history.jsonl`` with a leading ``\ufeff``, the very
+            # first line failed ``json.loads`` and the entire file was
+            # silently dropped on load.  ``utf-8-sig`` auto-strips the
+            # BOM and is a no-op for files that don't have one.
+            with open(self.history_file, "r", encoding="utf-8-sig") as f:
                 for idx, line in enumerate(f):
                     line = line.strip()
                     if not line:
@@ -420,7 +427,11 @@ class MemoryStore:
                     return None
                 read_size = min(size, 4096)
                 f.seek(size - read_size)
-                data = f.read().decode("utf-8")
+                # Audit (B4 of the v0.0.8 third-pass review): see the
+                # utf-8-sig note in ``_iter_valid_entries``.  We strip
+                # the BOM here too so a tail-read of a BOM-prefixed
+                # file doesn't fail JSON parsing.
+                data = f.read().decode("utf-8-sig")
                 lines = [line for line in data.split("\n") if line.strip()]
                 if not lines:
                     return None

@@ -17,6 +17,7 @@ from typing import Any
 from aiohttp import web
 from loguru import logger
 
+from femtobot.utils.helpers import scrub_text
 from femtobot.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
 
 __all__ = (
@@ -194,10 +195,15 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
     # GC the Lock between ``get`` and ``acquire``.
     _keep_alive = session_lock
 
+    # Audit (B1 of the v0.0.8 third-pass review): the user message
+    # used to land in the log verbatim, leaking API keys, tokens,
+    # and other secrets the caller embedded in their request.
+    # Apply ``scrub_text`` before logging — over-redaction is safe,
+    # under-redaction is what we are guarding against.
     logger.info(
         "API request session_key={} text={} stream={}",
         session_key,
-        text[:80],
+        scrub_text(text[:80]),
         stream,
     )
     # -- streaming path --

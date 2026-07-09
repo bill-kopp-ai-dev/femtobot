@@ -33,6 +33,7 @@ from femtobot.utils.helpers import (
     extract_reasoning,
     find_legal_message_start,
     maybe_persist_tool_result,
+    scrub_text,
     strip_think,
     truncate_text,
 )
@@ -962,10 +963,20 @@ class AgentRunner:
                 if isinstance(prepared, tuple) and len(prepared) == 3:
                     tool, params, prep_error = prepared
         if prep_error:
+            # Audit (B5 of the v0.0.8 third-pass review): the
+            # previous code did ``prep_error.split(": ", 1)[-1]``
+            # which (a) returned the entire prep_error when no
+            # ``": "`` was present (i.e. a non-prefixed error like
+            # ``"PermissionError"``) and (b) leaked the absolute
+            # file path when the prep_error mentioned a path.  We
+            # now scrub the path/secret-bearing parts before
+            # truncating to ``_MAX_EVENT_DETAIL_LEN``.
+            parts = prep_error.split(": ", 1)
+            detail_source = parts[-1] if len(parts) == 2 else parts[0]
             event = {
                 "name": tool_call.name,
                 "status": "error",
-                "detail": prep_error.split(": ", 1)[-1][:_MAX_EVENT_DETAIL_LEN],
+                "detail": scrub_text(detail_source)[:_MAX_EVENT_DETAIL_LEN],
             }
             handled = self._classify_violation(
                 raw_text=prep_error,

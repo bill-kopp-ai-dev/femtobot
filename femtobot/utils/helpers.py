@@ -939,3 +939,69 @@ Next steps:
         for f in created_files:
             summary += f"  - {f}\n"
     return summary
+
+
+# ---------------------------------------------------------------------------
+# Secret scrubbing (v0.0.8 third-pass audit B1, B2)
+# ---------------------------------------------------------------------------
+
+# Patterns that match common credential shapes.  We use a single
+# compiled regex with named groups so callers can see *what* was
+# redacted.  The patterns are deliberately conservative — false
+# positives are OK for log output (over-redaction is safe),
+# false negatives are the danger.
+_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Bearer / Basic / API tokens (preserve the "Authorization: Bearer " prefix)
+    re.compile(
+        r"(?i)\b(?P<scheme>authorization\s*:\s*(?:bearer|basic)\s+)"
+        r"(?P<token>[A-Za-z0-9._\-+/=]{8,})"
+    ),
+    # OpenAI-style keys (sk-..., sk-proj-...)
+    re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_\-]{20,}"),
+    # GitHub PATs (ghp_, gho_, ghu_, ghs_, ghr_)
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"),
+    # AWS access keys
+    re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}"),
+    # Generic key=value / key: value pairs (preserve the key + separator)
+    re.compile(
+        r"(?i)\b(?P<key>api[_-]?key|secret|token|password|passwd|pwd)"
+        r"\s*(?P<sep>[:=])\s*"
+        r"[\"']?(?P<value>[A-Za-z0-9._\-+/=]{8,})[\"']?"
+    ),
+    # PEM private keys (just the header marker)
+    re.compile(r"-----BEGIN [A-Z ]+PRIVATE KEY-----"),
+)
+
+
+def scrub_text(text: str, *, placeholder: str = "[REDACTED]") -> str:
+    """Replace secret-looking substrings with ``placeholder``.
+
+    Audit (B1, B2 of the v0.0.8 third-pass review): user-provided
+    message text used to land in INFO logs (full content for short
+    messages; 80-char prefix for longer ones).  This helper scrubs
+    common credential shapes (Authorization headers, OpenAI/GitHub/
+    AWS keys, generic ``key=…`` assignments, PEM blocks) before
+    logging, without altering the underlying API behavior.
+
+    The helper is intentionally lightweight — it doesn't try to be
+    a full credential detector.  Over-redaction is safe (worst case
+    is a log line that's a bit less readable); under-redaction is
+    what we're guarding against.
+    """
+    if not text:
+        return text
+    out = text
+    for pattern in _SECRET_PATTERNS:
+        # Replace the *value* portion when the pattern has named
+        # groups; otherwise redact the whole match.  We support two
+        # shapes:
+        #   - key=value style (groups: key, sep, value)
+        #   - "Scheme: value" style (groups: scheme, token)
+        groups = pattern.groupindex
+        if "key" in groups and "value" in groups:
+            out = pattern.sub(rf"\g<key>\g<sep>{placeholder}", out)
+        elif "scheme" in groups and "token" in groups:
+            out = pattern.sub(rf"\g<scheme>{placeholder}", out)
+        else:
+            out = pattern.sub(placeholder, out)
+    return out

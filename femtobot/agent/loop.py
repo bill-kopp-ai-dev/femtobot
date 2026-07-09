@@ -52,7 +52,7 @@ from femtobot.session.goal_state import (
 )
 from femtobot.session.manager import Session, SessionManager
 from femtobot.utils.document import extract_documents, reference_non_image_attachments
-from femtobot.utils.helpers import image_placeholder_text
+from femtobot.utils.helpers import image_placeholder_text, scrub_text
 from femtobot.utils.helpers import truncate_text as truncate_text_fn
 from femtobot.utils.llm_runtime import LLMRuntime
 from femtobot.utils.runtime import (
@@ -1467,7 +1467,20 @@ class AgentLoop:
             if len(msg.content) > _MAX_INBOUND_PREVIEW_LEN
             else msg.content
         )
-        logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
+        # Audit (B2 of the v0.0.8 third-pass review): the message
+        # content used to land in the log verbatim (full content
+        # for short messages, 80-char prefix for longer ones),
+        # leaking API keys, tokens, or any secret the user embedded
+        # in their message.  ``scrub_text`` replaces common
+        # credential shapes with ``[REDACTED]`` before logging.
+        # Over-redaction is safe; under-redaction is what we guard
+        # against.
+        logger.info(
+            "Processing message from {}:{}: {}",
+            msg.channel,
+            msg.sender_id,
+            scrub_text(preview),
+        )
 
         # Session is already fetched by the caller (_process_message) but
         # ensure it exists in case this handler is invoked independently.

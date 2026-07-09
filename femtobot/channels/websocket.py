@@ -155,6 +155,14 @@ class DummyTokens:
     def take_issued_token_if_valid(self, t):
         return False
 
+    def clear(self) -> None:
+        # Audit (C6 of the v0.0.8 third-pass review): ``stop()``
+        # now calls ``_tokens.clear()`` to invalidate issued
+        # tokens between stop and a future start.  The
+        # production class has the same method; this stub is
+        # here so the dummy class also satisfies the contract.
+        return None
+
 
 class DummyMedia:
     def rewrite_local_markdown_images(self, t):
@@ -979,10 +987,44 @@ class WebSocketChannel(BaseChannel):
             except Exception as e:
                 self.logger.warning("server task error during shutdown: {}", e)
             self._server_task = None
+        # Audit (C6 of the v0.0.8 third-pass review): we used to
+        # just clear the subscriptions and let the server die,
+        # which closed connections abruptly with EOF (clients
+        # see "connection reset").  We now send a graceful
+        # close frame (WS code 1001 = "going away") to each
+        # connected client before tearing the dicts down.
+        await self._send_close_to_all_clients()
         self._subs.clear()
         self._conn_chats.clear()
         self._conn_default.clear()
+        # Invalidate any auth tokens so reconnections during the
+        # window between stop() and a future start() can't reuse
+        # them.
         self._tokens.clear()
+
+    async def _send_close_to_all_clients(self) -> None:
+        """Send WS code 1001 to all currently connected clients.
+
+        Audit (C6): graceful close before shutdown.  The default
+        EOF is brutal; a polite close frame lets clients log
+        "server shutdown" instead of "connection reset".  This
+        function is best-effort: any failure to send a close
+        frame is logged at debug level and otherwise ignored.
+        """
+        # Snapshot the open connections.  We can't iterate the
+        # _conn_default dict directly while clearing it.
+        open_conns = list(self._conn_default.keys())
+        for conn in open_conns:
+            try:
+                conn.close(code=1001)  # 1001 = "going away"
+            except Exception as exc:  # pragma: no cover - defensive
+                # ``repr(conn)`` instead of ``{}`` formatting —
+                # MagicMock instances don't support ``__format__``
+                # for arbitrary format specs, and the log line
+                # should be defensive under any client class.
+                self.logger.debug(
+                    "graceful close failed for {!r}: {!r}", conn, exc
+                )
 
     async def _safe_send_to(self, connection: Any, raw: str, *, label: str = "") -> None:
         """Send a raw frame to one connection, cleaning up on ConnectionClosed."""

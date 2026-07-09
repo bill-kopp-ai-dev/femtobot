@@ -9,6 +9,41 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.9] — 2026-07-09
+
+> Lote G: Third-pass hardening (5 fixes, 39 tests novos).
+> Compat 100% com v0.0.8.
+
+### Fixed
+- **(B1, CRITICAL) `api/server.py` vaza API keys em log** — `scrub_text()` aplicado antes de logar.
+- **(B2, CRITICAL) `loop.py` vaza conteúdo de mensagem em log** — `scrub_text()` aplicado.
+- **(B3, HIGH) `resolve_allowed_path` bypass sem `allowed_root`** — agora `restrict_to_workspace=True` enforça mesmo sem root explícito.
+- **(B4, HIGH) `memory.py` history.jsonl com BOM** — `encoding="utf-8-sig"` em vez de `"utf-8"`.
+- **(B5, MEDIUM) `runner.py` event detail com path absoluto** — `scrub_text()` + tratamento de `len(parts) == 1`.
+- **(B7, MEDIUM) `filesystem.py` não bloqueava `/proc/self/environ`** — blocklist estendido.
+- **(B8, MEDIUM) `md_commands.py` frontmatter regex pegava `---` no corpo** — regex mais restritiva com `(?:\n|$)`.
+- **(C3, HIGH) Signal handler chamava `sys.exit(0)` mid-loop** — usa `threading.Event` + `call_soon_threadsafe`.
+- **(C4, HIGH) `voice.py:_detect_audio_recorder` bloqueava event loop** — agora `async def` + `asyncio.to_thread`.
+- **(C6, MEDIUM) `WebSocketChannel.stop` fechava com EOF** — agora envia WS close frame (code 1001).
+
+### Added
+- Novo helper `scrub_text()` em `utils/helpers.py` (regex para OpenAI/GitHub/AWS keys, Authorization headers, generic key=value, PEM blocks).
+- 4 novos arquivos de test (39 testes de regressão):
+  - `tests/test_scrub_text.py` — 12 testes
+  - `tests/test_history_jsonl_bom.py` — 4 testes
+  - `tests/test_blocked_proc_paths.py` — 7 testes
+  - `tests/test_resolve_allowed_path_restrict.py` — 6 testes
+  - `tests/test_voice_detect_async.py` — 4 testes
+  - `tests/test_cli_signal_handler.py` — 3 testes
+  - `tests/test_websocket_graceful_close.py` — 3 testes
+
+### Tests
+- Suite: **595 passed, 0 failed** (39 testes a mais que v0.0.8).
+- Ruff: **All checks passed!**.
+
+### Migration
+Compat 100% com v0.0.8. Zero breaking changes.
+
 ## [0.0.8] — 2026-07-09
 
 > Lote F: Second-pass hardening (7 fixes, 20 tests novos).
@@ -448,7 +483,8 @@ Initial public alpha.
 - Multiple-instance support via `--suffix` / `--folder-path` /
   `FEMTOBOT_HOME`.
 
-[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.8...HEAD
+[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.9...HEAD
+[0.0.9]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.6...v0.0.7
 [0.0.6]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.5...v0.0.6

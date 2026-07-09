@@ -46,12 +46,24 @@ class VoiceConfig:
     channels: int = 1
 
 
-def _detect_audio_recorder() -> str | None:
-    """Find the best available audio recorder on this system."""
+async def _detect_audio_recorder() -> str | None:
+    """Find the best available audio recorder on this system.
+
+    Audit (C4 of the v0.0.8 third-pass review): this function used
+    to call ``subprocess.run`` synchronously.  When called from an
+    async coroutine (``record_audio``), it blocked the event loop
+    for up to 5 seconds per ``which`` invocation, totalling up to
+    15 seconds.  The caller is now expected to ``await`` this
+    function; we offload to a thread so the loop stays responsive.
+    """
     for cmd in ["ffmpeg", "arecord", "sox"]:
         try:
-            result = subprocess.run(
-                ["which", cmd], capture_output=True, text=True, timeout=5
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ["which", cmd],
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             if result.returncode == 0 and result.stdout.strip():
                 return cmd
@@ -71,7 +83,7 @@ async def record_audio(
     Returns True if recording succeeded, False otherwise.
     Deletes output_path on failure.
     """
-    recorder = _detect_audio_recorder()
+    recorder = await _detect_audio_recorder()
     if recorder is None:
         return False
 

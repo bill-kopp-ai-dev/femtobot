@@ -5,6 +5,7 @@ import os
 import select
 import signal
 import sys
+import threading
 from contextlib import nullcontext, suppress
 from pathlib import Path
 from typing import Any
@@ -1239,11 +1240,35 @@ def agent(
         else:
             cli_channel, cli_chat_id = "cli", session_id
 
+        # Audit (C3 of the v0.0.8 third-pass review): the
+        # previous signal handler called ``sys.exit(0)`` from the
+        # signal frame, which raised ``SystemExit`` *between*
+        # bytecodes of the asyncio loop.  The ``finally`` block
+        # that calls ``agent_loop.stop()``, ``close_mcp()`` and
+        # ``outbound_task.cancel()`` never ran, leaving the agent
+        # loop's background tasks and MCP sockets dangling.
+        #
+        # The fix: signal handlers run in the main thread (where
+        # asyncio is the running loop), so we can schedule a
+        # callback on the loop via ``call_soon_threadsafe`` that
+        # sets a flag.  The ``run_interactive`` loop checks the
+        # flag and exits cleanly, which lets the ``finally`` block
+        # run.
+        stop_requested = threading.Event()
+
         def _handle_signal(signum, frame):
             sig_name = signal.Signals(signum).name
             _restore_terminal()
             console.print(f"\nReceived {sig_name}, goodbye!")
-            sys.exit(0)
+            stop_requested.set()
+            # Wake the loop if it's blocked on an await.
+            try:
+                loop = asyncio.get_running_loop()
+                loop.call_soon_threadsafe(stop_requested.set)
+            except RuntimeError:
+                # No running loop; we're already exiting.  Fall
+                # back to a hard ``os._exit`` so we don't hang.
+                os._exit(0)
 
         signal.signal(signal.SIGINT, _handle_signal)
         signal.signal(signal.SIGTERM, _handle_signal)
@@ -1388,6 +1413,14 @@ def agent(
                     except EOFError:
                         _restore_terminal()
                         console.print("\nGoodbye!")
+                        break
+                    # Audit (C3 of the v0.0.8 third-pass review):
+                    # signal handlers now set ``stop_requested``
+                    # instead of calling ``sys.exit(0)`` mid-loop.
+                    # Check the flag here so the ``finally`` block
+                    # (which closes MCP, cancels tasks, etc.) still
+                    # runs and we don't leak resources.
+                    if stop_requested.is_set():
                         break
             finally:
                 agent_loop.stop()

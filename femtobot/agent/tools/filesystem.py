@@ -3,6 +3,7 @@
 import difflib
 import mimetypes
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -88,6 +89,7 @@ class _FsTool(Tool):
             access.project_path,
             access.allowed_root,
             self._extra_allowed_dirs,
+            restrict_to_workspace=access.restrict_to_workspace,
         )
 
     def _soft_resolve(self, path: str) -> tuple[Path | None, str | None]:
@@ -174,8 +176,30 @@ _BLOCKED_DEVICE_PATHS = frozenset(
 )
 
 
+_BLOCKED_PROC_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # /proc/self/environ exposes the process env vars (API keys, etc.).
+    re.compile(r"^/proc/self/environ$"),
+    re.compile(r"^/proc/\d+/environ$"),
+    # /proc/self/maps, /proc/<pid>/maps — process memory map.
+    re.compile(r"^/proc/self/maps$"),
+    re.compile(r"^/proc/\d+/maps$"),
+    # /proc/<pid>/mem — process memory; reading it as a regular file
+    # returns 0 bytes (or is denied) but the LLM trying it is a smell.
+    re.compile(r"^/proc/\d+/mem$"),
+)
+
+
 def _is_blocked_device(path: str | Path) -> bool:
-    """Check if path is a blocked device that could hang or produce infinite output."""
+    """Check if path is a blocked device that could hang or produce infinite output.
+
+    Audit (B7 of the v0.0.8 third-pass review): the previous regex
+    only blocked ``/proc/<pid>/fd/[012]`` and missed the much more
+    dangerous ``/proc/self/environ`` (which contains the entire
+    process environment, including API keys set via ``export
+    OPENAI_API_KEY=...`` or equivalent).  Reading it would leak
+    every secret the agent has access to.  We now block the
+    ``environ`` / ``maps`` / ``mem`` paths too.
+    """
     import re
 
     raw = str(path)
@@ -192,6 +216,10 @@ def _is_blocked_device(path: str | Path) -> bool:
         return True
     if re.match(r"/proc/\d+/fd/[012]$", resolved) or re.match(r"/proc/self/fd/[012]$", resolved):
         return True
+    # Audit (B7): block ``/proc/self/environ`` and friends.
+    for pat in _BLOCKED_PROC_PATTERNS:
+        if pat.match(raw) or pat.match(resolved):
+            return True
 
     # Check if resolved path starts with /dev/ (covers symlinks to devices)
     if resolved.startswith("/dev/"):

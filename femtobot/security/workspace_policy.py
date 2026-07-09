@@ -73,16 +73,29 @@ def resolve_allowed_path(
     allowed_root: str | Path | None = None,
     extra_allowed_roots: Iterable[str | Path] | None = None,
     strict: bool = False,
+    restrict_to_workspace: bool = False,
 ) -> Path:
-    """Resolve a path and enforce containment in allowed roots when configured."""
+    """Resolve a path and enforce containment in allowed roots when configured.
+
+    Audit (B3 of the v0.0.8 third-pass review): the previous
+    implementation short-circuited when ``allowed_root is None`` and
+    returned the resolved path with **no containment check at all**.
+    A tool that called ``resolve_allowed_path(path, allowed_root=None)``
+    was effectively unrestricted — a caller could read ``/etc/passwd``
+    if they bypassed the helper's caller.  Now, when
+    ``restrict_to_workspace=True`` is passed and ``workspace`` is
+    set, we use the workspace as the implicit root even when the
+    caller didn't pass an explicit ``allowed_root``.
+    """
     resolved = resolve_path(path, workspace, strict=False)
-    if allowed_root is None:
+    if allowed_root is None and not (restrict_to_workspace and workspace is not None):
         return resolve_path(path, workspace, strict=strict) if strict else resolved
 
-    roots = [allowed_root, *(extra_allowed_roots or [])]
+    effective_root = allowed_root if allowed_root is not None else workspace
+    roots = [effective_root, *(extra_allowed_roots or [])]
     if not is_path_allowed(resolved, roots):
         raise WorkspaceBoundaryError(
-            f"Path {path} is outside allowed directory {Path(allowed_root).expanduser()}"
+            f"Path {path} is outside allowed directory {Path(effective_root).expanduser()}"
             + WORKSPACE_BOUNDARY_NOTE
         )
     if strict:

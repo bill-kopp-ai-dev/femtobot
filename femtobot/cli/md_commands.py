@@ -76,7 +76,19 @@ class SkillSpec:
 # Parsing
 # ---------------------------------------------------------------------------
 
-_FRONTmatter_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+# Audit (B8 of the v0.0.8 third-pass review): the previous regex
+# matched any ``---`` on a line of its own inside the YAML body,
+# which truncated the frontmatter prematurely when the body
+# contained ``---`` (a YAML document separator).  We now anchor
+# the start: a single ``^---`` at the start of the file, and the
+# end: a ``---`` line that is *not* followed by a non-newline
+# character (so subsequent docs aren't picked up by accident).
+# ``re.DOTALL`` is still needed to allow the frontmatter to span
+# multiple lines, but the lazy quantifier plus the line-anchored
+# end-delimiter stops the match at the first reasonable close.
+_FRONTmatter_RE = re.compile(
+    r"^---\s*\n(.*?)\n---\s*(?:\n|$)", re.DOTALL | re.MULTILINE
+)
 _ARG_RE = re.compile(r"\$[ARGUMENTS0-9{}]+")
 
 
