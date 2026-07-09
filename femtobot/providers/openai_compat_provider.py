@@ -32,6 +32,8 @@ from femtobot.providers.openai_responses import (
 if TYPE_CHECKING:
     from openai import AsyncOpenAI as AsyncOpenAIType
 
+    from femtobot.providers.registry import ProviderSpec
+
 # Module-level placeholder — set lazily by _ensure_client on first real
 # use, or replaced by tests via ``patch(...)``.  Kept as a plain name so
 # that ``unittest.mock.patch`` can find and replace it.
@@ -379,7 +381,16 @@ class OpenAICompatProvider(LLMProvider):
         api_base: str | None = None,
         default_model: str = "gpt-4o",
         extra_headers: dict[str, str] | None = None,
-        spec: None = None,
+        # Audit (I1 of the v0.1.0 fifth-pass review): the
+        # previous annotation was ``spec: None = None`` which
+        # was a deliberate "this is never set" hint.  In
+        # practice the factory *should* pass the matched
+        # ``ProviderSpec`` so that downstream provider-specific
+        # logic (prompt caching, model prefix stripping,
+        # thinking style, tool-ID sanitization) actually
+        # activates.  The annotation now matches the real
+        # type, and the factory is updated to pass the spec.
+        spec: "ProviderSpec | None" = None,
         extra_body: dict[str, Any] | None = None,
         api_type: str = "auto",
         extra_query: dict[str, str] | None = None,
@@ -390,6 +401,18 @@ class OpenAICompatProvider(LLMProvider):
         self._extra_body = extra_body or {}
         self._api_type = api_type
         self._spec = spec
+
+        # Audit (I2 of the v0.1.0 fifth-pass review): the
+        # previous code defined ``_setup_env`` but never called
+        # it, so ``spec.env_key`` / ``spec.env_extras`` were
+        # dead code.  Zhipu (``ZHIPUAI_API_KEY``) and other
+        # providers that document ``env_extras`` never had
+        # their env vars populated, forcing users to set them
+        # manually.  Call ``_setup_env`` now (after ``self._spec``
+        # is assigned) so the spec-derived env vars are
+        # available to the underlying ``AsyncOpenAI`` client.
+        if api_key is not None:
+            self._setup_env(api_key, api_base or "")
 
         effective_base = api_base or None
         # A11 (REFACTOR_PLAN.md Lote A): merge any provider-level

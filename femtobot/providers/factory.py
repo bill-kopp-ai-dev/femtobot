@@ -61,14 +61,30 @@ def _make_provider_core(
         bedrock.generation = resolved.to_generation_settings()
         return bedrock
 
+    from femtobot.providers import registry as _provider_registry
     from femtobot.providers.openai_compat_provider import OpenAICompatProvider
 
+    # Audit (I1 of the v0.1.0 fifth-pass review): the factory
+    # used to pass ``spec=None`` here, which silently disabled
+    # every provider-specific branch in ``OpenAICompatProvider``
+    # (prompt caching, model-prefix stripping, thinking style,
+    # tool-ID sanitization, etc.).  We now resolve the spec
+    # from the registry and pass it to the constructor.  We
+    # look up the spec via the ``registry`` module attribute
+    # (rather than ``from registry import find_by_name``) so
+    # tests can patch ``registry.find_by_name`` to inject
+    # specs.
+    spec = (
+        _provider_registry.find_by_name(provider_name)
+        if provider_name is not None
+        else None
+    )
     provider = OpenAICompatProvider(
         api_key=p.api_key if p else None,
         api_base=config.get_api_base(model, preset=resolved),
         default_model=model,
         extra_headers=p.extra_headers if p else None,
-        spec=None,
+        spec=spec,
         extra_body=p.extra_body if p else None,
         api_type=p.api_type if p and provider_name == "openai" else "auto",
         extra_query=p.extra_query if p else None,  # A11

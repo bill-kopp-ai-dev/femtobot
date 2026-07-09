@@ -253,7 +253,22 @@ def truncate_text(text: str, max_chars: int) -> str:
 
 
 def find_legal_message_start(messages: list[dict[str, Any]]) -> int:
-    """Find the first index whose tool results have matching assistant calls."""
+    """Find the first index whose tool results have matching assistant calls.
+
+    Audit (I5 of the v0.1.0 fifth-pass review): the previous
+    implementation called ``declared.clear()`` when it found
+    an orphan tool result, which threw away the legitimate
+    tool-call IDs that were declared *before* the orphan.  As
+    a result, valid tool results later in the list were also
+    treated as orphans and the ``start`` index kept advancing.
+
+    We now only set ``start = i + 1`` when an orphan is found;
+    the ``declared`` set is preserved so later valid tool
+    results are recognized.  This is safe because the function
+    returns the *first* index from which the tail is legal —
+    once we see an orphan at index ``i``, everything before
+    ``i + 1`` is discarded regardless of what comes next.
+    """
     declared: set[str] = set()
     start = 0
     for i, msg in enumerate(messages):
@@ -265,8 +280,14 @@ def find_legal_message_start(messages: list[dict[str, Any]]) -> int:
         elif role == "tool":
             tid = msg.get("tool_call_id")
             if tid and str(tid) not in declared:
+                # Orphan tool result.  Advance ``start`` past
+                # the orphan (so the tail is legal) but do
+                # NOT clear ``declared``: any tool-call IDs
+                # declared *before* the orphan are still
+                # legitimate and must be matched against their
+                # corresponding tool results later in the
+                # list.
                 start = i + 1
-                declared.clear()
     return start
 
 

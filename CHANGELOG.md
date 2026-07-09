@@ -9,6 +9,48 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-07-09
+
+> Lote I: Fifth-pass hardening (5 fixes, 9 tests novos).
+> Compat 100% com v0.1.0.
+
+### Fixed
+- **(I1, CRITICAL) `OpenAICompatProvider` recebia `spec=None`** em
+  [providers/factory.py](femtobot/providers/factory.py).  Toda a
+  lógica provider-specific (prompt caching, model prefix stripping,
+  thinking style, tool-ID sanitization, env vars) estava
+  silenciosamente desabilitada.  **Fix:** factory agora resolve
+  o spec via `find_by_name(provider_name)` e passa ao construtor.
+  Anotação do parâmetro `spec` mudou de `None` para `ProviderSpec | None`.
+- **(I2, HIGH) `_setup_env` nunca era chamado** em
+  [providers/openai_compat_provider.py](femtobot/providers/openai_compat_provider.py).
+  `spec.env_key` e `spec.env_extras` eram dead code.  **Fix:**
+  chamado de `__init__` quando `api_key is not None`.
+- **(I3, MEDIUM) `append_transcript_object` noop** em
+  [channels/websocket.py](femtobot/channels/websocket.py).  Era
+  `pass` e logava warning em cada chamada.  **Fix:** noop com
+  docstring explicativa, caller agora loga em debug.
+- **(I4, HIGH) `ServerConnection.close()` não awaited** em
+  [channels/websocket.py](femtobot/channels/websocket.py).  websockets
+  v13+ mudou a API; close ficou async.  **Fix:** `await` com
+  `asyncio.wait_for(timeout=1.0)`, gather de todos os closes.
+- **(I5, HIGH) `find_legal_message_start` over-clearing** em
+  [utils/helpers.py](femtobot/utils/helpers.py).  `declared.clear()`
+  apagava IDs legítimos ao encontrar orphan.  **Fix:** apenas
+  avançar `start`, preservar `declared`.
+
+### Added
+- 2 novos arquivos de test (9 testes de regressão):
+  - `tests/test_provider_spec_wiring.py` (I1, I2) — 4 testes
+  - `tests/test_find_legal_message_start.py` (I5) — 5 testes
+
+### Tests
+- Suite: **617 passed, 0 failed** (9 testes a mais que v0.1.0).
+- Ruff: **All checks passed!**.
+
+### Migration
+Compat 100% com v0.1.0.
+
 ## [0.1.0] — 2026-07-09
 
 > Lote H: Fourth-pass hardening (5 fixes, 13 tests novos).
@@ -534,7 +576,8 @@ Initial public alpha.
 - Multiple-instance support via `--suffix` / `--folder-path` /
   `FEMTOBOT_HOME`.
 
-[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.9...v0.1.0
 [0.0.9]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.7...v0.0.8

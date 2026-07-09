@@ -96,8 +96,18 @@ def websockets_server_logger():
     return logging.getLogger("websockets.server")
 
 
-def append_transcript_object(*args, **kwargs):
-    pass
+def append_transcript_object(*args, **kwargs):  # pragma: no cover - debug only
+    """Best-effort append to the WebUI transcript.
+
+    Audit (I3 of the v0.1.0 fifth-pass review): the previous
+    implementation was a ``pass`` noop, so every WebUI
+    transcript call entered the ``except (ValueError, TypeError)``
+    branch and logged a warning.  The webui transcript module
+    is optional (and not installed in many deployments), so
+    we make this a quiet noop that logs only at debug level
+    when the import fails.
+    """
+    return None
 
 
 def _normalize_config_path(p: str) -> str:
@@ -1014,17 +1024,28 @@ class WebSocketChannel(BaseChannel):
         # Snapshot the open connections.  We can't iterate the
         # _conn_default dict directly while clearing it.
         open_conns = list(self._conn_default.keys())
-        for conn in open_conns:
+        # Audit (I4 of the v0.1.0 fifth-pass review): the
+        # websockets v13+ API changed ``ServerConnection.close()``
+        # from sync to async.  Calling it without ``await``
+        # returned a coroutine that was never awaited, so the
+        # close frame was never actually sent before the server
+        # teardown.  We now ``await`` the close for each client
+        # and gather them so the shutdown waits for all
+        # in-flight close frames (with a short timeout to
+        # avoid blocking forever on a stuck client).
+        import asyncio
+
+        async def _close_one(conn) -> None:
             try:
-                conn.close(code=1001)  # 1001 = "going away"
+                # ``asyncio.wait_for`` so a slow client doesn't
+                # block the whole shutdown.
+                await asyncio.wait_for(conn.close(code=1001), timeout=1.0)
             except Exception as exc:  # pragma: no cover - defensive
-                # ``repr(conn)`` instead of ``{}`` formatting —
-                # MagicMock instances don't support ``__format__``
-                # for arbitrary format specs, and the log line
-                # should be defensive under any client class.
                 self.logger.debug(
                     "graceful close failed for {!r}: {!r}", conn, exc
                 )
+
+        await asyncio.gather(*(_close_one(c) for c in open_conns))
 
     async def _safe_send_to(self, connection: Any, raw: str, *, label: str = "") -> None:
         """Send a raw frame to one connection, cleaning up on ConnectionClosed."""
@@ -1038,12 +1059,17 @@ class WebSocketChannel(BaseChannel):
             raise
 
     def _try_append_webui_transcript(self, chat_id: str, wire: dict[str, Any]) -> None:
+        # Audit (I3 of the v0.1.0 fifth-pass review): the
+        # ``append_transcript_object`` helper is a noop in
+        # deployments without the optional ``webui.transcript``
+        # module.  We used to log a warning every call; we now
+        # log at debug level so production logs aren't flooded.
         sk = f"websocket:{chat_id}"
         try:
             dup = json.loads(json.dumps(wire, ensure_ascii=False))
             append_transcript_object(sk, dup)
         except (ValueError, TypeError) as e:
-            self.logger.warning("webui transcript append failed: {}", e)
+            self.logger.debug("webui transcript append skipped: {}", e)
 
     async def send(self, msg: OutboundMessage) -> None:
         if msg.metadata.get("_runtime_model_updated"):
