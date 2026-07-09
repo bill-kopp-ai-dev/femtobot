@@ -1,6 +1,6 @@
 [project]
 name = "femtobot"
-version = "0.0.7"
+version = "0.0.8"
 description = "A lightweight, CLI-first AI agent foundation for multi-agent systems"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"

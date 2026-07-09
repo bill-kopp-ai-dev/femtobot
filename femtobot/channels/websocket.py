@@ -64,6 +64,7 @@ import logging
 import re
 import ssl
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -338,6 +339,13 @@ _MAX_IMAGES_PER_MESSAGE = 4
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024
 _MAX_VIDEOS_PER_MESSAGE = 1
 _MAX_VIDEO_BYTES = 20 * 1024 * 1024
+# Cap on the in-memory stream-text buffer.  The buffer holds streamed
+# deltas keyed by ``(chat_id, stream_id)`` until ``_stream_end`` pops
+# them.  If a stream is abandoned (no ``_stream_end`` ever arrives),
+# the next ``_stream_delta`` evicts the LRU entry.  1024 entries is
+# far above the realistic concurrent-stream count for a single
+# Femtobot instance and bounds the worst-case memory at a few MB.
+_STREAM_BUFFER_MAX_ENTRIES = 1024
 
 # Image MIME whitelist — matches the Composer's ``accept`` list. SVG is
 # explicitly excluded to avoid the XSS surface inside embedded scripts.
@@ -425,7 +433,18 @@ class WebSocketChannel(BaseChannel):
         self._media = DummyMedia()
         self._workspaces = DummyWorkspaces()
 
-        self._stream_text_buffers: dict[tuple[str, str], list[str]] = {}
+        # Bounded buffer for streamed text deltas, keyed by
+        # ``(chat_id, stream_id)``.  We use an ``OrderedDict`` to
+        # implement a soft LRU cap (``_STREAM_BUFFER_MAX_ENTRIES``):
+        # if a stream_id is abandoned (e.g. agent crash, cancellation,
+        # WebSocket disconnect mid-stream) and the ``_stream_end``
+        # frame never arrives, the next ``_stream_delta`` evicts the
+        # least-recently-used entry.  Without this cap, a malicious
+        # or buggy client could trigger a slow memory leak by sending
+        # many unique stream_ids.
+        #
+        # See audit item 4 of the v0.0.7 second-pass review.
+        self._stream_text_buffers: OrderedDict[tuple[str, str], list[str]] = OrderedDict()
 
     # -- Subscription bookkeeping -------------------------------------------
 
@@ -624,7 +643,19 @@ class WebSocketChannel(BaseChannel):
                     logger=ws_logger,
                 )
             try:
-                assert self._stop_event is not None
+                # Audit (item 6 of the v0.0.7 second-pass review):
+                # we used to ``assert self._stop_event is not None``
+                # here, but the assertion is stripped by ``python -O``
+                # and an empty Event would then block the runner
+                # forever.  The invariant is that ``start()`` always
+                # assigns ``self._stop_event = asyncio.Event()`` at
+                # the top of the method; we still raise if the
+                # invariant is violated instead of silently blocking.
+                if self._stop_event is None:
+                    raise RuntimeError(
+                        "WebSocketChannel.start() did not initialize "
+                        "_stop_event — this is a programmer error."
+                    )
                 await self._stop_event.wait()
             finally:
                 server.close()
@@ -1169,7 +1200,21 @@ class WebSocketChannel(BaseChannel):
                 "chat_id": chat_id,
                 "text": delta,
             }
-            self._stream_text_buffers.setdefault(stream_key, []).append(delta)
+            # Audit (item 4 of the v0.0.7 second-pass review): bound
+            # the stream-text buffer to avoid an unbounded leak when a
+            # stream is abandoned (e.g. agent crash, cancellation,
+            # WebSocket disconnect) and ``_stream_end`` never arrives.
+            # LRU-evict when we exceed the cap.
+            buf = self._stream_text_buffers.get(stream_key)
+            if buf is None:
+                if len(self._stream_text_buffers) >= _STREAM_BUFFER_MAX_ENTRIES:
+                    self._stream_text_buffers.popitem(last=False)
+                buf = []
+                self._stream_text_buffers[stream_key] = buf
+            else:
+                # Touch the entry so it remains the most-recently-used.
+                self._stream_text_buffers.move_to_end(stream_key)
+            buf.append(delta)
         if meta.get("_stream_id") is not None:
             body["stream_id"] = meta["_stream_id"]
         self._try_append_webui_transcript(chat_id, body)

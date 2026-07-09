@@ -176,7 +176,18 @@ async def cmd_restart(ctx: CommandContext) -> OutboundMessage:
         await asyncio.sleep(1)
         os.execv(sys.executable, [sys.executable, "-m", "femtobot"] + sys.argv[1:])
 
-    asyncio.create_task(_do_restart())
+    # Schedule via the loop's background-task registry so the task
+    # is not GC'd before its 1-second sleep completes (and the
+    # ``os.execv`` runs).  A naked ``asyncio.create_task`` is
+    # vulnerable to PyPy / aggressive GC — see audit item 18 of
+    # the v0.0.7 second-pass review.  We fall back to a direct
+    # ``asyncio.create_task`` only when ``ctx.loop`` is not
+    # available (defensive: tests may build a CommandContext
+    # without a full AgentLoop).
+    if ctx.loop is not None:
+        ctx.loop._schedule_background(_do_restart())
+    else:  # pragma: no cover - defensive
+        asyncio.create_task(_do_restart())
     return OutboundMessage(
         channel=msg.channel,
         chat_id=msg.chat_id,
@@ -650,7 +661,13 @@ async def cmd_dream(ctx: CommandContext) -> OutboundMessage:
             )
         )
 
-    asyncio.create_task(_run_dream())
+    # Schedule via the loop's background-task registry so the task
+    # is not GC'd before its long-running write/commit sequence
+    # finishes (audit item 18 of the v0.0.7 second-pass review).
+    if loop is not None:
+        loop._schedule_background(_run_dream())
+    else:  # pragma: no cover - defensive
+        asyncio.create_task(_run_dream())
     return OutboundMessage(
         channel=msg.channel,
         chat_id=msg.chat_id,

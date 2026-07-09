@@ -11,6 +11,7 @@ import contextlib
 import json as _json
 import time
 import uuid
+import weakref
 from typing import Any
 
 from aiohttp import web
@@ -176,8 +177,22 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
         return _error_json(400, f"Only configured model '{model_name}' is available")
 
     session_key = f"api:{session_id}" if session_id else API_SESSION_KEY
-    session_locks: dict[str, asyncio.Lock] = request.app["session_locks"]
-    session_lock = session_locks.setdefault(session_key, asyncio.Lock())
+    session_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = request.app[
+        "session_locks"
+    ]
+    # Audit (item 7 of the v0.0.7 second-pass review): the API used
+    # to keep a regular ``dict`` of per-session locks, which grew
+    # without bound — every new ``session_id`` (e.g. a UUID per
+    # browser tab) leaked a Lock object.  We use a
+    # ``WeakValueDictionary`` and a small factory so the lock is
+    # strongly referenced only while the request is in flight.
+    session_lock = session_locks.get(session_key)
+    if session_lock is None:
+        session_lock = asyncio.Lock()
+        session_locks[session_key] = session_lock
+    # Strong ref for the duration of this request so the WVD doesn't
+    # GC the Lock between ``get`` and ``acquire``.
+    _keep_alive = session_lock
 
     logger.info(
         "API request session_key={} text={} stream={}",
@@ -346,7 +361,13 @@ def create_app(
     app["agent_loop"] = agent_loop
     app["model_name"] = model_name
     app["request_timeout"] = request_timeout
-    app["session_locks"] = {}  # per-user locks, keyed by session_key
+    # Per-session locks, keyed by session_key.  We use a
+    # ``WeakValueDictionary`` so a session_id that no longer has a
+    # request in flight doesn't keep the Lock alive indefinitely
+    # (audit item 7 of the v0.0.7 second-pass review).  The request
+    # handler holds a strong ref to the Lock for the duration of
+    # the request to keep the WVD from GC'ing it mid-acquire.
+    app["session_locks"] = weakref.WeakValueDictionary()
 
     # OpenAI-compatible endpoints
     app.router.add_post("/v1/chat/completions", handle_chat_completions)

@@ -9,6 +9,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.8] — 2026-07-09
+
+> Lote F: Second-pass hardening (7 fixes, 20 tests novos).
+> Compat 100% com v0.0.7.
+
+### Fixed
+- **(F1) `_stream_text_buffers` leak** em [websocket.py](femtobot/channels/websocket.py) — substituído por `OrderedDict` com cap LRU (1024).
+- **(F2) `session_locks` unbounded** em [server.py](femtobot/api/server.py) — `dict` → `weakref.WeakValueDictionary`.
+- **(F3) `_drain_pending` docstring errada** em [loop.py](femtobot/agent/loop.py) — docstring reescrita (era "blocks", real é non-blocking).
+- **(F4) `except BaseException` em runner** em [runner.py](femtobot/agent/runner.py) — trocado por `Exception`.
+- **(F5) `asyncio.create_task` sem ref** em [builtin.py](femtobot/command/builtin.py) — `cmd_restart` e `cmd_dream` agora usam `_schedule_background`.
+- **(F6) `assert` para narrowing** em [websocket.py](femtobot/channels/websocket.py) — `assert` substituído por `raise RuntimeError`.
+- **(F7) `MessageBus` queue sem maxsize** em [queue.py](femtobot/bus/queue.py) — cap default 1024/4096, env-overridable.
+
+### Added
+- 4 novos arquivos de test (20 testes de regressão):
+  - `tests/test_stream_text_buffer_cap.py` (F1) — 5 testes
+  - `tests/test_api_session_locks_wvd.py` (F2) — 5 testes
+  - `tests/test_websocket_stop_event_invariant.py` (F6) — 4 testes
+  - `tests/test_message_bus_maxsize.py` (F7) — 6 testes
+
+### Tests
+- Suite: **556 passed, 0 failed** (20 testes a mais que v0.0.7).
+- Ruff: **All checks passed!**.
+
 ## [0.0.7] — 2026-07-09
 
 > Milestone `v0.0.7` — **Lote E: Hardening pós-release**. Revisão
@@ -423,7 +448,8 @@ Initial public alpha.
 - Multiple-instance support via `--suffix` / `--folder-path` /
   `FEMTOBOT_HOME`.
 
-[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.7...HEAD
+[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.8...HEAD
+[0.0.8]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.6...v0.0.7
 [0.0.6]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.4...v0.0.5

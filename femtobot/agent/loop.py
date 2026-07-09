@@ -814,13 +814,22 @@ class AgentLoop:
             self._set_runtime_checkpoint(session, payload)
 
         async def _drain_pending(*, limit: int = _MAX_INJECTIONS_PER_TURN) -> list[dict[str, Any]]:
-            """Drain follow-up messages from the pending queue.
+            """Drain follow-up messages from the pending queue (non-blocking).
 
-            When no messages are immediately available but sub-agents
-            spawned in this dispatch are still running, blocks until at
-            least one result arrives (or timeout).  This keeps the runner
-            loop alive so subsequent sub-agent completions are consumed
-            in-order rather than dispatched separately.
+            Returns up to ``limit`` messages that are already queued
+            (i.e. ``Queue.get_nowait()``); returns ``[]`` immediately
+            when the queue is empty.  The implementation is
+            **deliberately non-blocking** — the runner tests
+            ``if not injections: return False`` and re-evaluates on
+            subsequent iterations of the main loop, so blocking here
+            would deadlock the iteration.
+
+            A previous docstring claimed this function "blocks until
+            at least one result arrives (or timeout)"; that was
+            inaccurate and would have caused a deadlock if a caller
+            actually relied on the documented behavior.  See
+            :meth:`AgentRunner._drain_injections` for the runner
+            side.
             """
             if pending_queue is None:
                 return []

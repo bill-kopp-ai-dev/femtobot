@@ -1015,7 +1015,16 @@ class AgentRunner:
                 result = await spec.tools.execute(tool_call.name, params)
         except asyncio.CancelledError:
             raise
-        except BaseException as exc:
+        except Exception as exc:
+            # Audit (item 40 of the v0.0.7 second-pass review):
+            # we used to catch ``BaseException`` here, which also
+            # caught ``KeyboardInterrupt`` / ``SystemExit`` and would
+            # turn the resulting ``payload`` into a regular tool
+            # error reply.  ``Exception`` is the right boundary:
+            # tool errors are ``Exception`` subclasses; signals
+            # (``BaseException``) propagate as designed.  The
+            # explicit ``except asyncio.CancelledError: raise`` above
+            # keeps cancellation as a first-class signal.
             if file_edit_trackers and progress_callback is not None:
                 await invoke_file_edit_progress(
                     progress_callback,
