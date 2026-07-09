@@ -45,12 +45,12 @@ from __future__ import annotations
 
 import re
 import subprocess
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import yaml
+
+from femtobot.command.builtin import BuiltinCommandSpec
 
 # ---------------------------------------------------------------------------
 # Schema
@@ -81,11 +81,45 @@ _ARG_RE = re.compile(r"\$[ARGUMENTS0-9{}]+")
 
 
 def _run_bash_inlines(text: str, timeout_s: float = 10.0) -> str:
-    """Substitute ``!`cmd` `` with command output inline."""
+    """Substitute ``!`cmd` `` with command output inline.
+
+    Security: this runs a real shell with ``shell=True`` because the
+    feature is the inline substitution.  The caller MUST have already
+    validated that the skill body is from a trusted source (this is
+    gated by ``render_body(..., unsafe_bypass=True)`` in the rest of
+    the module).  We log an ``audit``-level event for every inline
+    substitution so an operator reviewing the femtobot log can
+    detect a tampered skill body.  The ``FEMTOBOT_NO_BASH_INLINE=1``
+    env var is a global kill-switch: when set, ``!`...`` is replaced
+    with a literal placeholder instead of being executed.
+    """
+    import os
+
+    from loguru import logger as _logger
+
     results: list[str] = []
+
+    bash_disabled = bool(os.environ.get("FEMTOBOT_NO_BASH_INLINE"))
 
     def _sub(match: re.Match) -> str:
         cmd = match.group(1).strip()
+        if bash_disabled:
+            # Global kill-switch via env var; the operator explicitly
+            # opted out so a tampered skill body can't reach ``shell=True``.
+            _logger.warning(
+                "FEMTOBOT_NO_BASH_INLINE=1; not running inline shell "
+                "command (length={}): {}",
+                len(cmd),
+                cmd[:80],
+            )
+            return f"[bash disabled: {cmd[:60]}]"
+        # Audit trail — every inline shell call is recorded so a
+        # post-mortem of a skill-body modification can spot it.
+        _logger.info(
+            "Bash inline substitution (cmd_length={}): {}",
+            len(cmd),
+            cmd[:120],
+        )
         try:
             proc = subprocess.run(
                 cmd,
@@ -284,8 +318,6 @@ def _get_builtin_dir() -> Path | None:
 # ---------------------------------------------------------------------------
 # Skill spec as BuiltinCommandSpec adapter
 # ---------------------------------------------------------------------------
-
-from femtobot.command.builtin import BuiltinCommandSpec
 
 
 def skill_to_command_spec(spec: SkillSpec) -> BuiltinCommandSpec:

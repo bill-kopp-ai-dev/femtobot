@@ -21,10 +21,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from femtobot.utils.helpers import create_instance_gitignore
-
 
 # ---------------------------------------------------------------------------
 # Static-content checks on the shipped template

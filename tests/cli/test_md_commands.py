@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 from femtobot.cli.md_commands import (
+    SkillSpec,
+    _run_bash_inlines,
     parse_skill,
     render_skill,
     skill_to_command_spec,
-    SkillSpec,
 )
 
 
@@ -82,10 +85,6 @@ def test_skill_to_command_spec_bypass_llm() -> None:
 # ---------------------------------------------------------------------------
 # Bash inline substitution (Camada 2, T2 - Hardening)
 # ---------------------------------------------------------------------------
-
-import pytest
-
-from femtobot.cli.md_commands import _run_bash_inlines
 
 
 def _fake_run_success(cmd: str | list, **kwargs: object) -> subprocess.CompletedProcess[str]:

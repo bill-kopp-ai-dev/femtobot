@@ -42,17 +42,15 @@ The ``FemtobotTextualApp`` exposes the same streaming interface as
 
 from __future__ import annotations
 
-import asyncio
-import sys
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
 from typing import Callable
 
 # Textual ships its own rich version; import from textual.rich for compatibility.
 from rich.console import RenderableType
 from rich.markdown import Markdown
 from rich.text import Text
+
 try:
     from textual.app import App, ComposeResult
     from textual.binding import Binding

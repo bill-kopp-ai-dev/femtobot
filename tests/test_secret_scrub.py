@@ -16,21 +16,19 @@ config hits disk.
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
-from typing import Any
 
 import pytest
 from loguru import logger as _loguru_logger
 
 from femtobot.config.schema import Config
+from femtobot.utils.helpers import write_default_config
 from femtobot.utils.secret_scrub import (
     DEFAULT_SENSITIVE_FIELDS,
     count_secrets,
     is_sensitive_field_name,
     scrub_secrets,
 )
-from femtobot.utils.helpers import write_default_config
 
 
 @pytest.fixture

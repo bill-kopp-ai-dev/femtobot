@@ -8,7 +8,9 @@
 
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.0.2-green.svg)](./pyproject.toml)
+[![Version](https://img.shields.io/badge/version-0.0.7-green.svg)](./pyproject.toml)
+[![Tests](https://img.shields.io/badge/tests-536%20passing-brightgreen.svg)](./tests/)
+[![Ruff](https://img.shields.io/badge/ruff-clean-brightgreen.svg)](./pyproject.toml)
 
 **A lightweight, CLI-first AI agent foundation for multi-agent systems.**
 
@@ -432,6 +434,21 @@ Layer responsibilities:
 | `templates/` | Bundled system-prompt seeds |
 | `utils/` | Shared helpers (path, runtime, logging, gitstore) |
 
+### Release milestones
+
+Femtobot follows the [REFACTOR_PLAN.md](./REFACTOR_PLAN.md) which tracks an upstream-derivative strategy.  Each "Lote" ships a milestone:
+
+| Lote | Version | Theme | Items | Tests added |
+|------|---------|-------|-------|-------------|
+| **E** | **v0.0.7** (current) | Hardening pós-release | 11 bugfixes E1–E11 | 30 regression |
+| D | v0.0.6 | Provedores (Bedrock + proxy bypass) | 2 items (D1, D3) | 14 |
+| C | v0.0.5 | Refator de arquitetura (capabilities, extensions, wizard) | 5 items (C1–C5) | 37 |
+| B | v0.0.4 | Durabilidade e concorrência (locks, usage, goal) | 6 items (B1–B6) | 27 |
+| A | v0.0.3 | Estabilidade e segurança (SSRF, MCP probe, atomic) | 14 items (A1–A14) | 51 |
+| Initial | v0.0.2 | Public alpha | — | — |
+
+> **v0.0.7 (current):** Lote E is a hardening milestone — no new features, no breaking changes.  Audit ran `ruff` (zero errors), `pytest` (536 passing),  and a deep manual review (race conditions, security, AttributeError crash paths).  The full diff + regression coverage is in [CHANGELOG.md](./CHANGELOG.md).
+
 ## Development
 
 To develop on Femtobot, clone the repository and install in editable mode with dev extras:
@@ -474,6 +491,7 @@ femtobot/
 ├── config/                 # loader, paths, schema
 ├── pairing/                # stubs (CLI-first, no approval)
 ├── providers/              # unified openai_compat_provider + registry
+│   └── bedrock.py          # D1: AWS Bedrock Converse provider
 ├── security/               # command_guard, network, workspace_access, workspace_policy
 ├── session/                # manager, goal_state, turn_continuation
 ├── templates/              # AGENTS.md, SOUL.md, USER.md, agent/, memory/

@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-import pytest
-
 from femtobot.cli.bash_mode import (
     DEFAULT_TIMEOUT_S,
     BashRunResult,

@@ -15,11 +15,10 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass, field
-from typing import Callable, Awaitable
+from dataclasses import dataclass
+from typing import Awaitable, Callable
 
 from rich.text import Text
-
 
 # Static suggestions per intent (cheap, no LLM)
 STATIC_SUGGESTIONS: dict[str, list[str]] = {

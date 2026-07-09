@@ -25,7 +25,6 @@ from pathlib import Path
 
 import pytest
 
-from femtobot.config import loader
 from femtobot.config.loader import (
     _load_instance_env_file,
     _merge_env_overrides,
@@ -34,7 +33,6 @@ from femtobot.config.loader import (
     load_config,
     set_instance_dir,
 )
-
 
 # Env var names used by the tests. Kept short and obviously synthetic so they
 # cannot collide with real provider credentials that might leak into the

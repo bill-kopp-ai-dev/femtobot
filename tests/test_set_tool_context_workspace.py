@@ -14,8 +14,6 @@ import pytest
 from femtobot.agent.tools.context import (
     ContextAware,
     RequestContext,
-    bind_request_context,
-    reset_request_context,
 )
 
 

@@ -3,12 +3,54 @@
 from __future__ import annotations
 
 import io
+import os
+import tempfile
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from loguru import logger
+
+
+def atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> None:
+    """Write *content* to *path* atomically.
+
+    A7 (REFACTOR_PLAN.md Lote A): durability.  Writes go to a sibling
+    temp file in the same directory, then ``os.replace`` swaps it into
+    place.  ``os.replace`` is atomic on POSIX (and best-effort on Windows)
+    so a crash mid-write can never leave a partially-written file behind.
+
+    fsync on both the temp file and the parent directory makes the rename
+    durable across a power loss — without the dir fsync, a crash could
+    lose the rename itself.  The Windows dir-open raises
+    ``PermissionError`` (NTFS journals metadata synchronously), so we
+    suppress that case rather than failing the whole write.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=path.name + ".",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+        with suppress(PermissionError):
+            dir_fd = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+    except BaseException:
+        with suppress(OSError):
+            os.unlink(tmp_path)
+        raise
 
 
 @dataclass

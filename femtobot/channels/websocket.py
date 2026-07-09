@@ -410,6 +410,17 @@ class WebSocketChannel(BaseChannel):
         self._stop_event: asyncio.Event | None = None
         self._server_task: asyncio.Task[None] | None = None
 
+        # CRITICAL: ``gateway`` was historically a parameter that was
+        # *consumed* but never assigned to ``self``.  ``_maybe_push_active_goal_state``
+        # (and a few other goal-replay helpers) read ``self.gateway.session_manager``,
+        # so any call against an instance whose constructor set ``gateway`` to a
+        # non-None value would crash with ``AttributeError``.  Assign here so the
+        # contract is honored end-to-end.
+        self.gateway = gateway
+
+        # Dummy stand-ins for the per-channel service protocol — used
+        # only when the gateway doesn't bind a real one.  ``self.gateway``
+        # wins when present (see ``_resolve_service``).
         self._tokens = DummyTokens()
         self._media = DummyMedia()
         self._workspaces = DummyWorkspaces()
@@ -442,7 +453,7 @@ class WebSocketChannel(BaseChannel):
         connected clients normally see it via ``goal_state`` / ``turn_end`` frames.
         Pushing here makes refresh + reconnect restore the strip without a new model turn.
         """
-        if self.gateway.session_manager is None:
+        if self.gateway is None or self.gateway.session_manager is None:
             return
         row = self.gateway.session_manager.read_session_file(f"websocket:{chat_id}")
         meta = row.get("metadata", {}) if isinstance(row, dict) else {}

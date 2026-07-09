@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from femtobot.config.schema import AgentDefaults, CliConfig, CliSessionStatusConfig, CliWhimsyConfig, Config
+from femtobot.config.schema import (
+    AgentDefaults,
+    CliConfig,
+    CliSessionStatusConfig,
+    CliWhimsyConfig,
+    Config,
+)
 
 
 def test_cli_config_defaults_are_backward_compatible() -> None:

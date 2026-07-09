@@ -10,8 +10,6 @@ helper's behavior.
 
 from __future__ import annotations
 
-import pytest
-
 from femtobot.cli.commands import _wants_multiline_text
 
 
@@ -54,7 +52,6 @@ def test_callable_with_no_args_does_not_raise() -> None:
     The inner ``_multiline_filter`` must be zero-argument callable so
     that ``Condition(filter)()`` does not raise ``TypeError``.
     """
-    from femtobot.cli.commands import _init_prompt_session
 
     # We don't actually call _init_prompt_session here (it depends on
     # config); we just verify that the no-arg wiring is structurally

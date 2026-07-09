@@ -88,6 +88,13 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "<goal>",
     ),
     BuiltinCommandSpec(
+        "/goal complete",
+        "Mark goal complete",
+        "Mark the active sustained goal as completed (B6).",
+        "check-circle",
+        "[recap]",
+    ),
+    BuiltinCommandSpec(
         "/dream",
         "Run Dream",
         "Manually trigger memory consolidation.",
@@ -477,7 +484,7 @@ async def cmd_effort(ctx: CommandContext) -> OutboundMessage:
             chat_id=ctx.msg.chat_id,
             content=(
                 f"Unknown effort level: `{args}`.\n\n"
-                f"Available: {', '.join('`'+l+'`' for l in EFFORT_LEVELS)}"
+                f"Available: {', '.join('`'+level+'`' for level in EFFORT_LEVELS)}"
             ),
             metadata=metadata,
         )
@@ -606,8 +613,25 @@ async def cmd_dream(ctx: CommandContext) -> OutboundMessage:
             )
             elapsed = time.monotonic() - t0
             if MemoryStore.dream_run_completed(resp):
-                store.set_last_dream_cursor(last_cursor)
-                content = f"Dream completed in {elapsed:.1f}s."
+                # A6: cursor advance is now tied to a successful git commit
+                # via ``advance_dream_cursor_after_commit``.  If the commit
+                # is a no-op (nothing to commit) or fails, the cursor stays
+                # behind and the next Dream cycle reprocesses those entries.
+                commit_msg = build_dream_commit_message("dream: manual run", resp)
+                advanced, sha = store.advance_dream_cursor_after_commit(
+                    last_cursor, commit_message=commit_msg
+                )
+                if advanced:
+                    content = (
+                        f"Dream completed in {elapsed:.1f}s "
+                        f"(commit {sha}, cursor advanced to {last_cursor})."
+                    )
+                else:
+                    content = (
+                        f"Dream completed in {elapsed:.1f}s but cursor was not "
+                        "advanced (no commit / git not initialized); next cycle "
+                        "will reprocess."
+                    )
             else:
                 content = (
                     f"Dream did not complete after {elapsed:.1f}s; memory cursor was not advanced."
@@ -616,11 +640,6 @@ async def cmd_dream(ctx: CommandContext) -> OutboundMessage:
             elapsed = time.monotonic() - t0
             content = f"Dream failed after {elapsed:.1f}s: {e}"
         finally:
-            if store.git.is_initialized():
-                commit_msg = build_dream_commit_message("dream: manual run", resp)
-                sha = store.git.auto_commit(commit_msg)
-                if sha:
-                    content += f" (commit {sha})"
             store.compact_history()
             prune_dream_sessions(loop.sessions.sessions_dir)
         await loop.bus.publish_outbound(
@@ -925,6 +944,69 @@ async def cmd_goal(ctx: CommandContext) -> OutboundMessage | None:
     }
     ctx.msg.content = _GOAL_PROMPT_TEMPLATE.format(goal=goal)
     return None
+
+
+async def cmd_goal_complete(ctx: CommandContext) -> OutboundMessage | None:
+    """Rewrite ``/goal complete [recap]`` to mark the active goal as completed (B6).
+
+    The user invokes this slash command when the sustained goal started
+    by ``/goal <objective>`` is done.  We don't talk to a real
+    ``complete_goal`` tool here (the agent is the one to call that);
+    instead, we mutate the session metadata so the runner wall
+    timeout falls back to the default and the active-goal predicate
+    stops returning True.  We also stash the recap as a tool_result
+    tag so the LLM sees a clear "goal complete" boundary.
+    """
+    from femtobot.session.goal_state import (
+        GOAL_STATE_KEY,
+        discard_legacy_goal_state_key,
+        parse_goal_state,
+    )
+
+    recap = ctx.args.strip()
+    if ctx.session is None:
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=(
+                "No active session — cannot mark a goal complete. "
+                "Start one with `/goal <objective>` first."
+            ),
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
+
+    md = dict(ctx.session.metadata or {})
+    blob = parse_goal_state(md.get(GOAL_STATE_KEY))
+    if not isinstance(blob, dict) or blob.get("status") != "active":
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=(
+                "No active goal to mark complete. Use `/goal <objective>` "
+                "to start a new one."
+            ),
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
+
+    # B6: flip the status to ``completed`` and record the recap.
+    blob["status"] = "completed"
+    blob["completed_at"] = time.time()
+    if recap:
+        blob["recap"] = recap
+    md[GOAL_STATE_KEY] = blob
+    discard_legacy_goal_state_key(md)
+    ctx.session.metadata = md
+
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content=(
+            "Goal marked complete. Returning to default per-turn "
+            "behavior; runner wall timeout is back to "
+            "FEMTOBOT_LLM_TIMEOUT_S."
+        ),
+        metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+    )
 
 
 async def cmd_help(ctx: CommandContext) -> OutboundMessage:
@@ -1284,6 +1366,11 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.prefix("/history ", cmd_history)
     router.exact("/goal", cmd_goal)
     router.prefix("/goal ", cmd_goal)
+    # B6: `/goal complete` and `/goal complete <recap>` mark the active
+    # sustained goal as completed.  Registered as exact + prefix so the
+    # full string is matched before the generic ``/goal`` prefix.
+    router.exact("/goal complete", cmd_goal_complete)
+    router.prefix("/goal complete ", cmd_goal_complete)
     router.exact("/dream", cmd_dream)
     router.exact("/dream-log", cmd_dream_log)
     router.prefix("/dream-log ", cmd_dream_log)

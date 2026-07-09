@@ -203,6 +203,18 @@ class Tool(ABC):
     config_key: str = ""
     _plugin_discoverable: bool = True
     _scopes: set[str] = {"core"}
+    # C2 (REFACTOR_PLAN.md Lote C): tools advertise their
+    # ``capabilities`` so that ``femtobot tools list --capability
+    # <name>`` can filter the registry and the system prompt can
+    # surface the right tags to the model.  Common capabilities:
+    # ``read-only``, ``long-running``, ``needs-confirmation``,
+    # ``stateful``, ``network``.
+    #
+    # Tools may also expose an instance-level ``capabilities`` via a
+    # property (see :attr:`Tool.capabilities_property` below) so that
+    # a tool can build the list dynamically — e.g. an MCP tool that
+    # forwards ``capability_mentions`` from its server config.
+    capabilities: list[str] = []
 
     @classmethod
     def config_cls(cls) -> type[BaseModel] | None:
@@ -291,6 +303,27 @@ class Tool(ABC):
                 "parameters": self.parameters,
             },
         }
+
+    def get_capabilities(self) -> list[str]:
+        """Return the list of capabilities this tool advertises (C2).
+
+        Default implementation reads the class-level ``capabilities``
+        attribute.  Subclasses (e.g. an MCP tool that forwards
+        ``capability_mentions`` from its server config) can override
+        to build the list dynamically.
+        """
+        # Always include ``read-only`` when the tool is also marked
+        # ``read_only`` so the registry filter doesn't need to know
+        # about every property.  This keeps the public surface small
+        # while still letting users filter by ``--capability read-only``.
+        caps = list(self.capabilities or [])
+        if self.read_only and "read-only" not in caps:
+            caps.append("read-only")
+        return caps
+
+    def has_capability(self, capability: str) -> bool:
+        """Return True when *capability* is in the tool's advertised set (C2)."""
+        return capability in self.get_capabilities()
 
 
 def tool_parameters(schema: dict[str, Any]) -> Callable[[type[_ToolT]], type[_ToolT]]:

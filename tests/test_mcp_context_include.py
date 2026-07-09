@@ -7,16 +7,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
-
-import pytest
 
 from femtobot.agent.context import (
     ContextBuilder,
     _collect_mcp_persistence_snippets,
 )
 from femtobot.config.schema import AgentDefaults
-
 
 # ---------------------------------------------------------------------------
 # Helpers

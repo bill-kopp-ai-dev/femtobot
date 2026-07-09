@@ -5,6 +5,7 @@ Refs: FEMTOBOT_MCP_IMPROVEMENT_PLAN.md Fase 6.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -12,7 +13,6 @@ import pytest
 
 from femtobot.bus.events import OutboundMessage
 from femtobot.config.schema import AgentDefaults
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -160,9 +160,6 @@ async def test_connect_mcp_publish_error_does_not_break_startup() -> None:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-from contextlib import contextmanager
 
 
 @contextmanager

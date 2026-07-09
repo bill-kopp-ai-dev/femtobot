@@ -7,9 +7,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-
 TEMPLATE_PATH = Path(
     "/home/bill/Codes/CLI-router-project/femtobot/femtobot/templates/AGENTS.md"
 )

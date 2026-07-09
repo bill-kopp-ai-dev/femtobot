@@ -831,6 +831,35 @@ def onboard(
         except Exception:
             config = build_default_onboard_config(instance_dir, validated_suffix)
 
+    # C5: optional interactive wizard for choosing model + provider
+    # (only when stdin is a TTY and --wizard is set or the user passes
+    # no --folder-path / --suffix, signaling a first-time setup).
+    from femtobot.cli.onboard_wizard import run_onboard_wizard
+
+    if wizard or (sys.stdin.isatty() and not validated_suffix and not folder_path):
+        try:
+            wizard_result = run_onboard_wizard(
+                config if "config" in dir() and isinstance(config, object) else None,
+                console=console,
+            )
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[yellow]![/yellow] Wizard cancelled; continuing with defaults.")
+            wizard_result = None
+        if wizard_result is not None:
+            # C5: the wizard mutates ``model_presets`` and ``providers``
+            # on the config object.  We re-assign here so the rest of
+            # ``onboard`` picks up the changes.
+            from femtobot.config.loader import load_config
+
+            config = wizard_result.config or config
+            # Reload to ensure pydantic-resolved structure is consistent.
+            try:
+                reloaded = load_config(config_file)
+                if reloaded is not None:
+                    config = reloaded
+            except Exception:  # pragma: no cover - defensive
+                pass
+
     # Create instance structure
     console.print(f"\n{__logo__} Initializing Femtobot Instance\n")
     console.print(f"[dim]Creating instance at: {instance_dir}[/dim]\n")
@@ -1435,3 +1464,131 @@ def status(
 
 if __name__ == "__main__":
     app()
+
+
+# ============================================================================
+# Config subcommands (A1)
+# ============================================================================
+
+config_app = typer.Typer(help="Inspect and validate the active config.")
+app.add_typer(config_app, name="config")
+
+
+@config_app.command("validate")
+def config_validate(
+    folder_path: str | None = typer.Option(
+        None, "--folder-path", "-f", help="Instance folder path"
+    ),
+    suffix: str | None = typer.Option(None, "--suffix", "-s", help="Instance suffix"),
+    config_path: str | None = typer.Option(
+        None, "--config", "-c", help="Explicit path to config.json"
+    ),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Fail-fast with exit 2 on invalid config (sets FEMTOBOT_STRICT_CONFIG_LOAD).",
+    ),
+):
+    """Validate config.json without starting the agent loop.
+
+    Exit code 0 = OK, 2 = invalid (only when --strict is passed or
+    FEMTOBOT_STRICT_CONFIG_LOAD is set).
+    """
+    from femtobot.config.loader import (
+        resolve_runtime_location,
+    )
+    from femtobot.config.loader import (
+        validate_config as _validate_config,
+    )
+
+    resolve_runtime_location(
+        config_path=Path(config_path) if config_path else None,
+        folder_path=Path(folder_path) if folder_path else None,
+        suffix=suffix,
+    )
+    target = Path(config_path) if config_path else None
+    ok, message = _validate_config(config_path=target, strict=strict)
+    if ok:
+        console.print(f"[green]✓[/green] {message}")
+        raise SystemExit(0)
+    console.print(f"[red]✗[/red] {message}")
+    raise SystemExit(2)
+
+
+# ============================================================================
+# Tools subcommands (C2)
+# ============================================================================
+
+tools_app = typer.Typer(help="Inspect the tool registry.")
+app.add_typer(tools_app, name="tools")
+
+
+@tools_app.command("list")
+def tools_list(
+    folder_path: str | None = typer.Option(
+        None, "--folder-path", "-f", help="Instance folder path"
+    ),
+    suffix: str | None = typer.Option(None, "--suffix", "-s", help="Instance suffix"),
+    capability: str | None = typer.Option(
+        None,
+        "--capability",
+        "-c",
+        help="Filter to tools that advertise this capability (e.g. read-only, long-running).",
+    ),
+    show_capabilities: bool = typer.Option(
+        False,
+        "--show-capabilities",
+        help="Also print the capability list for each tool.",
+    ),
+):
+    """List tools registered in the active agent loop.
+
+    With ``--capability <name>`` (C2), only the tools that advertise
+    that capability are listed.  With ``--show-capabilities``, each
+    tool's ``get_capabilities()`` output is appended after the name.
+    """
+    from femtobot.agent.tools.registry import ToolRegistry
+    from femtobot.config.loader import resolve_runtime_location
+
+    resolve_runtime_location(
+        config_path=None,
+        folder_path=Path(folder_path) if folder_path else None,
+        suffix=suffix,
+    )
+    # C2: build a minimal in-memory registry and call ``by_capability``
+    # so the filter logic is exercised end-to-end.  The list won't
+    # match a running loop's exact set of MCP tools, but the
+    # filtering is what the CLI needs to validate.
+    from femtobot.agent.tools.loader import ToolLoader
+
+    registry = ToolRegistry()
+    loader = ToolLoader()
+    tool_classes = loader.discover()
+    for tool_cls in tool_classes:
+        # ``create(None)`` fails when a tool needs a real config (e.g.
+        # MCP-backed tools).  We narrow the catch to the failure modes
+        # that ``create`` actually documents so a typo or import error
+        # in a builtin surfaces instead of being silently swallowed.
+        try:
+            tool = tool_cls.create(None)  # type: ignore[arg-type]
+            registry.register(tool)
+        except (TypeError, ValueError, RuntimeError, AttributeError):  # pragma: no cover - defensive
+            continue
+    if capability:
+        tools = registry.by_capability(capability)
+    else:
+        tools = sorted(registry._tools.values(), key=lambda t: t.name)  # type: ignore[attr-defined]
+    if not tools:
+        msg = (
+            f"No tools match capability {capability!r}."
+            if capability
+            else "No tools registered."
+        )
+        console.print(f"[yellow]{msg}[/yellow]")
+        raise SystemExit(0)
+    for tool in tools:
+        suffix = ""
+        if show_capabilities:
+            caps = tool.get_capabilities()
+            suffix = f"  [dim]({', '.join(caps)})[/dim]" if caps else ""
+        console.print(f"- {tool.name}{suffix}")

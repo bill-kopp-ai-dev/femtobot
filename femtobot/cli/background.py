@@ -26,7 +26,7 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -82,7 +82,6 @@ class BackgroundTask:
 # Pool
 # ---------------------------------------------------------------------------
 
-import uuid
 
 
 class BackgroundPool:

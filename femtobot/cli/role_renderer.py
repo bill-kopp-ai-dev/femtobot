@@ -30,7 +30,7 @@ to call even when the config is missing.
 
 from __future__ import annotations
 
-from rich.console import Console, RenderableType
+from rich.console import Console
 from rich.text import Text
 
 # ---------------------------------------------------------------------------
@@ -45,20 +45,47 @@ from rich.text import Text
 # override order (env vars, .env, /style slash command, schema defaults).
 from femtobot.config.schema import (
     CLI_DEFAULT_GAP_AFTER_TURN as DEFAULT_GAP,
+)
+from femtobot.config.schema import (
     CLI_DEFAULT_GAP_BEFORE_INPUT as DEFAULT_INPUT_GAP,
+)
+from femtobot.config.schema import (
     CLI_DEFAULT_MARGIN_X as DEFAULT_MARGIN,
+)
+from femtobot.config.schema import (
     CLI_DEFAULT_ROLE_HEADER_MODE as DEFAULT_HEADER_MODE,
-    CLI_DEFAULT_TURN_BOX as DEFAULT_TURN_BOX,
-    CLI_DEFAULT_USER_SEPARATOR as DEFAULT_USER_SEPARATOR,
+)
+from femtobot.config.schema import (
     CLI_MAX_GAP as MAX_GAP,
+)
+from femtobot.config.schema import (
     CLI_MAX_INPUT_GAP as MAX_INPUT_GAP,
+)
+from femtobot.config.schema import (
     CLI_MAX_MARGIN as MAX_MARGIN,
+)
+from femtobot.config.schema import (
     CLI_MIN_GAP as MIN_GAP,
+)
+from femtobot.config.schema import (
     CLI_MIN_INPUT_GAP as MIN_INPUT_GAP,
+)
+from femtobot.config.schema import (
     CLI_MIN_MARGIN as MIN_MARGIN,
 )
 
 DEFAULT_GAP_AFTER_TURN = DEFAULT_GAP
+# Public re-export under the historical name.  ``tests/cli/test_role_renderer.py``
+# imports ``DEFAULT_TURN_BOX`` (and ``DEFAULT_USER_SEPARATOR``) here; we keep
+# the alias so the test doesn't need to know where the constant is actually
+# defined in :mod:`femtobot.config.schema`.
+from femtobot.config.schema import (  # noqa: E402, F401
+    CLI_DEFAULT_TURN_BOX as DEFAULT_TURN_BOX,
+)
+from femtobot.config.schema import (  # noqa: E402, F401
+    CLI_DEFAULT_USER_SEPARATOR as DEFAULT_USER_SEPARATOR,
+)
+
 VALID_HEADER_MODES = ("always", "minimal", "off")
 
 
@@ -125,7 +152,7 @@ def role_header(
     return Text.assemble(
         (f"  {bot_icon} ", "bold"),
         (f"{bot_name} ", "bold"),
-        (f"▌", f"bold {accent_color}"),
+        ("▌", f"bold {accent_color}"),
     )
 
 

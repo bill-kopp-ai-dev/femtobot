@@ -40,7 +40,6 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -230,12 +229,12 @@ class KeybindingsWatcher:
             return None
 
         class _Handler:
-            def __init__(handler_self, watcher):
-                handler_self._watcher = watcher
+            def __init__(self, watcher):
+                self._watcher = watcher
 
-            def on_modified(handler_self, event):
-                if event.src_path == str(handler_self._watcher._path):
-                    handler_self._watcher._reload()
+            def on_modified(self, event):
+                if event.src_path == str(self._watcher._path):
+                    self._watcher._reload()
 
         obs = Observer()
         obs.schedule(_Handler(self), str(self._path.parent), recursive=False)

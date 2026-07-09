@@ -222,12 +222,127 @@ def load_config(config_path: Path | None = None) -> Config:
             # the dict before validation.
             data = _merge_env_overrides(data)
             config = Config.model_validate(data)
-        except (json.JSONDecodeError, ValueError, pydantic.ValidationError) as e:
-            logger.warning("Failed to load config from {}: {}", path, e)
-            logger.warning("Using default configuration.")
+        except json.JSONDecodeError as e:
+            _handle_config_load_error(
+                path, e, kind="json", strict=_is_strict_config_load()
+            )
+        except pydantic.ValidationError as e:
+            _handle_config_load_error(
+                path, e, kind="validation", strict=_is_strict_config_load()
+            )
+        except ValueError as e:
+            _handle_config_load_error(
+                path, e, kind="value", strict=_is_strict_config_load()
+            )
 
     _apply_ssrf_whitelist(config)
     return config
+
+
+def _is_strict_config_load() -> bool:
+    """Return True when fail-fast on invalid config is enabled.
+
+    Gated by ``FEMTOBOT_STRICT_CONFIG_LOAD`` (default ``false`` in v0.0.3 for
+    backward compat; planned to default ``true`` in v0.0.4).  See
+    ``REFACTOR_PLAN.md`` Lote A / item A1.
+    """
+    raw = os.environ.get("FEMTOBOT_STRICT_CONFIG_LOAD", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _handle_config_load_error(
+    path: Path, exc: BaseException, *, kind: str, strict: bool
+) -> None:
+    """Centralized handler for config-load failures.
+
+    - Strict mode: abort with a loud, actionable message (exit code 2) so
+      silent fallbacks can't mask typos / missing fields.
+    - Lenient mode (default): keep the historical ``logger.warning`` path so
+      existing deployments are not broken, but escalate to ``logger.error``
+      for JSON syntax errors and required-field ValidationErrors where a
+      silent default would be actively dangerous.
+    """
+    if strict:
+        location = getattr(exc, "loc", None)
+        path_hint = ""
+        if location:
+            path_hint = f" (field: {'.'.join(str(p) for p in location)})"
+        msg = (
+            f"Failed to load config from {path}: {kind} error{path_hint}: {exc}\n"
+            f"Set FEMTOBOT_STRICT_CONFIG_LOAD=false to fall back to defaults, "
+            f"or fix the config and retry."
+        )
+        logger.error(msg)
+        raise SystemExit(2)
+    if kind == "json":
+        # JSON syntax errors are NEVER safe to silently swallow — the user
+        # wrote bad JSON.  Stay loud (error-level) but don't crash.
+        logger.error(
+            "Failed to load config from {}: invalid JSON ({})", path, exc
+        )
+        logger.error("Using default configuration.")
+    elif kind == "validation":
+        location = getattr(exc, "loc", None)
+        # Required-field errors (loc present, no clear default) escalate to
+        # error; optional-field errors stay as warnings.
+        if location and _is_required_validation_error(exc):
+            logger.error(
+                "Config at {} failed validation for required field '{}': {}",
+                path,
+                ".".join(str(p) for p in location),
+                exc,
+            )
+        else:
+            logger.warning("Failed to load config from {}: {}", path, exc)
+        logger.warning("Using default configuration.")
+    else:
+        logger.warning("Failed to load config from {}: {}", path, exc)
+        logger.warning("Using default configuration.")
+
+
+def _is_required_validation_error(exc: pydantic.ValidationError) -> bool:
+    """Heuristic: a missing-type error on a top-level field is 'required'."""
+    for err in exc.errors():
+        if err.get("type") == "missing":
+            loc = err.get("loc") or ()
+            # Top-level required field — depth 1 (e.g. ('providers',))
+            if len(loc) == 1:
+                return True
+    return False
+
+
+def validate_config(
+    config_path: Path | None = None, *, strict: bool | None = None
+) -> tuple[bool, str]:
+    """Validate a config without entering the agent loop.
+
+    Honors ``FEMTOBOT_STRICT_CONFIG_LOAD`` when ``strict`` is None.  Returns
+    ``(ok, message)``.  Used by the ``femtobot config validate`` CLI subcommand
+    (A1).
+    """
+    if strict is None:
+        strict = _is_strict_config_load()
+    saved = os.environ.get("FEMTOBOT_STRICT_CONFIG_LOAD")
+    if strict:
+        os.environ["FEMTOBOT_STRICT_CONFIG_LOAD"] = "1"
+    else:
+        os.environ.pop("FEMTOBOT_STRICT_CONFIG_LOAD", None)
+    try:
+        # Force a fresh load (loader caches state via _schema_refs_ready).
+        global _schema_refs_ready
+        _schema_refs_ready = False
+        load_config(config_path=config_path)
+    except SystemExit as e:
+        return False, f"Config validation failed (exit {e.code})"
+    except Exception as e:  # pragma: no cover - defensive
+        return False, f"Config validation errored: {e}"
+    finally:
+        if saved is None:
+            os.environ.pop("FEMTOBOT_STRICT_CONFIG_LOAD", None)
+        else:
+            os.environ["FEMTOBOT_STRICT_CONFIG_LOAD"] = saved
+    mode = "strict" if strict else "lenient"
+    return True, f"Config OK ({mode})"
 
 
 def _merge_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
@@ -401,7 +516,8 @@ def save_config(
     """
     from loguru import logger
 
-    from femtobot.utils.secret_scrub import count_secrets, scrub_secrets as _scrub
+    from femtobot.utils.secret_scrub import count_secrets
+    from femtobot.utils.secret_scrub import scrub_secrets as _scrub
 
     path = config_path or get_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)

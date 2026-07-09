@@ -31,7 +31,6 @@ import sys
 from contextlib import contextmanager
 from typing import Generator
 
-
 MIN_TERMINAL_WIDTH = 80
 MIN_TERMINAL_HEIGHT = 24
 

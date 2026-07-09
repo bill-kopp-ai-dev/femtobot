@@ -119,6 +119,10 @@ class AgentRunSpec:
     llm_timeout_s: float | None = None
     goal_active_predicate: Callable[[], bool] | None = None
     goal_continue_message: str | None = None
+    # B2: extra iterations allowed per ``max_iterations`` exhaustion when
+    # ``goal_active_predicate()`` returns True.  Default 50 matches
+    # nanobot v0.2.1 #4127.  Set to 0 to disable the extra budget.
+    goal_iteration_extra_budget: int = 50
 
 
 @dataclass(slots=True)
@@ -295,7 +299,48 @@ class AgentRunner:
         had_injections = False
         injection_cycles = 0
 
-        for iteration in range(spec.max_iterations):
+        # B2: when a sustained goal is active, allow a one-time extra
+        # budget of ``spec.goal_iteration_extra_budget`` iterations after
+        # the base ``max_iterations`` is exhausted.  This implements
+        # nanobot v0.2.1 #3999 (don't desiste on a long-running goal)
+        # and #4127 (extra-budget cap so a stuck loop is still killed
+        # eventually).  Strategy: drive the loop with ``itertools.count``
+        # and a dynamic ``current_max``; when the iteration counter
+        # reaches ``current_max`` AND the goal is still active AND we
+        # have headroom, bump ``current_max`` by ``extra_budget`` and
+        # continue.  When the cap is hit a second time (or no goal is
+        # active), we break and the post-loop finalize path runs.
+        import itertools
+
+        base_max = spec.max_iterations
+        extra_budget = int(getattr(spec, "goal_iteration_extra_budget", 50) or 0)
+        current_max = base_max
+        extended = False  # has the extra-budget extension fired yet?
+
+        for iteration in itertools.count():
+            # B2: enforce the current iteration cap.  When we hit it
+            # and the goal is still active, bump the cap by
+            # ``extra_budget`` and continue; when we hit it a second
+            # time (or no goal is active), break so the post-loop
+            # finalize path runs.
+            if iteration >= current_max:
+                if (
+                    not extended
+                    and extra_budget > 0
+                    and spec.goal_active_predicate is not None
+                    and spec.goal_active_predicate()
+                ):
+                    extended = True
+                    current_max = base_max + extra_budget
+                    logger.info(
+                        "Sustained goal still active after {base} iterations; "
+                        "extending by {extra} more (session={session})",
+                        base=base_max,
+                        extra=extra_budget,
+                        session=spec.session_key or "default",
+                    )
+                    continue
+                break
             try:
                 # Keep the persisted conversation untouched. Context governance
                 # may repair or compact historical messages for the model, but
@@ -599,33 +644,41 @@ class AgentRunner:
             context.stop_reason = stop_reason
             await hook.after_iteration(context)
             break
-        else:
-            stop_reason = "max_iterations"
-            if spec.max_iterations_message:
-                final_content = spec.max_iterations_message.format(
-                    max_iterations=spec.max_iterations,
-                )
-            else:
-                final_content = render_template(
-                    "agent/max_iterations_message.md",
-                    strip=True,
-                    max_iterations=spec.max_iterations,
-                )
-            self._append_final_message(messages, final_content)
-            # Drain any remaining injections so they are appended to the
-            # conversation history instead of being re-published as
-            # independent inbound messages by _dispatch's finally block.
-            # We ignore should_continue here because the for-loop has already
-            # exhausted all iterations.
-            drained_after_max_iterations, injection_cycles = await self._try_drain_injections(
-                spec,
-                messages,
-                None,
-                injection_cycles,
-                phase="after max_iterations",
+        # B2: reached here only when the iteration cap is exhausted
+        # AND we chose not to extend (or the extra budget is also
+        # exhausted).  Note: there is no ``for-else`` — we use
+        # ``itertools.count`` and an explicit break above, so the
+        # post-loop code below is the finalize path.
+        stop_reason = "max_iterations"
+        # When the extra budget was used, surface the *effective* cap
+        # (``base_max + extra_budget``) so the user sees that the goal
+        # extension actually fired and how much headroom was added.
+        effective_max = current_max
+        if spec.max_iterations_message:
+            final_content = spec.max_iterations_message.format(
+                max_iterations=effective_max,
             )
-            if drained_after_max_iterations:
-                had_injections = True
+        else:
+            final_content = render_template(
+                "agent/max_iterations_message.md",
+                strip=True,
+                max_iterations=effective_max,
+            )
+        self._append_final_message(messages, final_content)
+        # Drain any remaining injections so they are appended to the
+        # conversation history instead of being re-published as
+        # independent inbound messages by _dispatch's finally block.
+        # We ignore should_continue here because the for-loop has already
+        # exhausted all iterations.
+        drained_after_max_iterations, injection_cycles = await self._try_drain_injections(
+            spec,
+            messages,
+            None,
+            injection_cycles,
+            phase="after max_iterations",
+        )
+        if drained_after_max_iterations:
+            had_injections = True
 
         return AgentRunResult(
             final_content=final_content,

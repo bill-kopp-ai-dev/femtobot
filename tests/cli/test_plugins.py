@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from femtobot.cli.plugins import PluginLoader, PluginSpec, PluginRegistry
+from femtobot.cli.plugins import PluginLoader, PluginRegistry, PluginSpec
 
 
 def _make_plugin_dir(base: Path, name: str, *, allowed_tools=None, version="0.1.0") -> Path:

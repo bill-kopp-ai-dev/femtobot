@@ -489,6 +489,16 @@ class ProviderConfig(Base):
     extra_body: dict[str, Any] | None = (
         None  # Extra provider request fields; shape depends on provider/API surface
     )
+    # A11 (REFACTOR_PLAN.md Lote A): per-request query string.  Some
+    # regional providers (e.g. Azure-style ?api-version=, certain
+    # gateways) require a query string that ``extra_headers`` /
+    # ``extra_body`` cannot model.  Values must be strings; bools and
+    # numbers get coerced via ``str()`` to keep the wire format simple.
+    extra_query: dict[str, str] | None = None
+    # D1 (REFACTOR_PLAN.md Lote D): AWS Bedrock region override.  When
+    # set, takes precedence over ``BEDROCK_REGION`` / ``AWS_REGION`` /
+    # the ``us-east-1`` default.  Other providers ignore this field.
+    region: str | None = None
 
 
 class ProvidersConfig(Base):
@@ -536,6 +546,10 @@ class ProvidersConfig(Base):
 
     qianfan: ProviderConfig = Field(default_factory=ProviderConfig)  # Qianfan (百度千帆)
     nvidia: ProviderConfig = Field(default_factory=ProviderConfig)  # NVIDIA NIM (nvapi- keys)
+    # D1 (REFACTOR_PLAN.md Lote D): AWS Bedrock (Converse API).  Auth
+    # via ``AWS_*`` env vars or ``BEDROCK_API_KEY`` (treated as the
+    # session token).  ``region`` overrides ``BEDROCK_REGION``.
+    bedrock: ProviderConfig = Field(default_factory=ProviderConfig)
 
     @model_validator(mode="after")
     def _validate_api_type_scope(self) -> "ProvidersConfig":
@@ -586,6 +600,12 @@ class MCPServerConfig(Base):
     enabled_tools: list[str] = Field(
         default_factory=lambda: ["*"]
     )  # Only register these tools; accepts raw MCP names or wrapped mcp_<server>_<tool> names; ["*"] = all tools; [] = no tools
+    # C4 (REFACTOR_PLAN.md Lote C): tags / capabilities surfaced to the
+    # system prompt for tools backed by this MCP server.  Common values:
+    # ``long-running``, ``needs-confirmation``, ``stateful``, ``network``.
+    # Each tool is registered with these capabilities appended to its
+    # own ``capabilities`` list.
+    capability_mentions: list[str] = Field(default_factory=list)
 
 
 def _lazy_default(module_path: str, class_name: str) -> Any:

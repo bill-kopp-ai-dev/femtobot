@@ -32,11 +32,10 @@ from femtobot.agent.tools.context import (
     reset_request_context,
 )
 from femtobot.agent.tools.mcp import (
+    MCPToolWrapper,
     _extract_allowed_roots,
     _validate_workspace_against_allowed_roots,
-    MCPToolWrapper,
 )
-
 
 # ---------------------------------------------------------------------------
 # _extract_allowed_roots

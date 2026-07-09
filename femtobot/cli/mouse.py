@@ -22,7 +22,6 @@ from __future__ import annotations
 import sys
 from typing import TextIO
 
-
 # Mouse tracking escape sequences (DECSET/DECRST).
 # ?9  — Mouse click reporting (legacy, x10)
 # ?1000 — Mouse click + drag (modern, recommended)

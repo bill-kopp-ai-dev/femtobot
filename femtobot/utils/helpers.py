@@ -231,8 +231,18 @@ def safe_filename(name: str) -> str:
 
 
 def image_placeholder_text(path: str | None, *, empty: str = "[image]") -> str:
-    """Build an image placeholder string."""
-    return f"[image: {path}]" if path else empty
+    """Build an image placeholder string.
+
+    A13 (REFACTOR_PLAN.md Lote A): when *path* is a local filesystem path,
+    the placeholder is replaced with a privacy-safe ``[image omitted]``
+    token instead of leaking the absolute path into the replay transcript
+    (which is later injected into prompts).  Callers that need a path for
+    debugging should log it via ``logger`` at INFO level — never inline
+    the path in user-visible text.
+    """
+    if not path:
+        return empty
+    return "[image omitted]"
 
 
 def truncate_text(text: str, max_chars: int) -> str:
@@ -764,7 +774,8 @@ def write_default_config(
 
     # Import locally to avoid a hard dependency at module import time; the
     # scrubber has no other coupling and this keeps cold-start paths clean.
-    from femtobot.utils.secret_scrub import count_secrets, scrub_secrets as _scrub
+    from femtobot.utils.secret_scrub import count_secrets
+    from femtobot.utils.secret_scrub import scrub_secrets as _scrub
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
 

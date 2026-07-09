@@ -10,7 +10,6 @@ from femtobot.bus.events import InboundMessage, OutboundMessage
 from femtobot.command.builtin import cmd_style
 from femtobot.command.router import CommandContext
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -21,7 +21,6 @@ from femtobot.utils.helpers import (
 )
 from femtobot.utils.prompt_templates import render_template
 
-
 # Max characters to read from each AGENTS.md / MEMORY.md snippet pulled
 # from an MCP server's persistence directory. Keeps the system prompt
 # bounded when an MCP's persistence is verbose.

@@ -6,8 +6,6 @@ import pytest
 
 from femtobot.cli.theme import (
     THEMES,
-    THEME_NAMES,
-    CliTheme,
     get_theme,
     is_valid_theme,
     list_themes,

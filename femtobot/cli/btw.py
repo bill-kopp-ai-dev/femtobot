@@ -21,9 +21,9 @@ import logging
 import time
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from femtobot.bus.events import OutboundMessage
+
+logger = logging.getLogger(__name__)
 
 
 async def run_btw(

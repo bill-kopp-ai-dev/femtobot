@@ -14,7 +14,6 @@ import pytest
 
 from femtobot.agent.skills import BUILTIN_SKILLS_DIR, SkillsLoader
 
-
 # ---------------------------------------------------------------------------
 # Discovery
 # ---------------------------------------------------------------------------

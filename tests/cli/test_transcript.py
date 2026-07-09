@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from femtobot.cli.transcript import (
     ToolCallSummary,
     TranscriptBuffer,

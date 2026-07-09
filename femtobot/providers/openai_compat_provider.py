@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import secrets
 import string
 import time
@@ -144,6 +145,37 @@ def _short_tool_id() -> str:
     return "".join(secrets.choice(_ALNUM) for _ in range(9))
 
 
+# A12 (REFACTOR_PLAN.md Lote A): Anthropic's API requires tool-use IDs to
+# match ``^[a-zA-Z0-9_-]{1,64}$``.  LLM-generated IDs sometimes include
+# spaces, slashes, or unicode (e.g. when the model echoes back arbitrary
+# tokens), which Anthropic rejects with 400.  Sanitize before sending; if
+# the ID is unusable, fall back to a deterministic hash of the original
+# so the round-trip is still traceable.
+_ANTHROPIC_TOOL_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+
+def _sanitize_anthropic_tool_id(tool_id: str | None) -> str:
+    """Normalize a tool-use ID for the Anthropic API (A12).
+
+    Returns the ID unchanged when it already matches Anthropic's pattern.
+    Otherwise:
+      * Strip / replace disallowed characters with ``_``.
+      * Truncate to 64 chars.
+      * If the result is empty or still invalid, replace with a SHA-256
+        hex prefix derived from the original (deterministic — the same
+        bad ID always maps to the same sanitized ID within a session).
+    """
+    if not tool_id:
+        return _short_tool_id()
+    if _ANTHROPIC_TOOL_ID_RE.match(tool_id):
+        return tool_id
+    sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", tool_id)[:64]
+    if not sanitized or not _ANTHROPIC_TOOL_ID_RE.match(sanitized):
+        digest = hashlib.sha256(tool_id.encode("utf-8")).hexdigest()[:32]
+        return f"sanitized_{digest}"
+    return sanitized
+
+
 def _get(obj: Any, key: str) -> Any:
     """Get a value from dict or object attribute, returning None if absent."""
     if isinstance(obj, dict):
@@ -209,6 +241,28 @@ def _extract_tc_extras(
 def _uses_openrouter_attribution(api_base: str | None) -> bool:
     """Apply Femtobot attribution headers to OpenRouter requests by default."""
     return bool(api_base and "openrouter" in api_base.lower())
+
+
+def _append_query_params(url: str, params: dict[str, str]) -> str:
+    """Return ``url`` with ``params`` merged into its query string (A11).
+
+    Existing query parameters win on key collisions — the user's explicit
+    ``apiBase`` values are treated as authoritative over the config-level
+    ``extraQuery``.  ``urlencode`` is used to handle escaping consistently
+    with the rest of the codebase.
+
+    Empty values are dropped (matches ``httpx``/``requests`` semantics for
+    ``?key=&other=v``), and the function is a no-op for empty ``params``.
+    """
+    from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+    if not params:
+        return url
+    parsed = urlparse(url)
+    existing = dict(parse_qsl(parsed.query, keep_blank_values=False))
+    merged: dict[str, str] = {**params, **existing}
+    new_query = urlencode(merged, doseq=True, safe="")
+    return urlunparse(parsed._replace(query=new_query))
 
 
 _RESPONSES_FAILURE_THRESHOLD = 3
@@ -328,6 +382,7 @@ class OpenAICompatProvider(LLMProvider):
         spec: None = None,
         extra_body: dict[str, Any] | None = None,
         api_type: str = "auto",
+        extra_query: dict[str, str] | None = None,
     ):
         super().__init__(api_key, api_base)
         self.default_model = default_model
@@ -337,6 +392,20 @@ class OpenAICompatProvider(LLMProvider):
         self._spec = spec
 
         effective_base = api_base or None
+        # A11 (REFACTOR_PLAN.md Lote A): merge any provider-level
+        # ``extra_query`` into the base URL.  The OpenAI SDK's ``base_url``
+        # argument accepts a fully-formed URL, so we just append the query
+        # string here at construction time (no per-request overhead).
+        self._extra_query = dict(extra_query or {})
+        if self._extra_query and effective_base:
+            try:
+                effective_base = _append_query_params(effective_base, self._extra_query)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "Failed to apply extraQuery to api_base {!r}: {}",
+                    api_base,
+                    exc,
+                )
         self._effective_base = effective_base
         self._default_headers = {"x-session-affinity": uuid.uuid4().hex}
         if _uses_openrouter_attribution(effective_base):
@@ -372,10 +441,37 @@ class OpenAICompatProvider(LLMProvider):
             # opening a fresh connection for each request, which is cheap on a
             # LAN. Cloud providers benefit from keepalive, so we leave the
             # default pool settings for them.
-            http_client = httpx.AsyncClient(
-                limits=httpx.Limits(keepalive_expiry=0),
-                timeout=timeout_s,
+            #
+            # D3 (REFACTOR_PLAN.md Lote D): ``trust_env=False`` keeps
+            # the local client from inheriting ``HTTPS_PROXY`` /
+            # ``HTTP_PROXY`` from the process env.  Corporate proxies
+            # otherwise break "Ollama behind corp proxy" setups.
+            # ``trust_env`` is httpx's explicit "use the env" flag, and
+            # disabling it does not break SNI / TLS — only the proxy
+            # pickup path.
+            #
+            # Important: we apply ``trust_env=False`` only to *plain*
+            # ``http://`` endpoints.  An https://127.0.0.1 setup with
+            # self-signed certs still needs ``SSL_CERT_FILE`` /
+            # ``SSL_CERT_DIR`` from the env to be honored — disabling
+            # them would break a private CA bundle for that exact
+            # case.  The proxy bypass is only relevant for plain
+            # HTTP, so we narrow the flag accordingly.
+            is_plain_http_local = (
+                self._effective_base.lower().startswith("http://")
             )
+            client_kwargs: dict[str, Any] = {
+                "limits": httpx.Limits(keepalive_expiry=0),
+                "timeout": timeout_s,
+            }
+            if is_plain_http_local:
+                client_kwargs["trust_env"] = False
+                logger.debug(
+                    "OpenAI-compat client for local endpoint {} built with "
+                    "trust_env=False (no proxy inheritance)",
+                    self._effective_base,
+                )
+            http_client = httpx.AsyncClient(**client_kwargs)
         self._client = AsyncOpenAI(
             api_key=self._api_key_for_client,
             base_url=self._effective_base,
@@ -472,6 +568,10 @@ class OpenAICompatProvider(LLMProvider):
         """Return True for providers that reject normal OpenAI tool call IDs."""
         return bool(self._spec and self._spec.name == "mistral")
 
+    def _should_sanitize_anthropic_tool_ids(self) -> bool:
+        """True for Anthropic — tool-use IDs must match ``^[a-zA-Z0-9_-]{1,64}$`` (A12)."""
+        return bool(self._spec and self._spec.name == "anthropic")
+
     @staticmethod
     def _normalize_tool_call_arguments(arguments: Any) -> str:
         """Force function.arguments into a valid JSON object string."""
@@ -511,10 +611,14 @@ class OpenAICompatProvider(LLMProvider):
         pending_tool_ids: dict[str, deque[str]] = {}
         force_string_content = bool(self._spec and self._spec.name == "deepseek")
         normalize_tool_ids = self._should_normalize_tool_call_ids()
+        sanitize_anthropic_ids = self._should_sanitize_anthropic_tool_ids()
 
         def map_id(value: Any) -> Any:
             if not isinstance(value, str):
                 return value
+            if sanitize_anthropic_ids:
+                # A12: Anthropic rejects IDs that aren't ``[A-Za-z0-9_-]{1,64}``.
+                return id_map.setdefault(value, _sanitize_anthropic_tool_id(value))
             if not normalize_tool_ids:
                 return value
             return id_map.setdefault(value, self._normalize_tool_call_id(value))

@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import pytest
-
 from femtobot.cli.whimsy import (
     DEFAULT_VERBS,
     SPINNER_STYLES,
-    pick_verb,
     pick_spinner,
+    pick_verb,
     resolve_spinner,
     rotate_verb,
 )

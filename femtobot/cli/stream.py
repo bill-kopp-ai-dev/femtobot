@@ -12,13 +12,13 @@ from __future__ import annotations
 import sys
 from contextlib import contextmanager, nullcontext
 
-from rich.console import Console
+from rich.console import Console, RenderableType
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.text import Text
 
-from femtobot.cli.whimsy import pick_verb, resolve_spinner
 from femtobot.cli.role_renderer import TurnSpacingRenderer
+from femtobot.cli.whimsy import pick_verb, resolve_spinner
 
 
 def _clear_current_line(console: Console) -> None:

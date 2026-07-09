@@ -1,7 +1,10 @@
-"""Workspace path boundary helpers.
+"""Workspace boundary enforcement utilities.
 
-These helpers are application-level guards.  They make path decisions
-consistent across tools, but they are not a replacement for an OS sandbox.
+This module centralises the path-containment checks that tools use to refuse
+writes outside the active workspace.  The :class:`WorkspaceBoundaryError`
+exception is the single signal callers should catch — the helpers in this
+module (``is_path_within``, ``is_path_allowed``, ``resolve_allowed_path``)
+all raise it on policy violation rather than returning a bool.
 """
 
 from __future__ import annotations

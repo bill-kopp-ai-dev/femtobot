@@ -19,7 +19,6 @@ from typing import Iterable
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
 
-
 # Match the last ``@<partial>`` before the cursor, with optional
 # leading whitespace.  ``[^\s@]*`` keeps the match anchored at a single
 # token boundary.

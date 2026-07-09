@@ -1,6 +1,6 @@
 [project]
 name = "femtobot"
-version = "0.0.2"
+version = "0.0.7"
 description = "A lightweight, CLI-first AI agent foundation for multi-agent systems"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
@@ -101,6 +101,11 @@ tui = [
 pdf = [
     "pymupdf>=1.25.0",
 ]
+# D1 (REFACTOR_PLAN.md Lote D): AWS Bedrock support is gated behind
+# an optional extra so a vanilla install doesn't pull in ``boto3``.
+bedrock = [
+    "boto3>=1.34.0",
+]
 dev = [
     "pytest>=9.0.0,<10.0.0",
     "pytest-asyncio>=1.3.0,<2.0.0",
@@ -153,11 +158,18 @@ ignore = [
     "E731",  # lambda assignment (acceptable for trivial callbacks)
     "N806",  # non-lowercase variable in function (allow UPPER_CASE constants in fns)
     "N818",  # exception name should end with Error (legacy: FileSizeExceeded is public API)
+    "E402",  # module-level imports not at top (used for back-compat re-exports)
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "security: security regression tests (Lote A in REFACTOR_PLAN.md).",
+    "durability: durability / concurrency regression tests (Lote B in REFACTOR_PLAN.md).",
+    "architecture: architecture / plugin tests (Lote C in REFACTOR_PLAN.md).",
+    "providers: provider / proxy tests (Lote D in REFACTOR_PLAN.md).",
+]
 filterwarnings = [
     "error::RuntimeWarning",
 ]

@@ -32,8 +32,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
-    from rich.console import Console, RenderableType
-    from rich.table import Table
+    from rich.console import RenderableType
     from rich.text import Text
 
 # Lines stored in the frozen area are plain strings (already rendered).

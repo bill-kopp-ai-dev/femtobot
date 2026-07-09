@@ -298,6 +298,26 @@ async def _probe_http_url(url: str, timeout: float = 3.0) -> bool:
         return False
 
 
+def _preflight_check_mcp_url(url: str, *, allow_loopback: bool = True) -> tuple[bool, str]:
+    """Reject unsafe MCP HTTP URLs before any network probe (A2).
+
+    SSRF guard treats ``cfg.url`` the same way ``web_fetch`` does: scheme +
+    hostname + resolved IPs.  Without this, a malicious or accidental
+    ``http://169.254.169.254/...`` config would make the probe (and the
+    transport) try to talk to the EC2 metadata service before any policy
+    could stop it.
+
+    Returns ``(ok, error_message)``.  When ``allow_loopback`` is True, the
+    guard only accepts literal loopback hosts (``localhost``, ``127.0.0.0/8``,
+    ``::1``) — public DNS that resolves to a loopback is still blocked.
+    """
+    from femtobot.security.network import validate_url_target
+
+    if not url:
+        return False, "missing url"
+    return validate_url_target(url, allow_loopback=allow_loopback)
+
+
 def _windows_command_basename(command: str) -> str:
     """Return the lowercase basename for a Windows command or path."""
     return command.replace("\\", "/").rsplit("/", maxsplit=1)[-1].lower()
@@ -448,6 +468,7 @@ class MCPToolWrapper(_MCPWrapperBase):
         tool_def,
         tool_timeout: int = 30,
         allowed_roots: list[Path] | None = None,
+        capability_mentions: list[str] | None = None,
     ):
         self._set_mcp_connection(session, server_name)
         self._original_name = tool_def.name
@@ -456,6 +477,10 @@ class MCPToolWrapper(_MCPWrapperBase):
         raw_schema = tool_def.inputSchema or {"type": "object", "properties": {}}
         self._parameters = _normalize_schema_for_openai(raw_schema)
         self._tool_timeout = tool_timeout
+        # C4 (REFACTOR_PLAN.md Lote C): tags inherited from the server
+        # config (``cfg.capability_mentions``).  These show up in
+        # ``Tool.get_capabilities()`` and surface in the system prompt.
+        self._capability_mentions: list[str] = list(capability_mentions or [])
         # Server's ALLOWED_ROOTS policy, extracted from cfg.env by
         # ``connect_mcp_servers``. Used by ``execute`` to short-circuit
         # workspace_path violations with an actionable message *before*
@@ -477,6 +502,25 @@ class MCPToolWrapper(_MCPWrapperBase):
     @property
     def parameters(self) -> dict[str, Any]:
         return self._parameters
+
+    def get_capabilities(self) -> list[str]:
+        """C4: forward the server's ``capability_mentions`` plus ``network``.
+
+        MCP tools always reach the network (regardless of whether the
+        server is local), so the registry filter has a meaningful
+        ``network`` capability to query without any extra config.  Any
+        tags declared via ``cfg.capability_mentions`` are appended
+        verbatim and de-duplicated.
+        """
+        caps = ["network", *self._capability_mentions]
+        # Stable order, no duplicates.
+        seen: set[str] = set()
+        out: list[str] = []
+        for c in caps:
+            if c and c not in seen:
+                seen.add(c)
+                out.append(c)
+        return out
 
     async def execute(self, **kwargs: Any) -> str:
         from mcp import types
@@ -862,6 +906,17 @@ async def connect_mcp_servers(
                 )
                 read, write = await server_stack.enter_async_context(stdio_client(params))
             elif transport_type == "sse":
+                # A2: reject unsafe URLs pre-flight (SSRF / metadata service).
+                ok, err = _preflight_check_mcp_url(cfg.url, allow_loopback=True)
+                if not ok:
+                    logger.warning(
+                        "MCP server '{}': rejecting unsafe URL {} ({})",
+                        name,
+                        cfg.url,
+                        err,
+                    )
+                    await server_stack.aclose()
+                    return name, None
                 if not await _probe_http_url(cfg.url):
                     logger.warning("MCP server '{}': {} unreachable, skipping", name, cfg.url)
                     await server_stack.aclose()
@@ -888,6 +943,17 @@ async def connect_mcp_servers(
                     sse_client(cfg.url, httpx_client_factory=httpx_client_factory)
                 )
             elif transport_type == "streamableHttp":
+                # A2: reject unsafe URLs pre-flight (SSRF / metadata service).
+                ok, err = _preflight_check_mcp_url(cfg.url, allow_loopback=True)
+                if not ok:
+                    logger.warning(
+                        "MCP server '{}': rejecting unsafe URL {} ({})",
+                        name,
+                        cfg.url,
+                        err,
+                    )
+                    await server_stack.aclose()
+                    return name, None
                 if not await _probe_http_url(cfg.url):
                     logger.warning("MCP server '{}': {} unreachable, skipping", name, cfg.url)
                     await server_stack.aclose()
@@ -944,6 +1010,10 @@ async def connect_mcp_servers(
                     tool_def,
                     tool_timeout=cfg.tool_timeout,
                     allowed_roots=allowed_roots,
+                    # C4: forward the server-level ``capability_mentions``
+                    # so the registry filter and system prompt see the
+                    # right tags without per-tool config.
+                    capability_mentions=getattr(cfg, "capability_mentions", None),
                 )
                 registry.register(wrapper)
                 logger.debug("MCP: registered tool '{}' from server '{}'", wrapper.name, name)

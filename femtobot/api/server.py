@@ -40,7 +40,37 @@ def _error_json(status: int, message: str, err_type: str = "invalid_request_erro
     )
 
 
-def _chat_completion_response(content: str, model: str) -> dict[str, Any]:
+def _chat_completion_response(
+    content: str,
+    model: str,
+    *,
+    usage: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """Build a /v1/chat/completions response payload.
+
+    B3 (REFACTOR_PLAN.md Lote B): forward real provider ``usage`` when
+    available so SDK callers can track token spend.  Falls back to the
+    historical zero placeholder only when the provider returned nothing
+    (matches v0.0.3 behavior for upstream providers that don't surface
+    usage yet).
+    """
+    if usage:
+        normalized = {
+            "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
+            "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
+            "total_tokens": int(
+                usage.get(
+                    "total_tokens",
+                    (
+                        int(usage.get("prompt_tokens", 0) or 0)
+                        + int(usage.get("completion_tokens", 0) or 0)
+                    ),
+                )
+                or 0
+            ),
+        }
+    else:
+        normalized = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
         "object": "chat.completion",
@@ -53,7 +83,7 @@ def _chat_completion_response(content: str, model: str) -> dict[str, Any]:
                 "finish_reason": "stop",
             }
         ],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "usage": normalized,
     }
 
 
@@ -262,7 +292,16 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
         logger.exception("Unexpected API lock error for session {}", session_key)
         return _error_json(500, "Internal server error", err_type="server_error")
 
-    return web.json_response(_chat_completion_response(response_text, model_name))
+    return web.json_response(
+        _chat_completion_response(
+            response_text,
+            model_name,
+            # B3: forward the LLMResponse's usage dict.  ``getattr``
+            # defends against older AgentRunResult variants that
+            # don't have ``usage`` on the response.
+            usage=getattr(response, "usage", None) or None,
+        )
+    )
 
 
 async def handle_models(request: web.Request) -> web.Response:

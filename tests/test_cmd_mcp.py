@@ -5,7 +5,6 @@ Refs: FEMTOBOT_MCP_IMPROVEMENT_PLAN.md Fase 5.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,7 +12,6 @@ import pytest
 from femtobot.bus.events import InboundMessage, OutboundMessage
 from femtobot.command.builtin import BUILTIN_COMMAND_SPECS, cmd_mcp
 from femtobot.command.router import CommandContext
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -278,8 +276,8 @@ async def test_cmd_mcp_unknown_subcommand() -> None:
 
 def test_mcp_registered_as_exact_and_prefix() -> None:
     """The /mcp command is registered in both exact and prefix tiers."""
-    from femtobot.command.router import CommandRouter
     from femtobot.command.builtin import register_builtin_commands
+    from femtobot.command.router import CommandRouter
 
     router = CommandRouter()
     register_builtin_commands(router)

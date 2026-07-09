@@ -3,7 +3,10 @@
 
 Run: uv run python3 scripts/check_cli_schema_compat.py
 """
-import sys, json, tempfile
+import json
+import sys
+import tempfile
+
 
 def main():
     # Synthetic config with BOTH blocks (legacy + Camada 1)
@@ -11,7 +14,7 @@ def main():
         "cli": {"enabled": True, "theme": "monochrome"},  # legacy top-level
         "agents": {"defaults": {"cli": {"theme": "cyber-dark", "multiline": "off"}}}
     }
-    
+
     # Try to load via Config
     try:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
@@ -19,7 +22,7 @@ def main():
             f.flush()
             from femtobot.config.schema import Config
             cfg = Config.model_validate(synthetic)
-            print(f"Config loaded OK")
+            print("Config loaded OK")
             print(f"  agents.cli.theme = {cfg.agents.defaults.cli.theme}")
             print(f"  agents.cli.multiline = {cfg.agents.defaults.cli.multiline}")
             print(f"  agents.cli.whimsy.verbsEnabled = {cfg.agents.defaults.cli.whimsy.verbs_enabled}")

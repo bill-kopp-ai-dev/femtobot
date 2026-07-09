@@ -28,13 +28,10 @@ Config:
 from __future__ import annotations
 
 import asyncio
-import os
 import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-
 
 DEFAULT_TIMEOUT_S = 30.0
 

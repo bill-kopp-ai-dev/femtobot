@@ -60,6 +60,7 @@ class MemoryStore:
         self._cursor_file = self.memory_dir / ".cursor"
         self._dream_cursor_file = self.memory_dir / ".dream_cursor"
         self._corruption_logged = False  # rate-limit non-int cursor warning
+        self._malformed_history_logged = False  # rate-limit bad JSONL lines (A10)
         self._oversize_logged = False  # rate-limit oversized-entry warning
         self._append_lock = threading.Lock()  # serialize cursor allocation + append
         self._git = GitStore(
@@ -284,8 +285,42 @@ class MemoryStore:
             record = {"cursor": cursor, "timestamp": ts, "content": content}
             with open(self.history_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
-            self._cursor_file.write_text(str(cursor), encoding="utf-8")
+            # A10 (REFACTOR_PLAN.md Lote A): cursor persistence also goes
+            # through the atomic helper so a partial write can't leave the
+            # cursor ahead of the JSONL tail.  We also assert monotonicity
+            # (the on-disk cursor may never regress) to catch external
+            # writers that bypass ``append_history``.
+            from femtobot.utils.gitstore import atomic_write_text
+
+            self._enforce_monotonic_cursor(cursor)
+            atomic_write_text(self._cursor_file, str(cursor))
         return cursor
+
+    def _enforce_monotonic_cursor(self, new_cursor: int) -> None:
+        """Assert the new cursor is strictly greater than what's on disk (A10).
+
+        External writers that bypass ``append_history`` could regress the
+        cursor.  Detecting that here (rather than at read time) keeps the
+        invariant in one place.  When a regression is detected we refuse the
+        write and log loudly — callers will retry, and the next iteration
+        will allocate ``max+1`` so the regression is effectively skipped.
+        """
+        current = None
+        if self._cursor_file.exists():
+            with suppress(ValueError, OSError):
+                current = int(self._cursor_file.read_text(encoding="utf-8").strip())
+        if current is not None and new_cursor <= current:
+            logger.error(
+                "Refusing non-monotonic cursor write: existing={}, new={}. "
+                "This usually means an external writer (e.g. editor, script) "
+                "modified {} directly.",
+                current,
+                new_cursor,
+                self._cursor_file.name,
+            )
+            raise ValueError(
+                f"Cursor regression detected (current={current}, new={new_cursor})"
+            )
 
     @staticmethod
     def _valid_cursor(value: Any) -> int | None:
@@ -345,17 +380,33 @@ class MemoryStore:
     # -- JSONL helpers -------------------------------------------------------
 
     def _read_entries(self) -> list[dict[str, Any]]:
-        """Read all entries from history.jsonl."""
+        """Read all entries from history.jsonl.
+
+        A10 (REFACTOR_PLAN.md Lote A): malformed JSONL lines are skipped
+        with a one-shot warning that names the line index.  Previously the
+        code silently ``continue``d on ``json.JSONDecodeError``, which
+        made it impossible to diagnose a corrupt file.  The warning is
+        rate-limited (single emission per process) so a thousand bad
+        lines don't spam the logs.
+        """
         entries: list[dict[str, Any]] = []
         with suppress(FileNotFoundError):
             with open(self.history_file, "r", encoding="utf-8") as f:
-                for line in f:
+                for idx, line in enumerate(f):
                     line = line.strip()
-                    if line:
-                        try:
-                            entries.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            continue
+                    if not line:
+                        continue
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError as exc:
+                        if not self._malformed_history_logged:
+                            self._malformed_history_logged = True
+                            logger.warning(
+                                "history.jsonl line {} is malformed JSON ({}); "
+                                "skipping. Further occurrences suppressed.",
+                                idx,
+                                exc,
+                            )
 
         return entries
 
@@ -411,7 +462,53 @@ class MemoryStore:
         return 0
 
     def set_last_dream_cursor(self, cursor: int) -> None:
-        self._dream_cursor_file.write_text(str(cursor), encoding="utf-8")
+        """Write the dream cursor to disk atomically (A7).
+
+        Uses ``tempfile`` + ``os.replace`` so a crash mid-write can never
+        produce a partially-written file (which would either break
+        ``int()`` parsing on the next read or regress the cursor).  This is
+        the same pattern ``_write_entries`` uses for ``history.jsonl``.
+        """
+        from femtobot.utils.gitstore import atomic_write_text
+
+        atomic_write_text(self._dream_cursor_file, str(cursor))
+
+    def advance_dream_cursor_after_commit(
+        self, cursor: int, *, commit_message: str
+    ) -> tuple[bool, str | None]:
+        """Atomically advance the dream cursor only after git commit succeeds (A6).
+
+        This is the seam that fixes the historical race: previously the
+        cursor was written by ``set_last_dream_cursor`` *before* the commit
+        was created, so a crash between the two left the cursor ahead of
+        the actual memory state and the next Dream cycle would skip those
+        entries.  Now the order is:
+
+            1. ``git.auto_commit(commit_message)`` returns a SHA on success
+               and ``None`` on failure / no-op.
+            2. Only on a real commit do we persist the cursor.
+            3. The cursor write itself is atomic (see ``set_last_dream_cursor``).
+
+        Returns ``(advanced, commit_sha)``.  When ``advanced`` is False, the
+        cursor was left untouched (caller should not retry — the next Dream
+        cycle will reprocess the unconsumed tail).
+        """
+        if not self.git.is_initialized():
+            # Without git, Dream has nowhere to anchor its state, so refuse
+            # to advance — re-running Dream must observe the uncommitted work.
+            logger.debug(
+                "Dream cursor not advanced: memory git is not initialized"
+            )
+            return False, None
+        sha = self.git.auto_commit(commit_message)
+        if not sha:
+            logger.debug(
+                "Dream cursor not advanced: commit produced no SHA "
+                "(nothing to commit or commit failed)"
+            )
+            return False, None
+        self.set_last_dream_cursor(cursor)
+        return True, sha
 
     def build_dream_prompt(self, *, max_entries: int = 20) -> tuple[str, int] | None:
         """Build the Dream prompt with unprocessed history context.

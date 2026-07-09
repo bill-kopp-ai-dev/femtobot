@@ -39,6 +39,28 @@ def _make_provider_core(
     model = model or resolved.model
     provider_name = config.get_provider_name(model, preset=resolved)
     p = config.get_provider(model, preset=resolved)
+
+    # D1: dispatch to BedrockProvider when the matched provider is
+    # ``bedrock``.  ``is_direct`` providers take their config from env
+    # vars / the api_key field; we don't route through the
+    # OpenAI-compat path.
+    if provider_name == "bedrock":
+        from femtobot.providers.bedrock import BedrockProvider
+
+        region = (
+            getattr(p, "region", None)
+            if p is not None
+            else None
+        ) or None
+        bedrock = BedrockProvider(
+            api_key=p.api_key if p else None,
+            api_base=None,
+            default_model=model,
+            region=region,
+        )
+        bedrock.generation = resolved.to_generation_settings()
+        return bedrock
+
     from femtobot.providers.openai_compat_provider import OpenAICompatProvider
 
     provider = OpenAICompatProvider(
@@ -49,6 +71,7 @@ def _make_provider_core(
         spec=None,
         extra_body=p.extra_body if p else None,
         api_type=p.api_type if p and provider_name == "openai" else "auto",
+        extra_query=p.extra_query if p else None,  # A11
     )
 
     provider.generation = resolved.to_generation_settings()

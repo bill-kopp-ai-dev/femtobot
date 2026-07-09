@@ -10,7 +10,6 @@ from typing import Any
 
 import pytest
 
-from femtobot.agent.tools import mcp as mcp_tools
 from femtobot.agent.tools.mcp import (
     _clear_connected_cache,
     _update_connected_cache,
@@ -21,7 +20,6 @@ from femtobot.utils.tool_hints import (
     _strip_mcp_tool_prefix,
     get_mcp_tool_metadata,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

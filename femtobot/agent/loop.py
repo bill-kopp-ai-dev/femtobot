@@ -153,6 +153,28 @@ class AgentLoop:
     3. Calls the LLM
     4. Executes tool calls
     5. Sends responses back
+
+    C1 (REFACTOR_PLAN.md Lote C): the canonical entrypoint is now
+    :meth:`AgentLoop.from_config`, which builds the loop from a
+    :class:`~femtobot.config.schema.Config` object (resolving the
+    provider, model preset, default tool iterations, and snapshot
+    loaders in one place).  The thin :class:`~femtobot.femtobot.Femtobot`
+    facade in :mod:`femtobot.femtobot` is a convenience wrapper for
+    embedders that don't need direct access to the bus / loop.
+
+    Example — direct usage without the ``Femtobot`` facade::
+
+        from femtobot.agent.loop import AgentLoop
+        from femtobot.bus.events import MessageBus
+        from femtobot.config.loader import load_config
+
+        config = load_config()
+        loop = AgentLoop.from_config(config, bus=MessageBus())
+        response = await loop.process_direct(
+            "Summarize the latest changelog",
+            session_key="docs",
+        )
+        print(response.content)
     """
 
     @property
@@ -280,7 +302,19 @@ class AgentLoop:
         self._mcp_connecting = False
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
         self._background_tasks: list[asyncio.Task] = []
+        # Back-reference to the live :class:`~femtobot.config.schema.Config`
+        # so slash commands (e.g. ``/style``) can mutate runtime settings.
+        # ``from_config`` fills this in; direct ``__init__`` callers get
+        # ``None`` and the slash commands must handle that (most just
+        # no-op when ``self._config is None``).
+        self._config: Any = None
         self._session_locks: dict[str, asyncio.Lock] = {}
+        # Serializes creation of new ``_session_locks[key]`` entries so
+        # two coroutines racing on the same session_key don't end up
+        # each creating a fresh lock and writing to ``Session`` in
+        # parallel.  Same pattern as ``Femtobot._acquire_session_lock``
+        # (see B1 fix in femtobot/femtobot.py).
+        self._session_locks_lock = asyncio.Lock()
         # Per-session pending queues for mid-turn message injection.
         # When a session has an active task, new messages for that session
         # are routed here instead of creating a new task.
@@ -325,9 +359,26 @@ class AgentLoop:
     ) -> AgentLoop:
         """Create an AgentLoop from config with the common parameter set.
 
+        C1 (REFACTOR_PLAN.md Lote C): this is the canonical factory for
+        embedding Femtobot in another process.  It:
+
+        1. Resolves the model preset (``config.resolve_preset()``).
+        2. Builds the provider via :func:`femtobot.providers.factory.make_provider`.
+        3. Wires the snapshot loaders for ``/model`` rollback.
+        4. Plumbs the default tool-iteration cap and context window.
+
         Extra keyword arguments are forwarded to ``AgentLoop.__init__``,
         allowing callers to override or extend the standard config-derived
         parameters (e.g. ``cron_service``, ``session_manager``).
+
+        Example::
+
+            loop = AgentLoop.from_config(
+                config,
+                bus=MessageBus(),
+                # inject a custom session manager if needed
+                session_manager=MySessionManager(),
+            )
         """
         from femtobot.providers.factory import make_provider
 
@@ -351,7 +402,7 @@ class AgentLoop:
                 preset_snapshot_loader = lambda name: build_provider_snapshot(
                     config, preset_name=name
                 )
-        return cls(
+        instance = cls(
             bus=bus,
             provider=provider,
             workspace=config.workspace_path,
@@ -968,12 +1019,31 @@ class AgentLoop:
                 )
             )
 
+    async def _acquire_session_lock(self, session_key: str) -> asyncio.Lock:
+        """Return the asyncio.Lock for *session_key*, creating it on demand (B1+).
+
+        Same race-free pattern as ``Femtobot._acquire_session_lock``:
+        a fast-path dict lookup, then a slow path guarded by
+        ``self._session_locks_lock`` so two coroutines racing on a
+        fresh ``session_key`` don't end up with two different locks
+        (which would let them both mutate ``Session`` concurrently).
+        """
+        lock = self._session_locks.get(session_key)
+        if lock is not None:
+            return lock
+        async with self._session_locks_lock:
+            lock = self._session_locks.get(session_key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._session_locks[session_key] = lock
+            return lock
+
     async def _dispatch(self, msg: InboundMessage) -> None:
         """Process a message: per-session serial, cross-session concurrent."""
         session_key = self._effective_session_key(msg)
         if session_key != msg.session_key:
             msg = dataclasses.replace(msg, session_key_override=session_key)
-        lock = self._session_locks.setdefault(session_key, asyncio.Lock())
+        lock = await self._acquire_session_lock(session_key)
         gate = self._concurrency_gate or nullcontext()
 
         pending: asyncio.Queue | None = None
@@ -1786,7 +1856,7 @@ class AgentLoop:
             media=media or [],
         )
         # Share the dispatch lock so direct calls serialize with bus turns.
-        lock = self._session_locks.setdefault(session_key, asyncio.Lock())
+        lock = await self._acquire_session_lock(session_key)
         try:
             async with lock:
                 kwargs: dict[str, Any] = {

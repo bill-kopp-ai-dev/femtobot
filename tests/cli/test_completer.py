@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
 from femtobot.cli.completer import (
-    CommandHit,
-    SlashCompleter,
     rank_commands,
 )
 from femtobot.command.builtin import BUILTIN_COMMAND_SPECS

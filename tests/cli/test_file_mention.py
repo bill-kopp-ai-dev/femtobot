@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from prompt_toolkit.document import Document
 
 from femtobot.cli.file_mention import (

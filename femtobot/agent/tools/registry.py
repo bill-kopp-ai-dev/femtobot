@@ -26,6 +26,37 @@ class ToolRegistry:
         self._tools.pop(name, None)
         self._cached_definitions = None
 
+    def by_capability(self, capability: str) -> list[Tool]:
+        """Return the list of tools that advertise *capability* (C2).
+
+        Capability matching is exact (case-sensitive).  Empty /
+        ``None`` *capability* returns an empty list — the registry
+        never guesses.
+
+        The result is freshly sorted by tool name for stable display
+        in the ``femtobot tools list --capability <name>`` CLI.
+        """
+        if not capability:
+            return []
+        return sorted(
+            (tool for tool in self._tools.values() if tool.has_capability(capability)),
+            key=lambda t: t.name,
+        )
+
+    def capabilities(self) -> dict[str, list[str]]:
+        """Return a mapping of capability name → sorted list of tool names (C2).
+
+        Used by ``/status`` and the CLI to print "all capabilities
+        currently in the registry" without re-implementing the loop.
+        """
+        out: dict[str, list[str]] = {}
+        for tool in self._tools.values():
+            for cap in tool.get_capabilities():
+                out.setdefault(cap, []).append(tool.name)
+        for cap in out:
+            out[cap] = sorted(out[cap])
+        return out
+
     def get(self, name: str) -> Tool | None:
         """Get a tool by name."""
         return self._tools.get(name)

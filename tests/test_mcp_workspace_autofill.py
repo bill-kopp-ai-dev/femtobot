@@ -6,7 +6,6 @@ Refs: FEMTOBOT_MCP_IMPROVEMENT_PLAN.md Fase 3.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -18,10 +17,9 @@ from femtobot.agent.tools.context import (
 )
 from femtobot.agent.tools.mcp import (
     _MCP_WORKSPACE_AWARE_TOOLS,
-    _resolve_active_workspace,
     MCPToolWrapper,
+    _resolve_active_workspace,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

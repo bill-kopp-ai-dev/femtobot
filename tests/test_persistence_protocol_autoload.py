@@ -10,12 +10,11 @@ import pytest
 from femtobot.agent.context import ContextBuilder
 from femtobot.agent.tools import mcp as mcp_tools
 from femtobot.agent.tools.mcp import (
-    _clear_connected_cache,
     _PERSISTENCE_PROTOCOL_RE,
+    _clear_connected_cache,
     cache_prompt_content,
     is_persistence_protocol_prompt,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

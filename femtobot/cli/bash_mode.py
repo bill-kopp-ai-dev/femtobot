@@ -21,7 +21,6 @@ import time
 from contextlib import suppress
 from dataclasses import dataclass
 
-
 DEFAULT_TIMEOUT_S: float = 30.0
 MAX_OUTPUT_BYTES: int = 32 * 1024
 

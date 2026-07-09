@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from femtobot.agent.tools.base import Tool, tool_parameters
 from femtobot.agent.tools.file_state import FileStates, _hash_file, current_file_states
 from femtobot.agent.tools.path_utils import resolve_workspace_path
@@ -16,7 +18,12 @@ from femtobot.agent.tools.schema import (
     StringSchema,
     tool_parameters_schema,
 )
-from femtobot.security.workspace_access import current_tool_workspace
+from femtobot.security.workspace_access import current_tool_workspace, current_workspace_scope
+from femtobot.security.workspace_soft_boundary import (
+    is_soft_mode,
+    max_strikes,
+    record_violation,
+)
 from femtobot.utils.helpers import build_image_content_blocks, detect_image_mime
 
 
@@ -82,6 +89,63 @@ class _FsTool(Tool):
             access.allowed_root,
             self._extra_allowed_dirs,
         )
+
+    def _soft_resolve(self, path: str) -> tuple[Path | None, str | None]:
+        """Resolve *path* and translate boundary errors to recoverable warnings (A8).
+
+        Returns ``(resolved, error_message)``.  When the error is non-None,
+        callers should return it as the tool result instead of raising.
+        Hard-fail behavior is preserved when ``FEMTOBOT_SOFT_WORKSPACE_BOUNDARY``
+        is unset, and after the per-session strike limit is exceeded.
+
+        The session key is derived from the active workspace scope's source
+        channel + project name (best effort).  When no scope is bound (e.g.
+        unit tests), the counter is process-global — the strike limit is
+        still enforced so we never loop forever.
+        """
+        try:
+            return self._resolve(path), None
+        except Exception as exc:
+            if not is_soft_mode():
+                raise
+            session_key = self._current_session_key()
+            count = record_violation(session_key)
+            strike_limit = max_strikes()
+            logger.warning(
+                "Workspace boundary soft-violation {}/{} for session {}: {}",
+                count,
+                strike_limit,
+                session_key,
+                exc,
+            )
+            if count >= strike_limit:
+                logger.error(
+                    "Soft workspace boundary exhausted ({} strikes) for session {}; "
+                    "falling back to hard-fail.",
+                    count,
+                    session_key,
+                )
+                raise
+            return None, (
+                f"Warning: path '{path}' is outside the active workspace ({exc}). "
+                f"This is a soft warning ({count}/{strike_limit}); subsequent "
+                f"violations on the same session will be hard-fail. If the path is "
+                f"intentional, ask the user to whitelist it or move the file into the "
+                f"workspace."
+            )
+
+    def _current_session_key(self) -> str:
+        """Best-effort session key lookup for soft-mode counter scoping (A8).
+
+        Falls back to a process-global key when no scope is bound.
+        """
+        try:
+            scope = current_workspace_scope()
+            if scope is not None:
+                return f"{scope.source_channel or 'default'}:{scope.project_name}"
+        except Exception:  # pragma: no cover - defensive
+            pass
+        return "global"
 
     def _display_workspace(self) -> Path | None:
         return current_tool_workspace(self._workspace).project_path
@@ -433,7 +497,12 @@ class WriteFileTool(_FsTool):
                 raise ValueError("Unknown path")
             if content is None:
                 raise ValueError("Unknown content")
-            fp = self._resolve(path)
+            # A8: try soft-resolve first; on strike-out, falls back to hard-fail
+            # inside ``_soft_resolve`` (re-raises) so the ``except`` below sees it.
+            fp, soft_error = self._soft_resolve(path)
+            if soft_error is not None:
+                return soft_error
+            assert fp is not None  # soft_resolve contract
             fp.parent.mkdir(parents=True, exist_ok=True)
             fp.write_text(content, encoding="utf-8")
             self._file_states.record_write(fp)
@@ -802,7 +871,11 @@ class EditFileTool(_FsTool):
             if expected_replacements is not None and expected_replacements < 1:
                 return "Error: expected_replacements must be >= 1."
 
-            fp = self._resolve(path)
+            # A8: soft-resolve (falls back to hard-fail after the strike limit).
+            fp, soft_error = self._soft_resolve(path)
+            if soft_error is not None:
+                return soft_error
+            assert fp is not None
 
             # Create-file semantics: old_text='' + file doesn't exist → create
             if not fp.exists():
