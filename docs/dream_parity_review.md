@@ -12,6 +12,11 @@ missing code.
 
 ## Scope
 
+> **Status (v0.1.5):** all six regressions (R1-R6) are now closed
+> in v0.1.5.  See the test suite ``tests/test_dream_parity.py`` for
+> per-finding regression coverage.  The three Femtobot-specific
+> evolutions (F1-F3) are preserved.
+
 The comparison touched:
 - `nanobot/agent/memory.py` (MemoryStore + Consolidator) ↔
   `femtobot/agent/memory.py`

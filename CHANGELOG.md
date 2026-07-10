@@ -9,6 +9,58 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-07-10
+
+> Lote M: Eighth-pass Dream parity close-out (R1-R6 all closed, 20 tests
+> novos).  Compat 100% com v0.1.4.
+
+### Fixed / Restored from nanobot
+- **(R1) `_render_current_memory_files`** em
+  [agent/memory.py](femtobot/agent/memory.py).  Dream prompt agora
+  embed a current contents de `SOUL.md`, `USER.md`, e
+  `memory/MEMORY.md` como ground truth, evitando hallucinated
+  audit records.
+- **(R2) `dream_content_diff` + git-ground-truth gate** em
+  [agent/memory.py](femtobot/agent/memory.py) e
+  [command/builtin.py](femtobot/command/builtin.py).
+  `_run_dream` agora gate cursor advance no git diff real (não
+  mais LLM self-report).  `build_dream_commit_message` aceita
+  `diff_body` keyword para ancorar a commit message no delta
+  real.
+- **(R3) `_has_compactable_idle_tail`** em
+  [agent/autocompact.py](femtobot/agent/autocompact.py).  Sessions
+  com tail que cabe no recent-suffix window não são re-arquivadas
+  redundantemente após heartbeat/internal tick.
+- **(R4) `_is_internal_history_session` + `read_recent_history_for_prompt`** em
+  [agent/memory.py](femtobot/agent/memory.py).  Cron, dream, e
+  heartbeat sessions são filtrados fora do Dream history tail.
+- **(R5) Per-file truncation** em
+  [agent/memory.py](femtobot/agent/memory.py).  `_DREAM_FILE_EMBED_CAP`
+  (8000 chars) com rate-limited warning.
+- **(R6) Workspace override + truncation** em
+  [agent/memory.py](femtobot/agent/memory.py).  Override em
+  `workspace/prompts/dream.md` com `_DREAM_PROMPT_MAX_CHARS`
+  (32000 chars) cap.
+
+### Added (New Helpers)
+- **`GitStore.summarize_working_tree`** em
+  [utils/gitstore.py](femtobot/utils/gitstore.py).  Helper que
+  retorna unified diff vs HEAD para paths específicas, com
+  `_WORKING_TREE_DIFF_MAX_CHARS` cap e binary-file fallback.
+
+### Tests
+- 1 novo arquivo de test (20 testes de regressão):
+  - `tests/test_dream_parity.py` (R1-R6 + F1-F3) — 20 tests
+
+### Validation
+- Suite: **670 passed, 0 failed** (20 testes a mais que v0.1.4).
+- Ruff: **All checks passed!**.
+- Smoke test: ``femtobot agent --message "ping"`` retorna "pong"
+  diretamente.
+
+### Migration
+Compat 100% com v0.1.4.  Nenhuma quebra de API.
+
 ## [0.1.4] — 2026-07-10
 
 > Lote L: Eighth-pass nanobot-parity hardening (3 helpers + 1 doc-only
@@ -716,7 +768,8 @@ Initial public alpha.
 - Multiple-instance support via `--suffix` / `--folder-path` /
   `FEMTOBOT_HOME`.
 
-[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.1...v0.1.2

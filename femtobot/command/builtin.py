@@ -623,12 +623,30 @@ async def cmd_dream(ctx: CommandContext) -> OutboundMessage:
                 tools=store.build_dream_tools(),
             )
             elapsed = time.monotonic() - t0
-            if MemoryStore.dream_run_completed(resp):
+            # R2 (eighth-pass parity review): gate cursor advance on
+            # the real git diff of the durable memory files, not on
+            # the LLM's self-report.  A valid no-op Dream run (model
+            # completes but edits nothing) no longer advances the
+            # cursor.  If git isn't initialized (cold workspace), we
+            # fall back to the LLM's self-report so the cursor
+            # still progresses; once git is up the ground truth
+            # takes over.
+            diff_body = store.dream_content_diff()
+            productive = bool(diff_body) or (
+                not store.git.is_initialized()
+                and MemoryStore.dream_run_completed(resp)
+            )
+            if productive:
                 # A6: cursor advance is now tied to a successful git commit
                 # via ``advance_dream_cursor_after_commit``.  If the commit
                 # is a no-op (nothing to commit) or fails, the cursor stays
                 # behind and the next Dream cycle reprocesses those entries.
-                commit_msg = build_dream_commit_message("dream: manual run", resp)
+                if diff_body:
+                    commit_msg = build_dream_commit_message(
+                        "dream: manual run", resp, diff_body=diff_body
+                    )
+                else:
+                    commit_msg = build_dream_commit_message("dream: manual run", resp)
                 advanced, sha = store.advance_dream_cursor_after_commit(
                     last_cursor, commit_message=commit_msg
                 )
