@@ -9,6 +9,63 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.7] — 2026-07-10
+
+> Lote O: Eleventh-pass CLI parity push (full parity, 7 issues all closed,
+> 15 tests novos).  Compat 100% com v0.1.6.
+
+### Fixed / Restored from nanobot (CLI parity)
+- **(Issue 1) `femtobot onboard` wizard is now opt-in only** em
+  [cli/commands.py](femtobot/cli/commands.py).  Removido o
+  auto-trigger ``if wizard or (sys.stdin.isatty() and ...)`` que
+  derrubava o usuário em prompts interativos a cada invocation
+  num TTY.  Agora o wizard só roda com a flag explícita
+  ``--wizard``.  Em non-TTY (CI/pipe), ``--wizard`` cai com
+  warning em vez de bloquear.
+- **(Issue 2) Welcome header 2-line** em
+  [cli/onboard_wizard.py](femtobot/cli/onboard_wizard.py).
+  Explica o que o wizard faz e quantos prompts rodam, antes do
+  primeiro input.
+- **(Issue 3) Main menu (Quick Start / Exit)** em
+  [cli/onboard_wizard.py](femtobot/cli/onboard_wizard.py).
+  Usuário pode abortar antes de responder qualquer prompt.
+- **(Issue 4) API-key prefix confirmation** em
+  [cli/onboard_wizard.py](femtobot/cli/onboard_wizard.py).
+  Echo dos primeiros 4 chars do key após captura, para pegar
+  paste-with-extra-spaces bugs.
+- **(Issue 5) Silent exception swallowing removido** em
+  [cli/commands.py](femtobot/cli/commands.py).  O bloco
+  ``try: load_config(config_file); except: pass`` no wizard_result
+  branch foi removido.  Config in-memory tem precedência quando o
+  wizard produziu mutação.
+- **(Issue 6) `_CURATED_MODELS` data-driven from registry** em
+  [cli/onboard_wizard.py](femtobot/cli/onboard_wizard.py).
+  Adicionado fallback registry-derived para provedores não
+  hardcoded.  `_env_key_for` agora lê `env_key` do ProviderSpec
+  primeiro, antes do pequeno dict hardcoded.  Adicionar novo
+  provider no registry já surface automaticamente no wizard.
+- **(Issue 7) Suffix validation moves before wizard** em
+  [cli/commands.py](femtobot/cli/commands.py).  Order agora é:
+  validate → resolve_dir → write_config → wizard.  Antes o
+  usuário respondia prompt de provider e só então recebia
+  "Invalid suffix".
+
+### Tests
+- 1 novo arquivo de test (15 testes de regressão):
+  - `tests/test_cli_parity.py` — cobre os 7 issues +2 helpers
+
+### Validation
+- Suite: **709 passed, 0 failed** (15 testes a mais que v0.1.6).
+- Ruff: **All checks passed!**.
+- Smoke test: ``femtobot onboard`` agora roda silencioso e
+  mostra "Next Steps" sem entrar no wizard.  ``femtobot
+  onboard --wizard`` ainda funciona.
+
+### Migration
+Compat 100% com v0.1.6.  Mudança principal é UX: usuário
+precisa digitar ``--wizard`` explicitamente para entrar no
+wizard interativo.
+
 ## [0.1.6] — 2026-07-10
 
 > Lote N: Ninth-pass feature add — port ``nano_timer`` from nanobot.
@@ -830,7 +887,8 @@ Initial public alpha.
 - Multiple-instance support via `--suffix` / `--folder-path` /
   `FEMTOBOT_HOME`.
 
-[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.3...v0.1.4

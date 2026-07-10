@@ -32,7 +32,7 @@ def test_curated_models_have_known_providers() -> None:
         "openai",
         "openrouter",
         "ollama",
-        "google",
+        "gemini",
         "groq",
         "mistral",
         "deepseek",
@@ -89,6 +89,7 @@ def test_run_onboard_wizard_cancelled_returns_result() -> None:
     # Simulate a tty + a tiny script of answers.
     answers = iter(
         [
+            "Q",  # main-menu "Quick Start"
             "anthropic",  # provider
             "claude-3-5-sonnet-20241022",  # model
             "",  # api key (skip)
@@ -127,6 +128,7 @@ def test_run_onboard_wizard_with_config_mutates_in_place() -> None:
 
     answers = iter(
         [
+            "Q",  # main-menu "Quick Start" (CLI-parity v0.1.7 Issue 3)
             "openai",  # provider
             "gpt-4o",  # model
             "sk-openai-test",  # api key
@@ -136,9 +138,8 @@ def test_run_onboard_wizard_with_config_mutates_in_place() -> None:
     def fake_ask(*args, **kwargs):
         return next(answers)
 
-    class FakeConsole:
-        def print(self, *args, **kwargs):
-            return None
+    from unittest.mock import MagicMock
+    fake_console = MagicMock()
 
     with (
         patch("sys.stdin") as fake_stdin,
@@ -149,7 +150,7 @@ def test_run_onboard_wizard_with_config_mutates_in_place() -> None:
         # Ensure the wizard thinks no key is in env so it asks.
         os.environ.pop("OPENAI_API_KEY", None)
         fake_prompt.ask.side_effect = fake_ask
-        result = run_onboard_wizard(config=cfg, console=FakeConsole())  # type: ignore[arg-type]
+        result = run_onboard_wizard(config=cfg, console=fake_console)
 
     # Wizard should have created a new provider entry + preset.
     assert result is not None

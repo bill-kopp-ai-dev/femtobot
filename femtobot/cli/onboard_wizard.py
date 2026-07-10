@@ -28,6 +28,11 @@ from rich.prompt import Prompt  # noqa: I001
 
 # Curated model menu per provider — keeps the wizard short and avoids
 # the user having to type a model string they may not know.
+# CLI-parity v0.1.7 (Issue 6): this is no longer hardcoded for the
+# eight providers we shipped in v0.1.x.  The default fallback for
+# any provider not in this dict is a single ``"<custom>"`` choice.
+# Providers added in femtobot/providers/registry.py after v0.1.7
+# will appear automatically (see _list_providers / _models_for).
 _CURATED_MODELS: dict[str, list[str]] = {
     "anthropic": [
         "claude-3-7-sonnet-20250219",
@@ -49,7 +54,7 @@ _CURATED_MODELS: dict[str, list[str]] = {
         "qwen2.5:32b",
         "deepseek-r1:32b",
     ],
-    "google": [
+    "gemini": [
         "gemini-2.0-flash-exp",
         "gemini-1.5-pro",
     ],
@@ -68,6 +73,24 @@ _CURATED_MODELS: dict[str, list[str]] = {
 }
 
 
+def _default_curated_for(provider_slug: str) -> list[str]:
+    """Render a sensible default model suggestion for an unknown provider.
+
+    CLI-parity v0.1.7 (Issue 6): the upstream nanobot wizard pulls
+    curated defaults from the registry; the Femtobot C5 refactor
+    had a hardcoded 8-entry dict and added a regression where new
+    providers were invisible to onboard.  We retain the curated
+    table for the eight established providers (it gives the user
+    immediately-usable defaults without typing) and add a generic
+    fallback for everything else, derived from the first matching
+    keyword of the spec.
+    """
+    sl = provider_slug.lower()
+    if "ollama" in sl or "vllm" in sl or "lm_studio" in sl or "lm-studio" in sl:
+        return ["llama3.1:8b"]
+    return ["<custom>"]
+
+
 def _list_providers() -> list[str]:
     """Return a stable, sorted list of provider names available in the registry."""
     try:
@@ -81,11 +104,32 @@ def _list_providers() -> list[str]:
 
 
 def _models_for(provider: str) -> list[str]:
-    return _CURATED_MODELS.get(provider, ["<custom>"])
+    """Return the curated model menu for *provider*.
+
+    Falls back to :func:`_default_curated_for` for providers not in
+    :data:`_CURATED_MODELS` (CLI-parity v0.1.7 Issue 6).
+    """
+    return _CURATED_MODELS.get(provider) or _default_curated_for(provider)
 
 
 def _env_key_for(provider: str) -> str | None:
-    """Return the conventional env var name for the provider's API key."""
+    """Return the conventional env var name for the provider's API key.
+
+    CLI-parity v0.1.7 (companion to Issue 6): prefer the
+    ``env_key`` field on the :class:`ProviderSpec` so that adding
+    a new provider to the registry lights up its env var here
+    automatically.  Fall back to a small hardcoded table only when
+    the registry lookup fails (e.g. the provider was removed but
+    the caller still references it).
+    """
+    try:
+        from femtobot.providers.registry import find_by_name
+
+        spec = find_by_name(provider)
+        if spec and spec.env_key:
+            return spec.env_key
+    except Exception:  # pragma: no cover - defensive
+        pass
     table = {
         "anthropic": "ANTHROPIC_API_KEY",
         "openai": "OPENAI_API_KEY",
@@ -127,7 +171,37 @@ def run_onboard_wizard(
     if not providers:
         return None
 
-    console.print("\n[bold]Femtobot setup wizard[/bold] (Ctrl-C to cancel)\n")
+    # CLI-parity v0.1.7 (Issue 2): a 2-line welcome header explains
+    # what the wizard does and which steps will run.  Mirrors
+    # nanobot's ``_show_main_menu_header``.
+    console.print("\n[bold cyan]Femtobot quick setup[/bold cyan]")
+    console.print(
+        "[dim]Pick a provider, pick a model, drop in your API key.\n"
+        "Three prompts total. Ctrl-C cancels — your previous config is preserved.\n[/dim]"
+    )
+
+    # CLI-parity v0.1.7 (Issue 3): main menu between welcome and the
+    # first prompt.  Mirrors nanobot's ``run_onboard`` main menu in
+    # primitive form: only the default ``Quick Start`` flow exists
+    # today, but the menu itself gives the user an Exit affordance
+    # so they can back out before any prompt has been answered.
+    console.print(
+        "\n  [bold][Q][/bold] Quick Start  "
+        "  [bold][E][/bold] Exit\n"
+    )
+    try:
+        menu = Prompt.ask(
+            "Choose",
+            choices=["Q", "E"],
+            default="Q",
+            console=console,
+            show_choices=False,
+        ).strip().upper()
+    except (KeyboardInterrupt, EOFError):
+        return None
+    if menu != "Q":
+        console.print("[dim]Aborted wizard.[/dim]")
+        return None
 
     # 1. Provider
     default_provider = "anthropic" if "anthropic" in providers else providers[0]
@@ -160,6 +234,13 @@ def run_onboard_wizard(
             console=console,
         )
         if key:
+            # CLI-parity v0.1.7 (Issue 4): confirm by prefix so the
+            # user catches a paste-with-extra-spaces bug before the
+            # wrong key is shipped into the config file.
+            prefix = key[:4].rstrip()
+            console.print(
+                f"  [dim]captured {env_key} starting with [cyan]{prefix}…[/cyan][/dim]"
+            )
             os.environ[env_key] = key
             api_key_provided = True
 

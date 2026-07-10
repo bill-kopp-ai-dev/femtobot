@@ -837,7 +837,16 @@ def onboard(
     # no --folder-path / --suffix, signaling a first-time setup).
     from femtobot.cli.onboard_wizard import run_onboard_wizard
 
-    if wizard or (sys.stdin.isatty() and not validated_suffix and not folder_path):
+    # C5 + CLI-parity v0.1.7: the wizard is now strictly opt-in via
+    # --wizard.  The previous auto-trigger (``isatty() and no args``)
+    # caused every plain ``femtobot onboard`` in a terminal to drop
+    # the user into interactive prompts with no warning.  We model
+    # the nanobot behaviour: the wizard is only run when explicitly
+    # requested.  Suffix / folder-path validation has already
+    # happened by the time we reach this branch.
+    if not wizard:
+        wizard_result = None
+    elif sys.stdin.isatty():
         try:
             wizard_result = run_onboard_wizard(
                 config if "config" in dir() and isinstance(config, object) else None,
@@ -846,20 +855,29 @@ def onboard(
         except (KeyboardInterrupt, EOFError):
             console.print("\n[yellow]![/yellow] Wizard cancelled; continuing with defaults.")
             wizard_result = None
+    else:
+        # --wizard flag was given, but stdin is not a TTY (CI / pipe).
+        # The wizard would block on input forever; refuse cleanly.
+        console.print(
+            "[yellow]![/yellow] --wizard requires a TTY; "
+            "non-interactive mode skips it (use env vars to set provider/key)."
+        )
+        wizard_result = None
         if wizard_result is not None:
-            # C5: the wizard mutates ``model_presets`` and ``providers``
-            # on the config object.  We re-assign here so the rest of
-            # ``onboard`` picks up the changes.
-            from femtobot.config.loader import load_config
-
-            config = wizard_result.config or config
-            # Reload to ensure pydantic-resolved structure is consistent.
-            try:
-                reloaded = load_config(config_file)
-                if reloaded is not None:
-                    config = reloaded
-            except Exception:  # pragma: no cover - defensive
-                pass
+            # C5 + CLI-parity v0.1.7: the wizard mutates
+            # ``model_presets`` and ``providers`` on the config
+            # object.  We re-assign here so the rest of ``onboard``
+            # picks up the changes.  We do NOT silently re-load
+            # from disk on validation failure (the previous
+            # ``try / except: pass`` block masked stale-on-disk
+            # config and unobserved pydantic errors).  If the
+            # wizard did not produce a config mutation, we keep
+            # the in-memory ``config`` we already have.
+            config = (
+                wizard_result.config
+                if wizard_result.config is not None
+                else config
+            )
 
     # Create instance structure
     console.print(f"\n{__logo__} Initializing Femtobot Instance\n")
