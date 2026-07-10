@@ -87,6 +87,19 @@ access to short-cuts in the REPL:
   presets: `terracotta-claude` (default), `solarized-light`,
   `cyber-dark`, `monochrome`.
 
+
+## Time, Date, and Calendar
+
+If you need to know the current time, timezone offset, or calendar
+information, call the `femtobot_timer` tool.  Do not estimate UTC
+offsets from training data: timezone rules change and DST shifts
+vary by jurisdiction.  Use `femtobot_timer(info_type="time")` for
+a quick "what time is it" and `femtobot_timer(info_type="all")`
+for the full report (UTC, user local, calendar, server context).
+The tool's timezone comes from `agents.defaults.timezone` in
+`config.json` and may be overridden per workspace via
+`tools.timer.timezone_override`.
+
 ## See Also
 
 - `SOUL.md` — personality

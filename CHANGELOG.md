@@ -9,6 +9,68 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.6] — 2026-07-10
+
+> Lote N: Ninth-pass feature add — port ``nano_timer`` from nanobot.
+> Compat 100% com v0.1.5 (apenas additiva).
+
+### Added
+- **`femtobot_timer` tool** em
+  [agent/tools/time.py](femtobot/agent/tools/time.py).  Fornece
+  UTC + horário local do usuário + calendar (weekday, week-of-year,
+  day-of-year) + contexto server/user timezone.  Porta
+  ``nano_timer`` do nanobot com adaptações Femtobot:
+    - Renomeado de ``nano_timer`` para ``femtobot_timer``
+      (decisão de branding v0.1.6).
+    - Output dos dias da semana em inglês only
+      (Femtobot não tem subsistema i18n; não reusamos o pt-BR
+      fallback do nanobot).
+    - Inclui ``tools.timer.timezone_override`` opcional (per-workspace
+      override de timezone sem tocar ``agents.defaults.timezone``).
+- **`TimerToolConfig`** em
+  [config/schema.py](femtobot/config/schema.py).  Registrado em
+  :class:`ToolsConfig` via lazy-import.  Default: ``enable=True``,
+  ``timezone_override=None``.
+- **Auto-discovery**: zero mudança em ``ToolLoader`` — o módulo
+  ``time.py`` é auto-descoberto porque seu nome não está em
+  ``_SKIP_MODULES``.
+- **`_resolve_server_tz` helper** (verbatim port do nanobot):
+  lida com o edge case ``TZ=Asia/Tokyo`` POSIX timestamps onde
+  ``tzinfo.key`` é ``None``.
+- **`_format_offset` helper**: suporta offsets not-aligned
+  (India UTC+5:30, Nepal UTC+5:45, Chatham UTC+12:45).
+- **AGENTS.md** section em [templates/AGENTS.md](femtobot/templates/AGENTS.md)
+  (e workspace live): instrui o agente a chamar ``femtobot_timer``
+  ao invés de estimar UTC offsets do training data.
+
+### Documentation
+- [docs/nano_timer_implementation_plan.md](docs/nano_timer_implementation_plan.md):
+  implementation plan otimizado para Femtobot (382 linhas).
+
+### Tests
+- 1 novo arquivo de test (24 testes de regressão):
+  - `tests/test_timer_tool.py` — 24 tests cobrindo:
+    - Tool metadata (name, description, config_key, config_cls)
+    - Configuration glue (enabled, create, default config)
+    - ContextAware (set_context records channel/chat_id)
+    - `_format_offset` (whole-hour, partial-hour, None)
+    - `_resolve_server_tz` (returns tuple)
+    - Happy paths (info_type=time/all/calendar/timezone)
+    - Fallback paths (invalid timezone, empty timezone, unknown info_type, None info_type)
+    - DST + Asia/Tokyo + invalid input handling
+    - Auto-discovery (ToolLoader picks up ``time.py``)
+    - JSON Schema shape (``parameters`` returns valid schema)
+
+### Validation
+- Suite: **694 passed, 0 failed** (24 testes a mais que v0.1.5).
+- Ruff: **All checks passed!**.
+- Smoke test: ``femtobot agent --message "what time is it?"``
+  retorna "08:34 (America/Sao_Paulo, UTC-03:00)" — tool está sendo
+  chamada em runtime.
+
+### Migration
+Compat 100% com v0.1.5.  Apenas additiva.
+
 ## [0.1.5] — 2026-07-10
 
 > Lote M: Eighth-pass Dream parity close-out (R1-R6 all closed, 20 tests
@@ -768,7 +830,8 @@ Initial public alpha.
 - Multiple-instance support via `--suffix` / `--folder-path` /
   `FEMTOBOT_HOME`.
 
-[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.2...v0.1.3

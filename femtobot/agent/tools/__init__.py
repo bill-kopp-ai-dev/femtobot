@@ -13,6 +13,7 @@ from femtobot.agent.tools.schema import (
     StringSchema,
     tool_parameters_schema,
 )
+from femtobot.agent.tools.time import FemtobotTimerTool, TimerToolConfig
 
 __all__ = [
     "Schema",
@@ -28,4 +29,6 @@ __all__ = [
     "ToolRegistry",
     "tool_parameters",
     "tool_parameters_schema",
+    "FemtobotTimerTool",
+    "TimerToolConfig",
 ]

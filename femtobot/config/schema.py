@@ -12,6 +12,7 @@ from pydantic_settings import BaseSettings
 if TYPE_CHECKING:
     from femtobot.agent.tools.self import MyToolConfig
     from femtobot.agent.tools.shell import ExecToolConfig
+    from femtobot.agent.tools.time import TimerToolConfig
     from femtobot.agent.tools.web import WebToolsConfig
 
 
@@ -633,6 +634,9 @@ class ToolsConfig(Base):
     my: MyToolConfig = Field(
         default_factory=lambda: _lazy_default("femtobot.agent.tools.self", "MyToolConfig")
     )
+    timer: TimerToolConfig = Field(
+        default_factory=lambda: _lazy_default("femtobot.agent.tools.time", "TimerToolConfig")
+    )
     restrict_to_workspace: bool = (
         False  # policy intent: keep tool access inside workspace when possible
     )
@@ -835,6 +839,7 @@ def _resolve_tool_config_refs() -> None:
 
     from femtobot.agent.tools.self import MyToolConfig
     from femtobot.agent.tools.shell import ExecToolConfig
+    from femtobot.agent.tools.time import TimerToolConfig
     from femtobot.agent.tools.web import WebFetchConfig, WebSearchConfig, WebToolsConfig
 
     # Re-export into this module's namespace
@@ -844,6 +849,7 @@ def _resolve_tool_config_refs() -> None:
     mod.WebSearchConfig = WebSearchConfig  # type: ignore[attr-defined]
     mod.WebFetchConfig = WebFetchConfig  # type: ignore[attr-defined]
     mod.MyToolConfig = MyToolConfig  # type: ignore[attr-defined]
+    mod.TimerToolConfig = TimerToolConfig  # type: ignore[attr-defined]
 
     ToolsConfig.model_rebuild()
     Config.model_rebuild()
