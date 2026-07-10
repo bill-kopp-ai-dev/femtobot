@@ -735,7 +735,7 @@ wheels = [
 
 [[package]]
 name = "femtobot"
-version = "0.1.7"
+version = "0.1.8"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
