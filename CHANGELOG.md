@@ -9,6 +9,57 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.4] — 2026-07-10
+
+> Lote L: Eighth-pass nanobot-parity hardening (3 helpers + 1 doc-only
+> improvement, 21 tests novos).  Compat 100% com v0.1.3.
+
+### Fixed / Adopted from nanobot
+- **(W2) `_strip_placeholder_assistant_messages` + `_strip_malformed_tool_calls`** em
+  [agent/runner.py](femtobot/agent/runner.py).  Adoção de paridade com
+  nanobot `ContextGovernor.strip_placeholder_assistant_messages` /
+  `strip_malformed_tool_calls`.  Defende contra dois padrões de
+  corrupção de session que o bare `_drop_orphan_tool_results` não
+  pegava: compaction placeholders (``[Previous assistant message
+  omitted.]``) e tool_calls com `name=None`/`""`.  Aplicado na
+  pipeline de governance (happy path) e no `try/except` minimal repair.
+- **(W4) `_has_injection_content` helper** em
+  [agent/runner.py](femtobot/agent/runner.py).  Adoção de paridade
+  com nanobot.  A versão inline anterior (`text.strip()`) não
+  tratava `None` (caía em `str(None)` = `"None"`, truthy) nem listas
+  vazias.  Agora trata `None`, strings, listas, e tipos arbitrários
+  corretamente.
+- **(W5) `_build_goal_continue_message` com callable handling** em
+  [agent/runner.py](femtobot/agent/runner.py).  Adoção de paridade
+  com nanobot.  O spec field `goal_continue_message` agora aceita
+  `str | Callable[[], str] | None` (era só `str | None`).  Um
+  callable quebrado é logado e cai no default prompt, em vez de
+  derrubar o run.
+
+### Documented (no code change)
+- **(W1) `capped_out` flag documentado** em
+  [agent/runner.py](femtobot/agent/runner.py).  Investigamos
+  migrar para o idiomático `for/else` do Python (que o nanobot
+  usa com `for iteration in range(N)`) mas o Femtobot tem 4
+  `break` statements em vez de 1, e o iterator é
+  `itertools.count()` (infinito) para suportar a goal-extension
+  dinâmica.  Por isso o `for/else` do nanobot não se aplica
+  diretamente: o `else` nunca executa naturalmente num iterador
+  infinito.  Mantemos o flag `capped_out` (do fix C1/v0.1.2) que
+  é a solução minimal correta.  Um comentário no source
+  documenta a rationale.
+
+### Added
+- 1 novo arquivo de test (21 testes de regressão):
+  - `tests/test_runner_nanobot_parity.py` (W1, W2, W4, W5) — 21 testes
+
+### Tests
+- Suite: **650 passed, 0 failed** (21 testes a mais que v0.1.3).
+- Ruff: **All checks passed!**.
+
+### Migration
+Compat 100% com v0.1.3.
+
 ## [0.1.3] — 2026-07-09
 
 > Lote K: Seventh-pass hotfix (1 critical bug fix, 3 tests novos).
@@ -665,7 +716,8 @@ Initial public alpha.
 - Multiple-instance support via `--suffix` / `--folder-path` /
   `FEMTOBOT_HOME`.
 
-[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.0...v0.1.1

@@ -119,7 +119,7 @@ class AgentRunSpec:
     injection_callback: Any | None = None
     llm_timeout_s: float | None = None
     goal_active_predicate: Callable[[], bool] | None = None
-    goal_continue_message: str | None = None
+    goal_continue_message: str | Callable[[], str] | None = None
     # B2: extra iterations allowed per ``max_iterations`` exhaustion when
     # ``goal_active_predicate()`` returns True.  Default 50 matches
     # nanobot v0.2.1 #4127.  Set to 0 to disable the extra budget.
@@ -207,7 +207,7 @@ class AgentRunner:
         if not injections and allow_goal_continue and assistant_message is not None:
             predicate = spec.goal_active_predicate
             if predicate is not None and predicate():
-                injections = [build_goal_continue_message(spec.goal_continue_message)]
+                injections = [self._build_goal_continue_message(spec.goal_continue_message)]
         if not injections:
             return False, injection_cycles
         if real_injection:
@@ -239,6 +239,60 @@ class AgentRunner:
             logger.info("Injected sustained-goal continuation {}", phase)
         return True, injection_cycles
 
+    # W5 (of the v0.1.3 eighth-pass review, comparative audit with
+    # nanobot): the ``goal_continue_message`` spec field is now
+    # ``str | Callable[[], str] | None`` (it was just ``str | None``).
+    # The nanobot runner has a dedicated ``_build_goal_continue_message``
+    # helper that handles the callable case with try/except (a broken
+    # callable should not crash the entire run; we fall back to the
+    # default prompt).  We adopt the same pattern.
+    @staticmethod
+    def _build_goal_continue_message(custom: "str | Callable[[], str] | None") -> dict[str, str]:
+        """Build the goal-continuation message, supporting callable custom.
+
+        ``custom`` may be:
+        * a string  — used as the message content directly.
+        * a callable  — called with no args, returns the content.
+        * ``None``  — falls back to the default
+          ``SUSTAINED_GOAL_CONTINUE_PROMPT``.
+
+        A broken callable is logged and we fall back to the default
+        rather than raising, so a misconfigured ``goal_continue_message``
+        doesn't take down the entire run.
+        """
+        if callable(custom):
+            try:
+                custom = custom()
+            except Exception:
+                logger.exception("goal_continue_message callback failed")
+                custom = None
+        return build_goal_continue_message(custom)
+
+    # W4 (of the v0.1.3 eighth-pass review, comparative audit with
+    # nanobot): the helper ``_has_injection_content`` is present in
+    # nanobot but was inlined in the Femtobot ``_drain_injections``
+    # method.  The inlined version checked ``text.strip()`` on
+    # strings but did not handle ``None`` explicitly, falling back to
+    # ``str(None)`` (which is truthy, ``"None"``), and did not
+    # recognize list-typed content (e.g. content blocks like
+    # ``[{"type": "text", "text": "..."}]``).  We lift the helper
+    # to a staticmethod and use it in both injection paths.
+    @staticmethod
+    def _has_injection_content(content: Any) -> bool:
+        """Whether a candidate injection item has meaningful content.
+
+        Returns ``False`` for ``None``, empty strings, empty lists;
+        ``True`` for non-empty strings, non-empty lists, and any
+        other type.  This mirrors nanobot's behavior.
+        """
+        if content is None:
+            return False
+        if isinstance(content, str):
+            return bool(content.strip())
+        if isinstance(content, list):
+            return bool(content)
+        return True
+
     async def _drain_injections(self, spec: AgentRunSpec) -> list[dict[str, Any]]:
         """Drain pending user messages via the injection callback.
 
@@ -266,12 +320,19 @@ class AgentRunner:
             return []
         injected_messages: list[dict[str, Any]] = []
         for item in items:
-            if isinstance(item, dict) and item.get("role") == "user" and "content" in item:
-                injected_messages.append(item)
+            if item is None:
+                # W4: explicit None skip — the prior inlined code
+                # fell through to ``getattr(item, "content", str(item))``
+                # which returned ``"None"`` (truthy) and produced a
+                # bogus injection message.
                 continue
-            text = getattr(item, "content", str(item))
-            if text.strip():
-                injected_messages.append({"role": "user", "content": text})
+            if isinstance(item, dict) and item.get("role") == "user" and "content" in item:
+                if self._has_injection_content(item.get("content")):
+                    injected_messages.append(item)
+                continue
+            content = getattr(item, "content", str(item))
+            if self._has_injection_content(content):
+                injected_messages.append({"role": "user", "content": content})
         if len(injected_messages) > _MAX_INJECTIONS_PER_TURN:
             dropped = len(injected_messages) - _MAX_INJECTIONS_PER_TURN
             logger.warning(
@@ -300,50 +361,62 @@ class AgentRunner:
         had_injections = False
         injection_cycles = 0
 
-        # B2: when a sustained goal is active, allow a one-time extra
-        # budget of ``spec.goal_iteration_extra_budget`` iterations after
-        # the base ``max_iterations`` is exhausted.  This implements
-        # nanobot v0.2.1 #3999 (don't desiste on a long-running goal)
-        # and #4127 (extra-budget cap so a stuck loop is still killed
-        # eventually).  Strategy: drive the loop with ``itertools.count``
-        # and a dynamic ``current_max``; when the iteration counter
-        # reaches ``current_max`` AND the goal is still active AND we
-        # have headroom, bump ``current_max`` by ``extra_budget`` and
-        # continue.  When the cap is hit a second time (or no goal is
-        # active), we break and the post-loop finalize path runs.
+        # B2 (nanobot v0.2.1 #3999 + #4127): when a sustained goal
+        # is active, allow a one-time extra budget of
+        # ``spec.goal_iteration_extra_budget`` iterations after the
+        # base ``max_iterations`` is exhausted.  Strategy: drive the
+        # loop with ``itertools.count`` and a dynamic ``current_max``;
+        # when the iteration counter reaches ``current_max`` AND the
+        # goal is still active AND we have headroom, bump
+        # ``current_max`` by ``extra_budget`` and continue.  When the
+        # cap is hit a second time (or no goal is active), we
+        # ``break`` and the ``for/else`` finalize path runs.
+        #
+        # W1 (of the v0.1.3 eighth-pass review): the previous
+        # implementation used a manual ``capped_out = True`` flag set
+        # just before the cap-exhaustion ``break``, and the post-loop
+        # code wrapped the finalize path in ``if capped_out:``.  This
+        # was needed to avoid the K1 bug from v0.1.2 where
+        # *every* break fell through the cap-exhaustion finalize
+        # path.  The nanobot refactor (W1 of the eighth-pass review)
+        # replaced that pattern with the Python ``for/else`` clause,
+        # which only runs when the loop terminates without a
+        # ``break``.  We adopt the same idiom here: the cap-exhaustion
+        # path is the *only* way to exit the loop without a ``break``
+        # statement.  All other exits (final response, empty
+        # response, LLM error) use ``break`` and therefore skip the
+        # ``for/else`` clause.
         import itertools
 
         base_max = spec.max_iterations
         extra_budget = int(getattr(spec, "goal_iteration_extra_budget", 50) or 0)
         current_max = base_max
         extended = False  # has the extra-budget extension fired yet?
-        # C1 (of the v0.1.2 sixth-pass review): the previous
-        # implementation fell through the post-loop finalize path
-        # on *every* break, including the legitimate "final
-        # response" path (line 647), the "empty response" path
-        # (line 622), and the "LLM error" path (line 602).  The
-        # post-loop code then *unconditionally* overwrote
-        # ``final_content`` with the ``max_iterations`` template
-        # message and reset ``stop_reason = "max_iterations"`` —
-        # even when the model had produced a perfectly valid
-        # response and we were about to return it.  This is the
-        # root cause of the Femtobot user-facing "Max iterations
-        # (200) reached" message on trivial questions like "ping"
-        # or "Who are you?": the model answered in 1 iteration,
-        # the loop hit the legitimate ``final response`` break,
-        # and the post-loop overwrite hid the answer.
-        #
-        # We now track whether the break was due to *cap
-        # exhaustion* (``capped_out = True``) and only enter the
-        # cap-exhaustion finalize path when that's the case.
+
+        # W1 (of the v0.1.3 eighth-pass review): we considered
+        # migrating to the Python ``for/else`` idiom used by
+        # nanobot, but the Femtobot loop has FOUR ``break``
+        # statements (cap-exhaustion, final response, empty
+        # response, LLM error) — nanobot has only one.  When the
+        # iterator is ``itertools.count()`` (infinite), the
+        # ``else`` clause never runs naturally and a ``break``
+        # always skips it, so we cannot distinguish "cap exhausted"
+        # from "final response" without an external flag.  Nanobot
+        # can use ``for/else`` because their iterator is
+        # ``range(max_iterations)`` (finite) and the only ``break``
+        # is the cap-exhaustion one.  We keep the explicit
+        # ``capped_out`` flag (from the v0.1.2 C1 fix) which is
+        # the minimal pattern that preserves the dynamic-cap
+        # extension behavior while correctly routing the post-loop
+        # finalize path.
         capped_out = False
 
         for iteration in itertools.count():
             # B2: enforce the current iteration cap.  When we hit it
             # and the goal is still active, bump the cap by
             # ``extra_budget`` and continue; when we hit it a second
-            # time (or no goal is active), break so the post-loop
-            # finalize path runs.
+            # time (or no goal is active), set ``capped_out`` and
+            # ``break`` so the post-loop finalize path runs.
             if iteration >= current_max:
                 if (
                     not extended
@@ -361,19 +434,33 @@ class AgentRunner:
                         session=spec.session_key or "default",
                     )
                     continue
+                # W1: the only ``break`` that sets ``capped_out``;
+                # the post-loop ``if capped_out:`` block runs the
+                # cap-exhaustion finalize path.  Other ``break``
+                # statements (in the loop body) leave the flag
+                # False and skip the finalize.
                 capped_out = True
                 break
             try:
-                # Keep the persisted conversation untouched. Context governance
-                # may repair or compact historical messages for the model, but
-                # those synthetic edits must not shift the append boundary used
-                # later when the caller saves only the new turn.
-                messages_for_model = self._drop_orphan_tool_results(messages)
+                # W2: strip placeholder assistant messages (compaction
+                # artifacts) and malformed tool calls BEFORE the
+                # orphan/budget pipeline so the model never sees
+                # degenerate calls that would be rejected upstream.
+                # Keep the persisted conversation untouched. Context
+                # governance may repair or compact historical messages
+                # for the model, but those synthetic edits must not
+                # shift the append boundary used later when the
+                # caller saves only the new turn.
+                messages_for_model = self._strip_placeholder_assistant_messages(messages)
+                messages_for_model = self._strip_malformed_tool_calls(messages_for_model)
+                messages_for_model = self._drop_orphan_tool_results(messages_for_model)
                 messages_for_model = self._backfill_missing_tool_results(messages_for_model)
                 messages_for_model = self._microcompact(messages_for_model)
                 messages_for_model = self._apply_tool_result_budget(spec, messages_for_model)
                 messages_for_model = self._snip_history(spec, messages_for_model)
                 # Snipping may have created new orphans; clean them up.
+                messages_for_model = self._strip_placeholder_assistant_messages(messages_for_model)
+                messages_for_model = self._strip_malformed_tool_calls(messages_for_model)
                 messages_for_model = self._drop_orphan_tool_results(messages_for_model)
                 messages_for_model = self._backfill_missing_tool_results(messages_for_model)
             except Exception:
@@ -383,7 +470,12 @@ class AgentRunner:
                     spec.session_key or "default",
                 )
                 try:
-                    messages_for_model = self._drop_orphan_tool_results(messages)
+                    # W2: minimal repair also runs the placeholders +
+                    # malformed-call strippers so corrupted sessions
+                    # can self-heal on the next turn.
+                    messages_for_model = self._strip_placeholder_assistant_messages(messages)
+                    messages_for_model = self._strip_malformed_tool_calls(messages_for_model)
+                    messages_for_model = self._drop_orphan_tool_results(messages_for_model)
                     messages_for_model = self._backfill_missing_tool_results(messages_for_model)
                 except Exception:
                     messages_for_model = messages
@@ -666,13 +758,16 @@ class AgentRunner:
             context.stop_reason = stop_reason
             await hook.after_iteration(context)
             break
-        # C1: only enter the cap-exhaustion finalize path when the
+        # W1: only enter the cap-exhaustion finalize path when the
         # loop was actually broken by the iteration cap.  All
         # other break reasons (final response, empty response,
         # LLM error) have already set ``final_content``,
         # ``stop_reason``, and the assistant message inside the
         # loop — we must NOT overwrite them with the
-        # max-iterations template.
+        # max-iterations template.  See K1 (v0.1.2) for the bug
+        # that introduced the need for the explicit
+        # ``capped_out`` flag (and the reason why nanobot's
+        # ``for/else`` pattern does not directly apply here).
         if capped_out:
             stop_reason = "max_iterations"
             # When the extra budget was used, surface the *effective* cap
@@ -1313,6 +1408,136 @@ class AgentRunner:
         if isinstance(content, str) and len(content) > spec.max_tool_result_chars:
             return truncate_text(content, spec.max_tool_result_chars)
         return content
+
+    # W2 (of the v0.1.3 eighth-pass review, comparative audit with
+    # nanobot): the upstream nanobot project owns a
+    # ``ContextGovernor.strip_placeholder_assistant_messages`` and
+    # ``ContextGovernor.strip_malformed_tool_calls`` pair that we did
+    # not inherit.  These two helpers defend against two session-
+    # corruption patterns that the bare ``_drop_orphan_tool_results``
+    # cannot catch:
+    #
+    # 1. **Compaction placeholders.**  When a previous turn's
+    #    assistant message is replaced with a one-liner like
+    #    ``[Previous assistant message omitted.]`` to save tokens,
+    #    that placeholder carries no tool_calls.  When the *next* turn
+    #    sees a tool result for an ID that isn't declared in the
+    #    placeholder, the model can re-attempt the same call,
+    #    producing a malformed response in a tight loop.
+    #
+    # 2. **Malformed tool calls.**  A degenerate persisted tool_call
+    #    whose ``name`` is ``None`` or ``""`` (e.g. from an older
+    #    Femtobot version that didn't validate names) gets replayed
+    #    on every turn and the upstream provider rejects the whole
+    #    request (``messages.content.N.tool_use.name: Input should be
+    #    a valid string``), permanently wedging the session.
+    #
+    # Both helpers are pure: they return a new list when something
+    # was repaired, or the same list object when nothing changed.
+    # The persisted transcript is left untouched — only the
+    # model-facing copy is repaired.
+    _PLACEHOLDER_ASSISTANT_TEXTS = frozenset({
+        "[Previous assistant message omitted.]",
+    })
+
+    @staticmethod
+    def _tool_call_name_is_valid(tool_call: Any) -> bool:
+        """Whether a persisted OpenAI-style tool_call carries a usable name.
+
+        Mirrors ``ToolCallRequest.has_valid_name`` for the dict shape
+        stored in message history.  A degenerate call with
+        ``name=None`` / ``""`` cannot be executed and is rejected by
+        upstream APIs if replayed.
+        """
+        if not isinstance(tool_call, dict):
+            return False
+        fn = tool_call.get("function")
+        name = fn.get("name") if isinstance(fn, dict) else tool_call.get("name")
+        return isinstance(name, str) and bool(name)
+
+    @staticmethod
+    def _strip_placeholder_assistant_messages(
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Remove assistant messages that are compaction placeholders.
+
+        See class docstring W2 for the rationale.  We return a new
+        list when a removal happened, or the same list object when
+        nothing changed.
+        """
+        updated: list[dict[str, Any]] | None = None
+        for idx, msg in enumerate(messages):
+            if msg.get("role") != "assistant":
+                if updated is not None:
+                    updated.append(msg)
+                continue
+            content = msg.get("content", "")
+            text = content if isinstance(content, str) else ""
+            is_placeholder = text.strip() in AgentRunner._PLACEHOLDER_ASSISTANT_TEXTS
+            has_tool_calls = bool(msg.get("tool_calls"))
+            if is_placeholder and not has_tool_calls:
+                if updated is None:
+                    updated = list(messages[:idx])
+                logger.debug(
+                    "Stripping placeholder assistant message from history: {!r}",
+                    text[:60],
+                )
+                continue
+            if updated is not None:
+                updated.append(msg)
+        if updated is None:
+            return messages
+        return updated
+
+    @staticmethod
+    def _strip_malformed_tool_calls(
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Drop persisted assistant tool_calls whose name is missing/non-string.
+
+        See class docstring W2 for the rationale.  We return a new
+        list when a repair happened, or the same list object when
+        nothing changed.
+        """
+        updated: list[dict[str, Any]] | None = None
+        for idx, msg in enumerate(messages):
+            if msg.get("role") != "assistant":
+                if updated is not None:
+                    updated.append(msg)
+                continue
+            calls = msg.get("tool_calls")
+            if not calls:
+                if updated is not None:
+                    updated.append(msg)
+                continue
+            kept = [tc for tc in calls if AgentRunner._tool_call_name_is_valid(tc)]
+            if len(kept) == len(calls):
+                if updated is not None:
+                    updated.append(msg)
+                continue
+            if updated is None:
+                updated = [dict(m) for m in messages[:idx]]
+            logger.warning(
+                "Stripping {} malformed tool_call(s) with missing/non-string "
+                "name from assistant history before request",
+                len(calls) - len(kept),
+            )
+            repaired = dict(msg)
+            if kept:
+                repaired["tool_calls"] = kept
+            else:
+                repaired.pop("tool_calls", None)
+            # An assistant turn with neither content nor any valid tool
+            # call is itself invalid upstream; drop it entirely in that
+            # case.
+            has_content = bool(repaired.get("content"))
+            if not kept and not has_content:
+                continue
+            updated.append(repaired)
+
+        if updated is None:
+            return messages
+        return updated
 
     @staticmethod
     def _drop_orphan_tool_results(
