@@ -9,6 +9,50 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-07-09
+
+> Lote K: Seventh-pass hotfix (1 critical bug fix, 3 tests novos).
+> Compat 100% com v0.1.2.
+
+### Fixed
+- **(K1, CRITICAL) Agent runner sobrescrevia `final_content` em todo break** em
+  [agent/runner.py](femtobot/agent/runner.py).
+
+  O loop `for iteration in itertools.count():` tinha 3 `break` statements
+  (LLM error, empty response, final response), e o post-loop código
+  assumia que **todo** break era por cap exhaustion. O post-loop
+  então sobrescrevia `final_content` com o template
+  `max_iterations_message.md` e setava `stop_reason = "max_iterations"`,
+  **mesmo quando o modelo tinha produzido uma resposta válida**.
+
+  **Sintoma**: o Femtobot respondia com "I reached the maximum number
+  of tool call iterations (200) without completing the task" para
+  perguntas triviais como "ping" ou "Who are you?" — porque o modelo
+  M3 respondia em 1 iteração, o loop fazia o `break` legítimo
+  (final response), e o post-loop overwrite escondia a resposta.
+
+  **Fix**: nova flag `capped_out` (default False) é setada para True
+  apenas no break por cap exhaustion. O post-loop finalize path é
+  agora wrapped em `if capped_out:` para que os outros breaks
+  (final response, empty response, LLM error) retornem a resposta
+  do modelo corretamente.
+
+### Reduced
+- **`AGENTS.md`** (de 220 linhas / ~12k chars para 76 linhas / ~3k chars)
+  para reduzir o system prompt de ~60k → ~51k chars. Não é o fix
+  principal (K1 é), mas reduz custo por iteração.
+
+### Added
+- 1 novo arquivo de test (3 testes de regressão):
+  - `tests/test_runner_early_exit.py` (K1) — 3 testes
+
+### Tests
+- Suite: **629 passed, 0 failed** (3 testes a mais que v0.1.2).
+- Ruff: **All checks passed!**.
+
+### Migration
+Compat 100% com v0.1.2.
+
 ## [0.1.2] — 2026-07-09
 
 > Lote J: Sixth-pass hardening (4 fixes, 9 tests novos).
@@ -621,7 +665,8 @@ Initial public alpha.
 - Multiple-instance support via `--suffix` / `--folder-path` /
   `FEMTOBOT_HOME`.
 
-[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.0.9...v0.1.0

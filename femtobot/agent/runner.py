@@ -317,6 +317,26 @@ class AgentRunner:
         extra_budget = int(getattr(spec, "goal_iteration_extra_budget", 50) or 0)
         current_max = base_max
         extended = False  # has the extra-budget extension fired yet?
+        # C1 (of the v0.1.2 sixth-pass review): the previous
+        # implementation fell through the post-loop finalize path
+        # on *every* break, including the legitimate "final
+        # response" path (line 647), the "empty response" path
+        # (line 622), and the "LLM error" path (line 602).  The
+        # post-loop code then *unconditionally* overwrote
+        # ``final_content`` with the ``max_iterations`` template
+        # message and reset ``stop_reason = "max_iterations"`` —
+        # even when the model had produced a perfectly valid
+        # response and we were about to return it.  This is the
+        # root cause of the Femtobot user-facing "Max iterations
+        # (200) reached" message on trivial questions like "ping"
+        # or "Who are you?": the model answered in 1 iteration,
+        # the loop hit the legitimate ``final response`` break,
+        # and the post-loop overwrite hid the answer.
+        #
+        # We now track whether the break was due to *cap
+        # exhaustion* (``capped_out = True``) and only enter the
+        # cap-exhaustion finalize path when that's the case.
+        capped_out = False
 
         for iteration in itertools.count():
             # B2: enforce the current iteration cap.  When we hit it
@@ -341,6 +361,7 @@ class AgentRunner:
                         session=spec.session_key or "default",
                     )
                     continue
+                capped_out = True
                 break
             try:
                 # Keep the persisted conversation untouched. Context governance
@@ -645,41 +666,44 @@ class AgentRunner:
             context.stop_reason = stop_reason
             await hook.after_iteration(context)
             break
-        # B2: reached here only when the iteration cap is exhausted
-        # AND we chose not to extend (or the extra budget is also
-        # exhausted).  Note: there is no ``for-else`` — we use
-        # ``itertools.count`` and an explicit break above, so the
-        # post-loop code below is the finalize path.
-        stop_reason = "max_iterations"
-        # When the extra budget was used, surface the *effective* cap
-        # (``base_max + extra_budget``) so the user sees that the goal
-        # extension actually fired and how much headroom was added.
-        effective_max = current_max
-        if spec.max_iterations_message:
-            final_content = spec.max_iterations_message.format(
-                max_iterations=effective_max,
+        # C1: only enter the cap-exhaustion finalize path when the
+        # loop was actually broken by the iteration cap.  All
+        # other break reasons (final response, empty response,
+        # LLM error) have already set ``final_content``,
+        # ``stop_reason``, and the assistant message inside the
+        # loop — we must NOT overwrite them with the
+        # max-iterations template.
+        if capped_out:
+            stop_reason = "max_iterations"
+            # When the extra budget was used, surface the *effective* cap
+            # (``base_max + extra_budget``) so the user sees that the goal
+            # extension actually fired and how much headroom was added.
+            effective_max = current_max
+            if spec.max_iterations_message:
+                final_content = spec.max_iterations_message.format(
+                    max_iterations=effective_max,
+                )
+            else:
+                final_content = render_template(
+                    "agent/max_iterations_message.md",
+                    strip=True,
+                    max_iterations=effective_max,
+                )
+            self._append_final_message(messages, final_content)
+            # Drain any remaining injections so they are appended to the
+            # conversation history instead of being re-published as
+            # independent inbound messages by _dispatch's finally block.
+            # We ignore should_continue here because the for-loop has
+            # already exhausted all iterations.
+            drained_after_max_iterations, injection_cycles = await self._try_drain_injections(
+                spec,
+                messages,
+                None,
+                injection_cycles,
+                phase="after max_iterations",
             )
-        else:
-            final_content = render_template(
-                "agent/max_iterations_message.md",
-                strip=True,
-                max_iterations=effective_max,
-            )
-        self._append_final_message(messages, final_content)
-        # Drain any remaining injections so they are appended to the
-        # conversation history instead of being re-published as
-        # independent inbound messages by _dispatch's finally block.
-        # We ignore should_continue here because the for-loop has already
-        # exhausted all iterations.
-        drained_after_max_iterations, injection_cycles = await self._try_drain_injections(
-            spec,
-            messages,
-            None,
-            injection_cycles,
-            phase="after max_iterations",
-        )
-        if drained_after_max_iterations:
-            had_injections = True
+            if drained_after_max_iterations:
+                had_injections = True
 
         return AgentRunResult(
             final_content=final_content,
