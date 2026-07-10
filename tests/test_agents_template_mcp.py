@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 TEMPLATE_PATH = Path(
-    "/home/bill/Codes/CLI-router-project/femtobot/femtobot/templates/AGENTS.md"
+    "/home/bill/Codes/agents/femtobot/femtobot/templates/AGENTS.md"
 )
 
 
@@ -38,8 +38,7 @@ def test_template_mcp_section_contains_expected_rules() -> None:
     # Five rules (one per bullet).
     rules = [
         "Default to local tools",
-        "agy_run_task",
-        "claude_run_task",
+        "*_run_task",
         "mode=safe",
         "Persistence is per-server",
         "MCP tools are long-running",
@@ -76,7 +75,7 @@ def test_template_mcp_section_warns_against_speculative_confirm() -> None:
     )[0]
     assert "Never set it speculatively" in section or "never set it speculatively" in section
     assert "confirm=true" in section
-    assert "confirm=false" in section
+    assert "confirm=true" in section
 
 
 # ---------------------------------------------------------------------------

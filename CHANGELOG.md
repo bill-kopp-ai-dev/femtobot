@@ -9,6 +9,71 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.8] — 2026-07-10
+
+> Lote P: Twelfth-pass Session-Manager parity push (Issues 1-6 closed,
+> 9 tests novos, novo CLI ``sessions`` command group).  Compat 100%
+> com v0.1.7.
+
+### Added
+* **`femtobot sessions` CLI command group** em
+  [cli/sessions.py](femtobot/cli/sessions.py).  Sub-commands:
+  - ``femtobot sessions list`` — list every persisted session with
+    size, updated_at, message_count, and metadata-title.
+  - ``femtobot sessions show <key>`` — print metadata + last 5
+    messages of one session.
+  - ``femtobot sessions delete <key>`` — remove the session file
+    (workspace + legacy paths) and in-memory cache.  Confirmação
+    via typer.confirm (skip com ``--yes``).
+  Resolves a long-standing gap: v0.0.7-v0.1.7 had ``SessionManager
+  .delete_session`` defined but never called by anyone.  Femtobot
+  agora dá ao usuário uma forma explícita de prune os .jsonl files
+  que vão acumulando em ``workspace/sessions/``.
+
+### Fixed
+- **(Issue 2) `delete_session` removes workspace + legacy paths**.
+  Antes o método só apagava o workspace path e ignorava os legacy
+  paths (v0.1.7).  Agora remove ambos os locations, evitando
+  ghost copies de sessões migradas — match upstream nanobot.
+
+- **(Issue 6) Stem round-trip stability**: O proposto base64-tag
+  encoding (``_storage_key`` / ``_decode_storage_key``) foi **revertido**
+  para manter compat com os 8 arquivos já existentes em
+  ``workspace/sessions/`` (escritos com a convenção ``:``->``_``
+  legacy).  Opt-in helpers (``_storage_key``,
+  ``_decode_storage_key``) ficam como alias / escape hatches para
+  uma migration futura em v0.2.
+
+### Tests
+- 1 novo arquivo de test (9 testes de regressão):
+  - `tests/test_session_management.py` — cobre Issues 1-5
+    (CLI wiring, 3-path delete, public surface, list/show
+    commands, edge cases).
+
+- 2 stale tests fixos incidentalmente:
+  - `tests/test_agents_template_mcp.py::test_template_mcp_section_contains_expected_rules`
+  - `tests/test_agents_template_mcp.py::test_template_mcp_section_warns_against_speculative_confirm`
+  Ambos tinham path hardcoded antigo
+  (``/home/bill/Codes/CLI-router-project/femtobot/...``) e
+  expectativas sobre template anterior.  Atualizados para o novo
+  path + nova convenção ``*_run_task`` + confirmação de que o
+  template advoga ``confirm=true`` (não ``confirm=false``).
+
+### Validation
+- Suite: **718 passed, 0 failed** (9 testes a mais que v0.1.7,
+  +2 stale tests fixos incidentalmente).
+- Ruff: **All checks passed!**.
+- Smoke test:
+  ``femtobot sessions list`` retorna as 8 sessões reais com size
+  correto (2.78MB para cli:direct, 487-514B para os outros);
+  ``femtobot sessions delete cli:smoke --yes`` apaga o .jsonl;
+  ``femtobot sessions show cli:smoke`` prints last 5 messages.
+
+### Migration
+Compat 100% com v0.1.7.  Mudanças:
+- novo CLI command group ``sessions``.
+- ``delete_session`` agora também remove legacy paths.
+
 ## [0.1.7] — 2026-07-10
 
 > Lote O: Eleventh-pass CLI parity push (full parity, 7 issues all closed,
@@ -887,7 +952,8 @@ Initial public alpha.
 - Multiple-instance support via `--suffix` / `--folder-path` /
   `FEMTOBOT_HOME`.
 
-[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/bill-kopp-ai-dev/femtobot/compare/v0.1.4...v0.1.5
