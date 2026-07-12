@@ -53,11 +53,28 @@ SUSTAINED_GOAL_CONTINUE_PROMPT = (
 _INTENT_VERB_PATTERNS: tuple[str, ...] = (
     # Portuguese (BR) — observed in production logs.
     r"\b(?:vou|vamos|estou|estamos|pretendo|pretendemos|irei|iremos|"
-    r"despachando|despacharei|despacharemos|executando|executarei|"
-    r"preparando|prepararei|enviando|enviarei|rodando|rodarei|"
-    r"iniciando|iniciarei|come[çc]ando|come[çc]arei|"
-    r"analisando|analisarei|levantando|levantarei|levantado|"
-    r"trazendo|trago|trarei|polindo|polirei|consolidando|consolidarei)\b",
+    r"despachando|despacharei|despacharemos|despachar|despachei|"
+    r"executando|executarei|executar|"
+    r"preparando|prepararei|preparar|"
+    r"enviando|enviarei|emitindo|emitirei|"
+    r"rodando|rodarei|rodar|"
+    r"iniciando|iniciarei|iniciar|"
+    r"come[çc]ando|come[çc]arei|come[çc]ar|"
+    r"analisando|analisarei|analisar|"
+    r"levantando|levantarei|levantar|levantado|"
+    r"trazendo|trago|trarei|"
+    r"polindo|polirei|polir|"
+    r"consolidando|consolidarei|consolidar|"
+    r"lendo|lerei|ler|"
+    r"gerando|gerarei|gerar|"
+    r"reproduzindo|reproduzirei|reproduzir|"
+    r"cruzar|cruzando|cruzarei|"
+    r"termino|terminarei|terminar)\b",
+    # Past + future compound tenses observed in production logs.
+    r"\b(?:ia\s+despachar|ia\s+executar|ia\s+chamar|"
+    r"vou\s+emitir|ia\s+emitir|"
+    r"disse\s+que\s+ia|"
+    r"pensei\s+em\s+despachar|pensei\s+em\s+executar)\b",
     # English — generic dispatch / execute verbs in 1st person.
     r"\b(?:i'?ll|i\s+will|i'?m\s+going\s+to|i\s+am\s+going\s+to|"
     r"let\s+me|i'?m\s+dispatching|i'?m\s+running|i'?m\s+executing|"
