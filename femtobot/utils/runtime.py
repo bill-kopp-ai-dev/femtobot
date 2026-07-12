@@ -34,6 +34,100 @@ SUSTAINED_GOAL_CONTINUE_PROMPT = (
     "objective using your tools, or call complete_goal if the work is truly finished."
 )
 
+# L1 (v0.1.7): guard against "intent_only" final responses — turns where the
+# LLM narrates an upcoming tool action in prose but does not actually emit a
+# tool_call.  Without this guard the runner terminates the iteration on the
+# first turn, treating the prose as the final answer; the user then sees the
+# model promise work that was never executed (the "Despachando agora em
+# paralelo..." pathology observed in v0.1.6 debug sessions).
+#
+# Heuristic: a response is flagged as intent_only when *all* of:
+#   * no tool_calls were executed in this turn;
+#   * the cleaned content describes a future/ongoing action (verb pattern);
+#   * there are no concrete markers of completed work (tool results, file
+#     edits, citations, code blocks, or backtick-quoted identifiers).
+#
+# Conservative on purpose — false positives (overriding a real answer) hurt
+# less than false negatives (letting the agent claim "I'm dispatching"
+# forever).  See tests/test_runner_intent_only.py for the boundary cases.
+_INTENT_VERB_PATTERNS: tuple[str, ...] = (
+    # Portuguese (BR) — observed in production logs.
+    r"\b(?:vou|vamos|estou|estamos|pretendo|pretendemos|irei|iremos|"
+    r"despachando|despacharei|despacharemos|executando|executarei|"
+    r"preparando|prepararei|enviando|enviarei|rodando|rodarei|"
+    r"iniciando|iniciarei|come[çc]ando|come[çc]arei|"
+    r"analisando|analisarei|levantando|levantarei|levantado|"
+    r"trazendo|trago|trarei|polindo|polirei|consolidando|consolidarei)\b",
+    # English — generic dispatch / execute verbs in 1st person.
+    r"\b(?:i'?ll|i\s+will|i'?m\s+going\s+to|i\s+am\s+going\s+to|"
+    r"let\s+me|i'?m\s+dispatching|i'?m\s+running|i'?m\s+executing|"
+    r"i'?m\s+preparing|i'?m\s+starting|i'?m\s+kicking\s+off|"
+    r"dispatching|running|executing|preparing|kicking\s+off|"
+    r"spinning\s+up|will\s+dispatch|will\s+run|will\s+execute)\b",
+)
+_INTENT_VERB_RE = re.compile(
+    "|".join(_INTENT_VERB_PATTERNS),
+    re.IGNORECASE | re.UNICODE,
+)
+
+# Markers that strongly indicate the response *did* something concrete and
+# should not be flagged as intent_only even if an intent verb slipped in.
+_CONCRETE_RESULT_MARKERS: tuple[str, ...] = (
+    "```",          # fenced code block
+    "`",            # inline code / file path / identifier
+    "://",          # URL-ish (e.g. file://, https://)
+    ".md:",         # markdown line ref
+    ".py:",         # python line ref
+    "[Tool result", # injected tool result prefix
+    "tool_call_id",
+    "function_call",
+)
+
+
+def is_intent_only_response(content: str | None) -> bool:
+    """Return True when *content* looks like a self-reported future action.
+
+    Used by the agent runner to break the "describe-but-don't-execute" loop
+    where the LLM answers with prose like "Despachando em paralelo…" without
+    emitting a corresponding ``tool_calls`` payload.
+    """
+    if not content or not content.strip():
+        return False
+    # Concrete result markers short-circuit — assume the model actually
+    # produced something (code, a path, a tool-result block).
+    for marker in _CONCRETE_RESULT_MARKERS:
+        if marker in content:
+            return False
+    return bool(_INTENT_VERB_RE.search(content))
+
+
+INTENT_ONLY_FEEDBACK_PROMPT = (
+    "Your previous reply described an action ('{verb}…') but did not include "
+    "any tool call. To actually execute that action you must emit the "
+    "corresponding tool call (e.g. agy_run_task, claude_run_task, read_file, "
+    "exec, etc.) in this turn. If you have already finished the task and "
+    "this was a recap of work already done, answer with a concrete result "
+    "instead — show file paths, line ranges, or output snippets so the user "
+    "can verify the work was performed."
+)
+
+# Cap on intent-only retries. After this many consecutive intent-only
+# responses we stop pushing back and accept the model's text as final — by
+# then it's clearly not going to call a tool and further nudging would just
+# burn iteration budget.
+_MAX_INTENT_RETRIES = 2
+
+
+def build_intent_only_feedback_message(verb_match: str | None = None) -> dict[str, str]:
+    """Build the user-role nudge that asks the LLM to actually emit a tool call."""
+    verb_hint = (verb_match or "").strip().rstrip(".…")
+    content = INTENT_ONLY_FEEDBACK_PROMPT
+    if verb_hint:
+        content = content.replace("{verb}", verb_hint)
+    else:
+        content = content.replace("{verb}", "despachando/executando")
+    return {"role": "user", "content": content}
+
 
 def empty_tool_result_message(tool_name: str) -> str:
     """Short prompt-safe marker for tools that completed without visible output."""

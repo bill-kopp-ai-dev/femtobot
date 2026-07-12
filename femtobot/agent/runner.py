@@ -43,12 +43,16 @@ from femtobot.utils.progress_events import (
 )
 from femtobot.utils.prompt_templates import render_template
 from femtobot.utils.runtime import (
+    _INTENT_VERB_RE,
+    _MAX_INTENT_RETRIES,
     EMPTY_FINAL_RESPONSE_MESSAGE,
     build_finalization_retry_message,
     build_goal_continue_message,
+    build_intent_only_feedback_message,
     build_length_recovery_message,
     ensure_nonempty_tool_result,
     is_blank_text,
+    is_intent_only_response,
     repeated_external_lookup_error,
     repeated_workspace_violation_error,
 )
@@ -124,6 +128,11 @@ class AgentRunSpec:
     # ``goal_active_predicate()`` returns True.  Default 50 matches
     # nanobot v0.2.1 #4127.  Set to 0 to disable the extra budget.
     goal_iteration_extra_budget: int = 50
+    # L1 (v0.1.7): mutable counter used by the intent_only guard to cap
+    # consecutive "described-but-didn't-execute" responses.  Set to 0
+    # explicitly to opt out of intent_only pushback (used by tests that
+    # want the prose to pass through unchanged).
+    intent_only_retries: int = 0
 
 
 @dataclass(slots=True)
@@ -292,6 +301,31 @@ class AgentRunner:
         if isinstance(content, list):
             return bool(content)
         return True
+
+    @staticmethod
+    def _count_available_tools(spec: AgentRunSpec) -> int:
+        """Best-effort count of tools available to the model in *spec*.
+
+        The runner only depends on ``spec.tools.get_definitions()``; this
+        helper centralizes that probe so the intent_only guard stays
+        defensive against test doubles that may not implement the full
+        ``ToolRegistry`` API.
+        """
+        tools = getattr(spec, "tools", None)
+        if tools is None:
+            return 0
+        get_defs = getattr(tools, "get_definitions", None)
+        if callable(get_defs):
+            try:
+                defs = get_defs()
+                return len(defs or [])
+            except Exception:
+                return 0
+        # Last-resort: a list-like ``defs`` attribute (used by some test stubs).
+        defs_attr = getattr(tools, "defs", None)
+        if isinstance(defs_attr, list):
+            return len(defs_attr)
+        return 0
 
     async def _drain_injections(self, spec: AgentRunSpec) -> list[dict[str, Any]]:
         """Drain pending user messages via the injection callback.
@@ -667,6 +701,61 @@ class AgentRunner:
                     reasoning_content=response.reasoning_content,
                     thinking_blocks=response.thinking_blocks,
                 )
+
+            # L1 (v0.1.7): intent_only guard.  When the model emits prose
+            # describing a future action ("Despachando em paralelo…", "I'll
+            # dispatch…") without an actual tool_call, the cleanest fix is to
+            # push back instead of accepting the prose as the final answer.
+            # We append the assistant_message *and* a corrective user-role
+            # nudge so the next LLM call sees both — the prose it produced
+            # and an explicit instruction to call a tool.  Bounded by
+            # ``_MAX_INTENT_RETRIES`` so a model that insists on describing
+            # without acting cannot burn the entire iteration budget.
+            intent_only_retries = spec.intent_only_retries
+            # Only flag intent_only when the model actually had tools to call.
+            # We probe ``spec.tools.get_definitions()`` defensively — if the
+            # registry doesn't expose a count we fall back to checking whether
+            # the spec carries any ``defs``-like attribute.
+            available_tools_count = self._count_available_tools(spec)
+            is_intent_only = (
+                response.finish_reason != "error"
+                and assistant_message is not None
+                and not response.has_tool_calls
+                and not response.should_execute_tools
+                and available_tools_count > 0
+                and is_intent_only_response(clean)
+            )
+            if is_intent_only and intent_only_retries < _MAX_INTENT_RETRIES:
+                messages.append(assistant_message)
+                # Capture the verb that triggered detection so the feedback
+                # message references the specific action the model promised.
+                verb_match = _INTENT_VERB_RE.search(clean) if _INTENT_VERB_RE else None
+                verb_hint = verb_match.group(0) if verb_match else None
+                messages.append(build_intent_only_feedback_message(verb_hint))
+                logger.warning(
+                    "intent_only response on turn {} for {} (retry {}/{}); "
+                    "pushing back instead of accepting as final",
+                    iteration,
+                    spec.session_key or "default",
+                    intent_only_retries + 1,
+                    _MAX_INTENT_RETRIES,
+                )
+                spec.intent_only_retries = intent_only_retries + 1
+                await self._emit_checkpoint(
+                    spec,
+                    {
+                        "phase": "intent_only_pushback",
+                        "iteration": iteration,
+                        "model": spec.model,
+                        "assistant_message": assistant_message,
+                        "completed_tool_results": [],
+                        "pending_tool_calls": [],
+                    },
+                )
+                if hook.wants_streaming():
+                    await hook.on_stream_end(context, resuming=True)
+                await hook.after_iteration(context)
+                continue
 
             # Check for mid-turn injections BEFORE signaling stream end.
             # If injections are found we keep the stream alive (resuming=True)
