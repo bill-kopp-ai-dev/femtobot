@@ -36,7 +36,7 @@ from femtobot.bus.runtime_events import (
     ensure_runtime_event_publisher,
 )
 from femtobot.command import CommandContext, CommandRouter, register_builtin_commands
-from femtobot.config.schema import AgentDefaults, ModelPresetConfig
+from femtobot.config.schema import AgentDefaults, LongTaskConfig, ModelPresetConfig
 from femtobot.providers.base import LLMProvider
 from femtobot.providers.factory import ProviderSnapshot
 from femtobot.security.workspace_access import (
@@ -237,6 +237,7 @@ class AgentLoop:
         preset_snapshot_loader: preset_helpers.PresetSnapshotLoader | None = None,
         runtime_events: RuntimeEventBus | None = None,
         runtime_model_publisher: Callable[[str, str | None], None] | None = None,
+        long_task_config: LongTaskConfig | None = None,
     ):
         from femtobot.config.schema import ToolsConfig
 
@@ -244,6 +245,11 @@ class AgentLoop:
         defaults = AgentDefaults()
         self.bus = bus
         self.runtime_events = runtime_events or RuntimeEventBus()
+        # M0 (long-task-by-default): expose the loop's bus to module-level
+        # goal-state publishers (slash commands, tools, hooks).
+        from femtobot.bus.goal_events import set_active_event_bus
+
+        set_active_event_bus(self.runtime_events)
         self.runtime_event_publisher = RuntimeEventPublisher(self.runtime_events)
         self.channels_config = channels_config
         self.provider = provider
@@ -297,6 +303,15 @@ class AgentLoop:
         from femtobot.config.schema import AgentsConfig
 
         self.agents_config: Any = AgentsConfig()
+        # M0 (long-task-by-default): opt-in sustained-goal execution profile.
+        # ``by_default=False`` keeps every legacy one-shot behavior intact.
+        self.long_task_config: LongTaskConfig = long_task_config or LongTaskConfig()
+        logger.debug(
+            "AgentLoop long_task profile: by_default={} sdk_mode={} api_mode={}",
+            self.long_task_config.by_default,
+            self.long_task_config.sdk_execution_mode,
+            self.long_task_config.api_mode.value,
+        )
         self.context = ContextBuilder(
             workspace,
             timezone=timezone,
@@ -457,6 +472,7 @@ class AgentLoop:
             model_preset=defaults.model_preset,
             provider_snapshot_loader=provider_snapshot_loader,
             preset_snapshot_loader=preset_snapshot_loader,
+            long_task_config=defaults.long_task,
             **extra,
         )
         # Keep a back-reference to the full Config so slash commands (e.g.
@@ -1549,6 +1565,36 @@ class AgentLoop:
 
     async def _state_command(self, ctx: TurnContext) -> str:
         raw = ctx.msg.content.strip()
+        # M2 (long-task-by-default): when ``by_default=true`` and the inbound
+        # is not already a slash command, mark it as goal-requested so the
+        # runner side will know to bootstrap a sustained goal for this turn.
+        # This is *opt-in* — when ``by_default=false`` the metadata is left
+        # untouched and every existing test keeps passing.
+        long_task_cfg = getattr(self, "long_task_config", None)
+        if long_task_cfg is not None and bool(getattr(long_task_cfg, "by_default", False)):
+            if not raw.startswith("/"):
+                # Sample a single ``time.time()`` so the message and
+                # session metadata carry *the same* ``goal_started_at``.
+                started_at = time.time()
+                meta = dict(ctx.msg.metadata or {})
+                # Use the *implicit* flag only — ``goal_requested`` is
+                # reserved for explicit ``/goal`` slash commands so
+                # ``explicit_goal_requested()`` keeps its strict
+                # semantics.  ``implicit_goal_requested()`` is the
+                # proper predicate for the auto-wrap path.
+                meta.setdefault("goal_requested_implicitly", True)
+                meta.setdefault("goal_started_at", started_at)
+                ctx.msg.metadata = meta
+                # Also propagate into session metadata so the runner
+                # sees it.  Only stamp when there is no active goal
+                # already (a terminal status is allowed — the next
+                # ``long_task`` call will replace it).
+                if ctx.session is not None:
+                    smd = dict(ctx.session.metadata or {})
+                    if not sustained_goal_active(smd):
+                        smd.setdefault("goal_requested_implicitly", True)
+                        smd.setdefault("goal_started_at", started_at)
+                        ctx.session.metadata = smd
         cmd_ctx = CommandContext(
             msg=ctx.msg, session=ctx.session, key=ctx.session_key, raw=raw, loop=self
         )
@@ -1903,8 +1949,18 @@ class AgentLoop:
         on_stream_end: Callable[..., Awaitable[None]] | None = None,
         ephemeral: bool = False,
         tools: ToolRegistry | None = None,
+        execution_mode: str | None = None,
     ) -> OutboundMessage | None:
-        """Process a message directly and return the outbound payload."""
+        """Process a message directly and return the outbound payload.
+
+        M4 (long-task-by-default): ``execution_mode`` is one of
+        ``"sync"`` (default behavior, no continuation queue) or
+        ``"goal_aware"`` (creates an ephemeral ``pending_queue`` so that
+        sustained-goal continuation slices and ``ask_orchestrator`` waits
+        can complete within the same call).  When ``None`` we honor the
+        loop's ``LongTaskConfig.sdk_execution_mode`` flag; ``by_default=true``
+        callers get ``"goal_aware"`` automatically.
+        """
         await self._connect_mcp()
         msg = InboundMessage(
             channel=channel,
@@ -1913,8 +1969,27 @@ class AgentLoop:
             content=content,
             media=media or [],
         )
+        # Resolve execution mode from config when not supplied.
+        if execution_mode is None:
+            cfg = getattr(self, "long_task_config", None)
+            execution_mode = (
+                getattr(cfg, "sdk_execution_mode", "sync")
+                if cfg is not None
+                else "sync"
+            )
+        execution_mode = str(execution_mode)
+        # Reject unknown values explicitly — a typo like ``"goal-aware"`` would
+        # otherwise silently fall back to ``"sync"`` and bypass the
+        # long-task continuation queue.
+        if execution_mode not in ("sync", "goal_aware"):
+            raise ValueError(
+                f"Invalid execution_mode={execution_mode!r}; "
+                "expected 'sync' or 'goal_aware'."
+            )
+        use_local_queue = execution_mode == "goal_aware"
         # Share the dispatch lock so direct calls serialize with bus turns.
         lock = await self._acquire_session_lock(session_key)
+        local_queue: asyncio.Queue | None = None
         try:
             async with lock:
                 kwargs: dict[str, Any] = {
@@ -1926,10 +2001,28 @@ class AgentLoop:
                 }
                 if tools is not None:
                     kwargs["tools"] = tools
-                return await self._process_message(
+                if use_local_queue:
+                    local_queue = asyncio.Queue()
+                    kwargs["pending_queue"] = local_queue
+                outbound = await self._process_message(
                     msg,
                     **kwargs,
                 )
+                # Drain continuation slices when the user asked for the
+                # goal-aware path.  Each slice re-enters ``_process_message``
+                # via the local queue; we run them serially.
+                if use_local_queue and local_queue is not None:
+                    while not local_queue.empty():
+                        try:
+                            next_msg = local_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                        kwargs["pending_queue"] = local_queue
+                        outbound = await self._process_message(
+                            next_msg,
+                            **kwargs,
+                        )
+                return outbound
         finally:
             await self._runtime_events().run_status_changed(msg, session_key, "idle")
             self._runtime_events().clear_turn(session_key)

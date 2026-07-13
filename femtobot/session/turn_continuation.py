@@ -8,6 +8,7 @@ continuation is allowed and, when it is, queue the next turn directly.
 from __future__ import annotations
 
 import dataclasses
+from enum import Enum
 from typing import Any, Mapping, MutableMapping
 
 from loguru import logger
@@ -23,7 +24,24 @@ INTERNAL_CONTINUATION_KIND_META = "_internal_continuation_kind"
 INTERNAL_CONTINUATION_PENDING_META = "_internal_continuation_pending"
 INTERNAL_CONTINUATION_RUN_STARTED_AT_META = "_internal_continuation_run_started_at"
 
-_GOAL_CONTINUATION_KIND = "sustained_goal"
+
+class ContinuationKind(str, Enum):
+    """The well-known reasons an internal continuation slice is scheduled.
+
+    * ``sustained_goal`` — budget exhausted mid-goal; the runner continues
+      toward the objective.
+    * ``ask_wait`` — the agent called ``ask_orchestrator`` and is waiting on
+      a reply; the next slice fires once the answer arrives.
+    * ``goal_resume`` — after a goal resume (timeout elapsed, restart, or
+      orchestrator reply), the runner picks up where it left off.
+    """
+
+    SUSTAINED_GOAL = "sustained_goal"
+    ASK_WAIT = "ask_wait"
+    GOAL_RESUME = "goal_resume"
+
+
+_GOAL_CONTINUATION_KIND = ContinuationKind.SUSTAINED_GOAL.value
 _GOAL_CONTINUATION_SENDER = "system:continuation"
 _GOAL_CONTINUATION_ROUNDS_KEY = "_sustained_goal_continuation_rounds"
 _MAX_GOAL_CONTINUATION_ROUNDS = 12
@@ -34,6 +52,17 @@ _STRIPPED_INBOUND_META_KEYS = {
     "_resuming",
     INTERNAL_CONTINUATION_PENDING_META,
 }
+
+
+def get_max_goal_rounds(long_task_config: Any | None) -> int:
+    """Return the configured max continuation rounds (default 12)."""
+    if long_task_config is None:
+        return _MAX_GOAL_CONTINUATION_ROUNDS
+    try:
+        rounds = int(getattr(long_task_config, "max_goal_rounds", _MAX_GOAL_CONTINUATION_ROUNDS))
+    except (TypeError, ValueError):
+        rounds = _MAX_GOAL_CONTINUATION_ROUNDS
+    return rounds or _MAX_GOAL_CONTINUATION_ROUNDS
 
 
 def internal_continuation_inbound(metadata: Mapping[str, Any] | None) -> bool:
@@ -78,28 +107,52 @@ def should_stream_budget_response(
     )
 
 
-async def maybe_continue_turn(ctx: Any) -> bool:
+async def maybe_continue_turn(
+    ctx: Any,
+    *,
+    continuation_kind: ContinuationKind | str = ContinuationKind.SUSTAINED_GOAL,
+    max_rounds: int | None = None,
+) -> bool:
     """Queue an internal continuation for *ctx* when policy allows it."""
     if ctx.session is None or ctx.pending_queue is None:
         return False
-    if not _continuation_available(
-        stop_reason=ctx.stop_reason,
-        pending_queue_available=True,
-        session_metadata=ctx.session.metadata,
-        message_metadata=ctx.msg.metadata,
+    kind_value = (
+        continuation_kind.value
+        if isinstance(continuation_kind, ContinuationKind)
+        else str(continuation_kind)
+    )
+    if kind_value == ContinuationKind.SUSTAINED_GOAL.value:
+        cap = max_rounds if max_rounds is not None else _MAX_GOAL_CONTINUATION_ROUNDS
+        if not _goal_continuation_available(
+            ctx.session.metadata,
+            message_metadata=ctx.msg.metadata,
+            max_rounds=cap,
+        ):
+            return False
+    elif kind_value in (
+        ContinuationKind.ASK_WAIT.value,
+        ContinuationKind.GOAL_RESUME.value,
     ):
+        # Both ask_wait and goal_resume still require an active goal
+        # — otherwise we'd leak continuations into idle sessions.
+        if not sustained_goal_active(ctx.session.metadata):
+            return False
+    else:
+        # Unknown kind — refuse to schedule rather than silently swallow it.
         return False
 
     metadata = _internal_continuation_metadata(
         ctx.msg.metadata,
         run_started_at=getattr(ctx, "visible_run_started_at", None),
+        kind=kind_value,
     )
     content = _goal_continuation_prompt(ctx.session.metadata)
     messages = _strip_terminal_assistant(ctx.all_messages, ctx.final_content)
     _increment_goal_continuation_round(ctx.session.metadata)
 
-    logger.info("Turn budget reached; scheduling internal continuation")
+    logger.info("Turn budget reached; scheduling internal continuation ({})", kind_value)
     ctx.msg.metadata[INTERNAL_CONTINUATION_PENDING_META] = True
+    ctx.msg.metadata[INTERNAL_CONTINUATION_KIND_META] = kind_value
     ctx.final_content = ""
     ctx.all_messages = messages
     ctx.suppress_response = True
@@ -192,10 +245,11 @@ def _internal_continuation_metadata(
     message_metadata: Mapping[str, Any] | None,
     *,
     run_started_at: float | None = None,
+    kind: str = _GOAL_CONTINUATION_KIND,
 ) -> dict[str, Any]:
     metadata = dict(message_metadata or {})
     metadata[INTERNAL_CONTINUATION_META] = True
-    metadata[INTERNAL_CONTINUATION_KIND_META] = _GOAL_CONTINUATION_KIND
+    metadata[INTERNAL_CONTINUATION_KIND_META] = kind
     if run_started_at is not None:
         metadata[INTERNAL_CONTINUATION_RUN_STARTED_AT_META] = float(run_started_at)
     for key in _STRIPPED_INBOUND_META_KEYS:

@@ -372,9 +372,15 @@ class ContextBuilder:
     ) -> list[dict[str, Any]]:
         """Build the complete message list for an LLM call."""
         root = workspace or self.workspace
-        extra = [
-            *goal_state_runtime_lines(session_metadata),
-        ]
+        # M3 (long-task-by-default): enrich the runtime block with goal id,
+        # pending-ask summary, and blocked-goal context.  Each block is
+        # prefixed with its source tag so the LLM can identify them.
+        from femtobot.runtime_context import render_runtime_context
+
+        goal_runtime_block = render_runtime_context(session_metadata)
+        extra = []
+        if goal_runtime_block:
+            extra.extend(goal_runtime_block.splitlines())
         if runtime_state is not None and inbound_message is not None:
             extra.extend(
                 runtime_lines(runtime_state, inbound_message, root, skip=skip_runtime_lines)

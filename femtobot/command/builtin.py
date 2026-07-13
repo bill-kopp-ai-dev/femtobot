@@ -8,6 +8,7 @@ import sys
 import time
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from femtobot import __version__
 from femtobot.bus.events import OutboundMessage
@@ -93,6 +94,26 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "Mark the active sustained goal as completed (B6).",
         "check-circle",
         "[recap]",
+    ),
+    BuiltinCommandSpec(
+        "/goal cancel",
+        "Cancel goal",
+        "Cancel the active sustained goal without finishing.",
+        "x-circle",
+        "[reason]",
+    ),
+    BuiltinCommandSpec(
+        "/goal block",
+        "Block goal",
+        "Mark the active sustained goal as blocked pending human input.",
+        "alert-octagon",
+        "[reason]",
+    ),
+    BuiltinCommandSpec(
+        "/goal status",
+        "Show goal status",
+        "Show the active sustained goal state, including pending asks.",
+        "info",
     ),
     BuiltinCommandSpec(
         "/dream",
@@ -941,6 +962,15 @@ async def cmd_history(ctx: CommandContext) -> OutboundMessage:
     )
 
 
+def _iso_now_ms() -> str:
+    """ISO-8601 UTC timestamp with millisecond precision."""
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
+
+
 _GOAL_PROMPT_TEMPLATE = """The user declared a sustained objective for this thread.
 
 Inspect or clarify if needed, then call `long_task` with the refined objective (and optional short ui_summary). Work proceeds as normal assistant turns using your usual tools. When the objective is fully done and verified, call `complete_goal` with a brief recap. If the user later cancels or changes direction, still call `complete_goal` with an honest recap (then `long_task` again only after there is no active goal). Do not use `long_task` / `complete_goal` for trivial one-shot answers.
@@ -951,7 +981,24 @@ Goal:
 
 
 async def cmd_goal(ctx: CommandContext) -> OutboundMessage | None:
-    """Rewrite /goal into a normal agent turn that nudges long_task use."""
+    """Bootstrap a sustained goal and hand it off to the agent as one turn.
+
+    M1 of long-task-by-default: the slash command itself writes the
+    ``goal_state`` blob (active) into session metadata, sets the
+    ``goal_requested`` flag, and emits ``GoalStateChanged``.  The agent
+    receives a goal-ready context instead of a "please call long_task"
+    prompt.
+    """
+    from femtobot.bus.goal_events import publish_goal_state_changed
+    from femtobot.session.goal_state import (
+        GOAL_STATE_KEY,
+        MAX_GOAL_OBJECTIVE_CHARS,
+        discard_legacy_goal_state_key,
+        is_self_contained_objective,
+        normalize_goal_status,
+        reset_goal_continuation_marker,
+    )
+
     goal = ctx.args.strip()
     if not goal:
         return OutboundMessage(
@@ -965,19 +1012,85 @@ async def cmd_goal(ctx: CommandContext) -> OutboundMessage | None:
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
             content=(
-                "A task is already running for this chat. "
-                "Use `/stop` first, then send `/goal <long-running task description>` again."
+                "Cannot start a goal in this chat — no active session is bound. "
+                "Send a regular message first so a session is created, then "
+                "send `/goal <long-running task description>` again."
             ),
             metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
         )
+    if len(goal) > MAX_GOAL_OBJECTIVE_CHARS:
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=(
+                f"Goal is too long ({len(goal)} chars). "
+                f"Please keep the objective under {MAX_GOAL_OBJECTIVE_CHARS} characters."
+            ),
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
+
+    require_self_containment = True
+    loop_obj = getattr(ctx, "loop", None)
+    long_task_cfg = getattr(loop_obj, "long_task_config", None)
+    if long_task_cfg is not None:
+        require_self_containment = bool(
+            getattr(long_task_cfg, "require_objective_self_containment", True)
+        )
+    if require_self_containment and not is_self_contained_objective(goal):
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=(
+                "The goal looks like an open-ended question rather than a "
+                "bounded task. Reframe it as a concrete, verifiable objective "
+                "(e.g. 'Refactor module X to use Y' or 'Add tests for Z') and "
+                "send `/goal <objective>` again."
+            ),
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
+
+    md = dict(ctx.session.metadata or {})
+    epoch_now = time.time()
+    iso_now = _iso_now_ms()
+    blob = {
+        "status": normalize_goal_status("active") or "active",
+        "objective": goal,
+        "created_at": iso_now,
+        "source": "/goal",
+    }
+    md[GOAL_STATE_KEY] = blob
+    md["goal_started_at"] = epoch_now
+    discard_legacy_goal_state_key(md)
+    reset_goal_continuation_marker(md)
+    ctx.session.metadata = md
+
+    # Persist the new goal blob to disk so a crash before the next turn
+    # doesn't lose the bootstrap.  Without this save, the goal would
+    # only be visible after the next inbound triggers the loop's own
+    # ``sessions.save`` call.
+    if getattr(ctx, "loop", None) is not None and getattr(ctx.loop, "sessions", None) is not None:
+        try:
+            ctx.loop.sessions.save(ctx.session)
+        except Exception:
+            # Persistence is best-effort — the loop's regular save path
+            # will catch up on the next turn.
+            pass
 
     ctx.msg.metadata = {
         **dict(ctx.msg.metadata or {}),
         "original_command": "/goal",
         "original_content": ctx.raw,
-        "goal_started_at": time.time(),
+        "goal_requested": True,
+        "goal_started_at": epoch_now,
     }
     ctx.msg.content = _GOAL_PROMPT_TEMPLATE.format(goal=goal)
+
+    publish_goal_state_changed(
+        session_key=getattr(ctx.session, "session_key", None),
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        session_metadata=md,
+    )
     return None
 
 
@@ -992,8 +1105,10 @@ async def cmd_goal_complete(ctx: CommandContext) -> OutboundMessage | None:
     stops returning True.  We also stash the recap as a tool_result
     tag so the LLM sees a clear "goal complete" boundary.
     """
+    from femtobot.bus.goal_events import publish_goal_state_changed
     from femtobot.session.goal_state import (
         GOAL_STATE_KEY,
+        clear_goal_waiting,
         discard_legacy_goal_state_key,
         parse_goal_state,
     )
@@ -1025,12 +1140,28 @@ async def cmd_goal_complete(ctx: CommandContext) -> OutboundMessage | None:
 
     # B6: flip the status to ``completed`` and record the recap.
     blob["status"] = "completed"
-    blob["completed_at"] = time.time()
+    blob["completed_at"] = _iso_now_ms()
     if recap:
         blob["recap"] = recap
     md[GOAL_STATE_KEY] = blob
     discard_legacy_goal_state_key(md)
+    clear_goal_waiting(md)
     ctx.session.metadata = md
+
+    # Persist terminal-state changes to disk so /goal status survives
+    # a process restart even before the next inbound.
+    if getattr(ctx, "loop", None) is not None and getattr(ctx.loop, "sessions", None) is not None:
+        try:
+            ctx.loop.sessions.save(ctx.session)
+        except Exception:
+            pass
+
+    publish_goal_state_changed(
+        session_key=getattr(ctx.session, "session_key", None),
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        session_metadata=md,
+    )
 
     return OutboundMessage(
         channel=ctx.msg.channel,
@@ -1040,6 +1171,203 @@ async def cmd_goal_complete(ctx: CommandContext) -> OutboundMessage | None:
             "behavior; runner wall timeout is back to "
             "FEMTOBOT_LLM_TIMEOUT_S."
         ),
+        metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+    )
+
+
+async def cmd_goal_cancel(ctx: CommandContext) -> OutboundMessage | None:
+    """``/goal cancel [reason]`` — terminate the active goal without finishing."""
+    from femtobot.bus.goal_events import publish_goal_state_changed
+    from femtobot.session.goal_state import (
+        GOAL_STATE_KEY,
+        clear_goal_waiting,
+        discard_legacy_goal_state_key,
+        parse_goal_state,
+    )
+
+    reason = ctx.args.strip()
+    if ctx.session is None:
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content="No active session — cannot cancel a goal.",
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
+
+    md = dict(ctx.session.metadata or {})
+    blob = parse_goal_state(md.get(GOAL_STATE_KEY))
+    if not isinstance(blob, dict) or blob.get("status") != "active":
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content="No active goal to cancel.",
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
+
+    blob["status"] = "cancelled"
+    blob["cancelled_at"] = _iso_now_ms()
+    if reason:
+        blob["cancel_reason"] = reason
+    md[GOAL_STATE_KEY] = blob
+    discard_legacy_goal_state_key(md)
+    clear_goal_waiting(md)
+    ctx.session.metadata = md
+
+    if getattr(ctx, "loop", None) is not None and getattr(ctx.loop, "sessions", None) is not None:
+        try:
+            ctx.loop.sessions.save(ctx.session)
+        except Exception:
+            pass
+
+    publish_goal_state_changed(
+        session_key=getattr(ctx.session, "session_key", None),
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        session_metadata=md,
+    )
+
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content="Goal cancelled." + (f" Reason: {reason}" if reason else ""),
+        metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+    )
+
+
+async def cmd_goal_block(ctx: CommandContext) -> OutboundMessage | None:
+    """``/goal block [reason]`` — mark the goal as blocked pending human input."""
+    from femtobot.bus.goal_events import publish_goal_state_changed
+    from femtobot.session.goal_state import (
+        GOAL_STATE_KEY,
+        discard_legacy_goal_state_key,
+        parse_goal_state,
+    )
+
+    reason = ctx.args.strip()
+    if ctx.session is None:
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content="No active session — cannot block a goal.",
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
+
+    md = dict(ctx.session.metadata or {})
+    blob = parse_goal_state(md.get(GOAL_STATE_KEY))
+    if not isinstance(blob, dict) or blob.get("status") != "active":
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content="No active goal to block.",
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
+
+    blob["status"] = "blocked"
+    blob["blocked_at"] = _iso_now_ms()
+    md[GOAL_STATE_KEY] = blob
+    discard_legacy_goal_state_key(md)
+    if reason:
+        md["goal_block_reason"] = reason
+    ctx.session.metadata = md
+
+    if getattr(ctx, "loop", None) is not None and getattr(ctx.loop, "sessions", None) is not None:
+        try:
+            ctx.loop.sessions.save(ctx.session)
+        except Exception:
+            pass
+
+    publish_goal_state_changed(
+        session_key=getattr(ctx.session, "session_key", None),
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        session_metadata=md,
+    )
+
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content="Goal marked blocked." + (f" Reason: {reason}" if reason else ""),
+        metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+    )
+
+
+async def cmd_goal_status(ctx: CommandContext) -> OutboundMessage:
+    """``/goal status`` — print the active goal state, if any."""
+    if ctx.session is None:
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content="No active session.",
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
+
+    from femtobot.session.goal_state import (
+        GOAL_STATE_KEY,
+        goal_block_reason,
+        goal_elapsed_s,
+        goal_id,
+        goal_started_at,
+        goal_waiting_on,
+        parse_goal_state,
+    )
+    from femtobot.session.pending_asks import count_pending_asks, list_pending_asks
+
+    md = ctx.session.metadata or {}
+    blob = parse_goal_state(md.get(GOAL_STATE_KEY))
+    if not isinstance(blob, dict) or blob.get("status") != "active":
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content="No active goal.",
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
+
+    objective = str(blob.get("objective") or "").strip()
+    summary = str(blob.get("ui_summary") or "").strip()
+    elapsed = goal_elapsed_s(md)
+    started = goal_started_at(md)
+    gid = goal_id(md)
+    waiting = goal_waiting_on(md)
+    pending = count_pending_asks(md)
+    asks = list_pending_asks(md)
+
+    lines = []
+    if gid:
+        lines.append(f"Goal id: `{gid}`")
+    lines.append(f"Status: `active` (elapsed {elapsed:.1f}s)")
+    if started:
+        # ``goal_started_at`` is an epoch float; surface it as an
+        # ISO-8601 UTC string so a human reading the slash-command
+        # output can parse the wall-clock time directly.
+        from datetime import datetime, timezone
+
+        iso_started = (
+            datetime.fromtimestamp(started, tz=timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
+        lines.append(f"Started at (UTC): `{iso_started}`")
+    if summary:
+        lines.append(f"Summary: {summary}")
+    if objective:
+        body = objective if len(objective) <= 600 else objective[:600].rstrip() + "…"
+        lines.append("Objective:")
+        lines.append(body)
+    if waiting:
+        lines.append(f"Waiting on: `{waiting}`")
+    if pending:
+        lines.append(f"Pending asks: {pending}")
+        for a in asks:
+            if a.status.value == "pending":
+                lines.append(f"  - `{a.correlation_id}` → {a.question}")
+    reason = goal_block_reason(md)
+    if reason:
+        lines.append(f"Block reason: {reason}")
+
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content="\n".join(lines),
         metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
     )
 
@@ -1406,6 +1734,14 @@ def register_builtin_commands(router: CommandRouter) -> None:
     # full string is matched before the generic ``/goal`` prefix.
     router.exact("/goal complete", cmd_goal_complete)
     router.prefix("/goal complete ", cmd_goal_complete)
+    # M1 of long-task-by-default: cancel/block/status routes.  Same exact+prefix
+    # pattern as ``/goal complete`` — exact match takes priority over the
+    # generic ``/goal`` prefix above.
+    router.exact("/goal cancel", cmd_goal_cancel)
+    router.prefix("/goal cancel ", cmd_goal_cancel)
+    router.exact("/goal block", cmd_goal_block)
+    router.prefix("/goal block ", cmd_goal_block)
+    router.exact("/goal status", cmd_goal_status)
     router.exact("/dream", cmd_dream)
     router.exact("/dream-log", cmd_dream_log)
     router.prefix("/dream-log ", cmd_dream_log)

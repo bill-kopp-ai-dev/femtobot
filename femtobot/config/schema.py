@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -416,6 +417,91 @@ class CliConfig(Base):
     Default: :data:`CLI_DEFAULT_TURN_BOX` (``True``)."""
 
 
+class LongTaskApiMode(str, Enum):
+    """How the HTTP layer should behave when a sustained goal is active.
+
+    ``sync`` keeps the current request/response contract; ``async_goal``
+    admits the request immediately and returns ``202 Accepted`` plus a
+    polling/events URL; ``auto`` picks between the two based on whether
+    the inbound creates or extends a sustained goal.
+    """
+
+    SYNC = "sync"
+    ASYNC_GOAL = "async_goal"
+    AUTO = "auto"
+
+
+class LongTaskConfig(Base):
+    """Long-task (sustained goal) execution profile.
+
+    When ``by_default`` is True, every inbound message is wrapped as a
+    sustained goal — the worker continues until it calls
+    ``complete_goal`` or hits a guardrail.  When False, only explicit
+    ``/goal <objective>`` invocations start a sustained goal; other
+    turns keep the legacy one-shot behavior.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    by_default: bool = (
+        False  # master switch — when True, agent runs in long-task mode by default
+    )
+
+    # --- guardrails (apply whenever a goal is active) ---
+    max_goal_rounds: int = Field(
+        default=12,
+        ge=1,
+    )  # cap on internal continuation slices
+    max_goal_runtime_s: float = Field(
+        default=14400.0,
+        ge=60.0,
+    )  # wall-clock cap per goal (4h default)
+    max_goal_wall_idle_s: float = Field(
+        default=1800.0,
+        ge=60.0,
+    )  # idle cap before forced block
+    max_goal_ask_attempts: int = Field(
+        default=3,
+        ge=0,
+    )  # cap on ask_orchestrator calls per goal (0 = no cap)
+    # Per-turn iteration budget — additive on top of max_tool_iterations
+    goal_iteration_extra_budget: int = Field(default=50, ge=0)
+
+    # --- escalation / supervisor wiring ---
+    escalation_channel: str | None = (
+        None  # e.g. "api", "websocket"; None = same channel
+    )
+    escalation_chat_id: str | None = None  # when None, falls back to ask-time routing
+
+    # --- progress reporting ---
+    progress_report_every_n_turns: int = Field(
+        default=0,
+        ge=0,
+    )  # 0 disables intermediate reports
+    progress_report_to: str = "self"  # "self" | "supervisor" | "channel"
+
+    # --- safety ---
+    require_objective_self_containment: bool = (
+        True  # reject objectives with "?", open-ended asks
+    )
+    block_on_workspace_violation: bool = (
+        True  # escalate to supervisor after N workspace hits
+    )
+    workspace_violation_threshold: int = Field(default=3, ge=1)
+
+    # --- runtime contract knobs ---
+    sdk_execution_mode: Literal["sync", "goal_aware"] = (
+        "goal_aware"  # used by Femtobot SDK / process_direct
+    )
+    api_mode: LongTaskApiMode = (
+        LongTaskApiMode.AUTO  # governs server.py behavior
+    )
+    api_async_accept_timeout_s: float = Field(
+        default=5.0,
+        ge=0.5,
+    )  # max time the server spends admitting a request before 202
+
+
 class AgentDefaults(Base):
     """Default agent configuration."""
 
@@ -472,6 +558,7 @@ class AgentDefaults(Base):
         False  # When True, read AGENTS.md/MEMORY.md headers from MCPs (Fase 8)
     )
     cli: CliConfig = Field(default_factory=CliConfig)  # Camada 1 CLI behavior
+    long_task: LongTaskConfig = Field(default_factory=LongTaskConfig)
 
 
 class AgentsConfig(Base):
