@@ -87,8 +87,13 @@ _INTENT_VERB_RE = re.compile(
     re.IGNORECASE | re.UNICODE,
 )
 
-# Markers that strongly indicate the response *did* something concrete and
-# should not be flagged as intent_only even if an intent verb slipped in.
+# Markers that strongly indicate the response *did* something concrete.
+# These alone do NOT short-circuit the intent_only guard anymore (L3):
+# the model often replies with prose that *mentions* a path or a tool name
+# while still being a "describe-but-don't-execute" answer.  We classify a
+# response as intent_only whenever an intent verb is present, unless the
+# content is overwhelmingly dominated by concrete result markers (see
+# ``_STRONG_RESULT_RATIO`` below).
 _CONCRETE_RESULT_MARKERS: tuple[str, ...] = (
     "```",          # fenced code block
     "`",            # inline code / file path / identifier
@@ -100,6 +105,37 @@ _CONCRETE_RESULT_MARKERS: tuple[str, ...] = (
     "function_call",
 )
 
+# Strong-result markers (tool-result blocks, function_call JSON) are
+# unambiguous proof that the model produced a real artifact.  These still
+# short-circuit the guard at any density.
+_STRONG_RESULT_MARKERS: tuple[str, ...] = (
+    "[Tool result",
+    "tool_call_id",
+    "function_call",
+)
+
+# Phrases that mean the model already finished describing what it *will*
+# do and is explicitly closing the turn.  These legitimately end the loop
+# even when an intent verb slipped in.  Common in "Pong" / "ok" responses.
+_FINAL_FAREWELL_PATTERNS: tuple[str, ...] = (
+    # Plain acknowledgments / farewells / ping-pong.  These are full-line
+    # responses — anything longer than this is treated as narration.
+    r"^\s*(?:pong|ok|entendido|combinado|certinho|pronto|beleza|"
+    r"show|blz|fechou|fechado|tranquilo|confirmado|recebido|"
+    r"anotado|registrado|sim|não|nao)\s*[\.\!\?]*\s*$",
+)
+
+
+def _concrete_chars(content: str) -> int:
+    r"""DEPRECATED: replaced by simpler ``\`\`\`\` count check in L3.
+
+    Kept for backward compatibility with any callers importing it.
+    Returns the total character count of the response — no longer
+    computes the in-marker ratio.  Use ``content.count("```")`` directly
+    for the new check.
+    """
+    return len(content)
+
 
 def is_intent_only_response(content: str | None) -> bool:
     """Return True when *content* looks like a self-reported future action.
@@ -107,14 +143,48 @@ def is_intent_only_response(content: str | None) -> bool:
     Used by the agent runner to break the "describe-but-don't-execute" loop
     where the LLM answers with prose like "Despachando em paralelo…" without
     emitting a corresponding ``tool_calls`` payload.
+
+    L3 (v0.1.8): the heuristic no longer short-circuits as soon as a
+    concrete marker appears.  Real-world runs (see
+    ``tests/test_runner_intent_only_l3.py``) showed the model replying
+    with prose that *mentions* a path or tool name while still being a
+    pure description — e.g. "Plano: 1. read_file em
+    ``/path/file.md``.  Emitindo agora."  The guard must catch those
+    cases.  Short-circuit only happens when:
+
+    1. The content contains a *strong* marker (``[Tool result``,
+       ``tool_call_id``, ``function_call``) — unambiguous proof of a
+       real tool artifact.
+    2. The content is a *fenced code block* of substantial size — the
+       dominant content is real code, not narration with sprinkled
+       backticks.
+    3. The content matches a *final farewell* pattern ("Pong.",
+       "Combinado.", etc.) — pure acknowledgment, not action.
+
+    Anything else with an intent verb is flagged.
     """
     if not content or not content.strip():
         return False
-    # Concrete result markers short-circuit — assume the model actually
-    # produced something (code, a path, a tool-result block).
-    for marker in _CONCRETE_RESULT_MARKERS:
+
+    # (1) Strong markers short-circuit unconditionally.
+    for marker in _STRONG_RESULT_MARKERS:
         if marker in content:
             return False
+
+    # (2) Substantial fenced code block — when ``\`\`\`\` appears more
+    # than once (open + close), the response is dominated by a real
+    # artifact.  Mentions of intent verbs inside the code body are not
+    # narrating an action; they're just identifiers.
+    triple_backtick_count = content.count("```")
+    if triple_backtick_count >= 2:
+        return False
+
+    # (3) Final farewells / pure acknowledgments short-circuit.
+    for pattern in _FINAL_FAREWELL_PATTERNS:
+        if re.search(pattern, content, flags=re.IGNORECASE | re.UNICODE):
+            return False
+
+    # No intent verb → not intent_only.
     return bool(_INTENT_VERB_RE.search(content))
 
 

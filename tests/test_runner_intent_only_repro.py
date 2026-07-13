@@ -124,8 +124,14 @@ class TestHeuristicWithRealProviderPatterns:
         )
 
     def test_does_not_flag_when_inline_file_path_present(self) -> None:
-        """An inline file path counts as concrete content."""
-        assert not is_intent_only_response(
+        """L3 (v0.1.8): inline file path + intent verb IS intent_only.
+
+        Counter-example: L1/L2 let this through (path short-circuit),
+        but in production it was being used by the model to claim work
+        without actually executing the read_file tool call.  See the
+        broader regression suite in test_runner_intent_only_l3.py.
+        """
+        assert is_intent_only_response(
             "Vou investigar `femtobot/agent/runner.py` linha 412."
         )
 

@@ -82,15 +82,19 @@ class TestIsIntentOnlyResponse:
         )
         assert not is_intent_only_response(content)
 
-    def test_does_not_detect_when_file_path_present(self) -> None:
-        # Inline code marker → not intent_only.
-        assert not is_intent_only_response(
+    def test_detects_when_file_path_present_with_intent(self) -> None:
+        # L3 (v0.1.8): inline code/path + intent verb is intent_only.
+        # The previous L1/L2 behavior let this through, but in practice
+        # these are descriptions of what the model plans to do, not
+        # concrete artifacts.  See test_runner_intent_only_l3.py for the
+        # broader regression coverage.
+        assert is_intent_only_response(
             "Vou editar o arquivo `femtobot/agent/runner.py`."
         )
 
-    def test_does_not_detect_when_url_present(self) -> None:
-        # URL-ish marker → not intent_only.
-        assert not is_intent_only_response(
+    def test_detects_when_url_present_with_intent(self) -> None:
+        # L3: URL + intent verb is intent_only.
+        assert is_intent_only_response(
             "Vou consultar https://example.com/api/v1/results agora."
         )
 
