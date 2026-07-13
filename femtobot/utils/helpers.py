@@ -640,6 +640,14 @@ def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]
             _write(item, workspace / item.name)
     _write(tpl / "memory" / "MEMORY.md", workspace / "memory" / "MEMORY.md")
     _write(None, workspace / "memory" / "history.jsonl")
+    # Sync agent-level templates (e.g. goal_runtime.md) — these are only
+    # written if they don't already exist, so an existing workspace is
+    # never overwritten with a newer version.  This preserves user edits.
+    agent_tpl = tpl / "agent"
+    if agent_tpl.is_dir():
+        for item in agent_tpl.iterdir():
+            if item.is_file() and item.name.endswith(".md"):
+                _write(item, workspace / item.name)
     (workspace / "skills").mkdir(exist_ok=True)
 
     if added and not silent:
@@ -657,6 +665,7 @@ def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]
             tracked_files=[
                 "SOUL.md",
                 "USER.md",
+                "goal_runtime.md",
                 "memory/MEMORY.md",
             ],
         )

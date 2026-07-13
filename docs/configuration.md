@@ -89,16 +89,27 @@ asks clarifying questions to the orchestrator via `ask_orchestrator`, and finali
 with `complete_goal`.  The `long_task` tool is invisible unless one of the
 visibility conditions below is met.
 
-| Field | Type | Default | Description |
+> **Note:** Field names use camelCase in `config.json` (e.g. `byDefault`,
+> `sdkExecutionMode`).  The schema serialises with `by_alias=True`.
+
+| Field (camelCase) | Type | Default | Description |
 |---|---|---|---|
-| `byDefault` | bool | `false` | If `true`, every non-slash inbound bootstraps an implicit goal. The `long_task` tool becomes visible to every turn. |
+| `byDefault` | bool | `false` | Master switch. When `true`, every non-slash inbound bootstraps an implicit goal; the `long_task` tool becomes visible to every turn. |
 | `sdkExecutionMode` | `"sync"` \| `"goal_aware"` | `"sync"` | `"goal_aware"` routes tool results through the long-task continuation queue so goal-scoped turns stay in the same async task. |
-| `requireObjectiveSelfContainment` | bool | `true` | When `true`, the `/goal` slash command and `long_task` validate the objective text with a conservative question-detector (questions → rejected). Set `false` to accept questions as goals. |
-| `maxGoalRuntimeS` | int (≥60) | `3600` | Hard wall-clock cap on a goal's total lifetime in seconds. |
-| `maxGoalWallIdleS` | int (≥60) | `900` | Maximum seconds a goal may sit idle between turns. |
+| `requireObjectiveSelfContainment` | bool | `true` | The `/goal` slash command and `long_task` tool validate objective text with a conservative question-detector (questions → rejected). Set `false` to accept questions as goals. |
+| `maxGoalRuntimeS` | float (≥60) | `14400` | Hard wall-clock cap on a goal's total lifetime in seconds. |
+| `maxGoalWallIdleS` | float (≥60) | `1800` | Maximum seconds a goal may sit idle between turns before forced block. |
 | `maxGoalAskAttempts` | int (≥0) | `3` | Cap on `ask_orchestrator` calls per goal. `0` disables the cap. |
-| `maxPendingAskDurationS` | int (30–86400) | `86400` | Default timeout for a single pending ask. |
-| `goalBootstrapRequested` | bool | `false` | Internal marker set by the runner auto-wrap hook; do not set manually. |
+| `maxGoalRounds` | int (≥1) | `12` | Cap on internal continuation slices (additive to `maxToolIterations`). |
+| `goalIterationExtraBudget` | int (≥0) | `50` | Per-turn iteration budget added on top of `maxToolIterations` while a goal is active. |
+| `apiMode` | `"sync"` \| `"async_goal"` \| `"auto"` | `"sync"` | HTTP layer behaviour when a sustained goal is active. `"async_goal"` returns `202 Accepted` immediately; `"auto"` picks based on the inbound. |
+| `apiAsyncAcceptTimeoutS` | float | `30` | Seconds the async API waits for a bootstrap inbound before returning `504`. |
+| `escalationChannel` | str \| null | `null` | Route goal status updates and pending asks to this channel (e.g. `"api"`, `"websocket"`). `null` = same channel. |
+| `escalationChatId` | str \| null | `null` | Chat ID within the escalation channel. |
+| `progressReportTo` | `"none"` \| `"channel"` \| `"api"` | `"channel"` | Where to surface goal progress events. |
+| `progressReportEveryNTurns` | int | `5` | Emit a progress event every N goal turns. |
+| `blockOnWorkspaceViolation` | bool | `false` | Block the goal when the agent writes outside the workspace. |
+| `workspaceViolationThreshold` | int | `3` | Number of violations before the goal is blocked. |
 
 ---
 
