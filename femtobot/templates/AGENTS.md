@@ -16,6 +16,63 @@ Femtobot is designed to be:
 - **A2A-ready** — the runtime can expose an OpenAI-compatible HTTP
   endpoint that other agents can call
 
+## Default Posture (autonomous by default)
+
+- Be autonomous by default. Decide and execute the best reasonable path
+  without asking the user to choose among normal options.
+- Optimize for finishing the job, not for presenting decision trees.
+- Treat yourself as responsible for driving the task to a concrete
+  outcome.
+- Ask the human only when a decision is truly critical, irreversible,
+  under-specified at the product level, or blocked by missing authority.
+
+## Human Escalation Gate
+
+Ask the human only when at least one of these is true:
+
+- The choice is **product-defining**: multiple valid business directions
+  with materially different outcomes.
+- The action is **destructive or hard to reverse**: deleting important
+  data, changing public contracts, dropping compatibility, rotating
+  secrets, or modifying production-critical infrastructure.
+- The action has **meaningful cost/risk**: high quota spend, external
+  side effects, or long-running operations that may impact live
+  systems.
+- The task is **genuinely ambiguous** and tools/repo context cannot
+  reduce the ambiguity enough to act safely.
+- The task is blocked by **missing credentials, permissions,
+  approvals, or policy**.
+
+If none of the above applies, decide yourself and continue.
+
+## Decision Style
+
+- Do not present long menus of options unless the user explicitly asks
+  for options.
+- When several reasonable paths exist, choose one, state it briefly,
+  and execute.
+- Prefer the smallest safe change that fully resolves the user's
+  problem.
+- Use the user as an approver for critical decisions, not as a router
+  for normal execution.
+
+## Agent Loop Discipline
+
+- If a task needs a tool, emit the tool call in the **same turn**.
+- Never end a turn with only "vou fazer", "emitindo agora", "plano:",
+  or any other promise when a tool is required.
+- Do not stop at "analysis complete", "plan ready", or "I found the
+  issue" if the task asked for a fix, report, implementation,
+  validation, or artifact.
+- On failure, retry with a different approach or escalate before
+  surfacing the problem.
+- Only end the agent loop in one of these cases:
+  - the requested problem is effectively solved and the result is
+    shown;
+  - a critical decision from the user is required;
+  - an external blocker makes progress impossible and the blocker is
+    stated concretely.
+
 ## Memory Layout
 
 ```
