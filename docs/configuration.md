@@ -82,6 +82,24 @@ dream consolidation, and so on.
 | `maxIterations` | int (≥1) | `15` | **Deprecated.** No longer used. |
 | `annotateLineAges` | bool | `true` | **Deprecated.** No longer used. |
 
+### `agents.defaults.longTask`
+
+Enables the sustained-goal lifecycle: the agent declares a multi-turn objective,
+asks clarifying questions to the orchestrator via `ask_orchestrator`, and finalises
+with `complete_goal`.  The `long_task` tool is invisible unless one of the
+visibility conditions below is met.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `byDefault` | bool | `false` | If `true`, every non-slash inbound bootstraps an implicit goal. The `long_task` tool becomes visible to every turn. |
+| `sdkExecutionMode` | `"sync"` \| `"goal_aware"` | `"sync"` | `"goal_aware"` routes tool results through the long-task continuation queue so goal-scoped turns stay in the same async task. |
+| `requireObjectiveSelfContainment` | bool | `true` | When `true`, the `/goal` slash command and `long_task` validate the objective text with a conservative question-detector (questions → rejected). Set `false` to accept questions as goals. |
+| `maxGoalRuntimeS` | int (≥60) | `3600` | Hard wall-clock cap on a goal's total lifetime in seconds. |
+| `maxGoalWallIdleS` | int (≥60) | `900` | Maximum seconds a goal may sit idle between turns. |
+| `maxGoalAskAttempts` | int (≥0) | `3` | Cap on `ask_orchestrator` calls per goal. `0` disables the cap. |
+| `maxPendingAskDurationS` | int (30–86400) | `86400` | Default timeout for a single pending ask. |
+| `goalBootstrapRequested` | bool | `false` | Internal marker set by the runner auto-wrap hook; do not set manually. |
+
 ---
 
 ## `channels`
