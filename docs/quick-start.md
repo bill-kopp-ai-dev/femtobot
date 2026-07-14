@@ -63,7 +63,7 @@ sure `agents.defaults.provider` matches:
 ```
 
 See [configuration.md](./configuration.md) for the full schema and the list of
-33 registered providers.
+34 registered providers.
 
 **3. Chat with the agent**
 

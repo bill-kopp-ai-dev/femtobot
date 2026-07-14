@@ -458,7 +458,7 @@ its tool choice before the first call.
 
 When a server is started with `AGY_MCP_MODE=safe` (or `CLAUDE_MCP_MODE=safe`)
 and `*_MCP_FORCE_SANDBOX_IN_SAFE_MODE=true` (the default in
-[the open-cli-router reference config](../.femtobot/config.json)),
+[the open-cli-router reference config](https://github.com/bill-kopp-ai-dev/open-cli-router/blob/main/.femtobot/config.json)),
 every write through `*_run_task` requires:
 
 1. First call: `confirm: false` → server returns the proposed plan.

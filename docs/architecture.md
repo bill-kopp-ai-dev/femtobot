@@ -69,7 +69,7 @@ agent, but it does mean your overrides get silently dropped. Always run
 
 ### 2. Provider registry — `femtobot/providers/`
 
-33 providers, indexed by `agents.defaults.provider`. Each provider knows how
+34 providers, indexed by `agents.defaults.provider`. Each provider knows how
 to build its own request payload and parse the response. All providers
 implement `BaseProvider.acomplete(messages, **kwargs)`.
 

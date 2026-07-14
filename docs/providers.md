@@ -240,14 +240,14 @@ If you add a provider, please:
 
 ---
 
-## Coverage summary (v0.1.6)
+## Coverage summary (v0.1.9)
 
-* **30 named providers + 1 catch-all = 31 entries** in `PROVIDERS`.
-* **29** use `OpenAICompatProvider` (everything except `bedrock`).
+* **32 ProviderSpecs + 1 catch-all (`custom`) = 34 entries** in `PROVIDERS`.
+* **31** use `OpenAICompatProvider` (everything except `bedrock`).
 * **1** uses `BedrockProvider` (`bedrock`).
-* **2** are flagged `is_gateway=True` but listed under both the
-  gateway and first-party sections (`huggingface` and `skywork`)
-  because they fit both modes.
+* **11** are flagged `is_gateway=True` (`openrouter`, `huggingface`,
+  `aihubmix`, `siliconflow`, `novita`, `skywork`, `volcengine`,
+  `volcengine_coding_plan`, `byteplus`, `byteplus_coding_plan`, `qianfan`).
 * **5** are flagged `is_local=True` (Ollama, vLLM, LM Studio,
   OpenVINO Model Server, Atomic Chat).
 

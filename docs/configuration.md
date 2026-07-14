@@ -95,18 +95,18 @@ visibility conditions below is met.
 | Field (camelCase) | Type | Default | Description |
 |---|---|---|---|
 | `byDefault` | bool | `false` | Master switch. When `true`, every non-slash inbound bootstraps an implicit goal; the `long_task` tool becomes visible to every turn. |
-| `sdkExecutionMode` | `"sync"` \| `"goal_aware"` | `"sync"` | `"goal_aware"` routes tool results through the long-task continuation queue so goal-scoped turns stay in the same async task. |
+| `sdkExecutionMode` | `"sync"` \| `"goal_aware"` | `"goal_aware"` | `"goal_aware"` routes tool results through the long-task continuation queue so goal-scoped turns stay in the same async task. |
 | `requireObjectiveSelfContainment` | bool | `true` | The `/goal` slash command and `long_task` tool validate objective text with a conservative question-detector (questions → rejected). Set `false` to accept questions as goals. |
 | `maxGoalRuntimeS` | float (≥60) | `14400` | Hard wall-clock cap on a goal's total lifetime in seconds. |
 | `maxGoalWallIdleS` | float (≥60) | `1800` | Maximum seconds a goal may sit idle between turns before forced block. |
 | `maxGoalAskAttempts` | int (≥0) | `3` | Cap on `ask_orchestrator` calls per goal. `0` disables the cap. |
 | `maxGoalRounds` | int (≥1) | `12` | Cap on internal continuation slices (additive to `maxToolIterations`). |
 | `goalIterationExtraBudget` | int (≥0) | `50` | Per-turn iteration budget added on top of `maxToolIterations` while a goal is active. |
-| `apiMode` | `"sync"` \| `"async_goal"` \| `"auto"` | `"sync"` | HTTP layer behaviour when a sustained goal is active. `"async_goal"` returns `202 Accepted` immediately; `"auto"` picks based on the inbound. |
-| `apiAsyncAcceptTimeoutS` | float | `30` | Seconds the async API waits for a bootstrap inbound before returning `504`. |
+| `apiMode` | `"sync"` \| `"async_goal"` \| `"auto"` | `"auto"` | HTTP layer behaviour when a sustained goal is active. `"async_goal"` returns `202 Accepted` immediately; `"auto"` picks based on the inbound. |
+| `apiAsyncAcceptTimeoutS` | float | `5` | Seconds the async API waits for a bootstrap inbound before returning `504`. |
 | `escalationChannel` | str \| null | `null` | Route goal status updates and pending asks to this channel (e.g. `"api"`, `"websocket"`). `null` = same channel. |
 | `escalationChatId` | str \| null | `null` | Chat ID within the escalation channel. |
-| `progressReportTo` | `"none"` \| `"channel"` \| `"api"` | `"channel"` | Where to surface goal progress events. |
+| `progressReportTo` | `"self"` \| `"supervisor"` \| `"channel"` | `"self"` | Where to surface goal progress events. |
 | `progressReportEveryNTurns` | int | `5` | Emit a progress event every N goal turns. |
 | `blockOnWorkspaceViolation` | bool | `false` | Block the goal when the agent writes outside the workspace. |
 | `workspaceViolationThreshold` | int | `3` | Number of violations before the goal is blocked. |

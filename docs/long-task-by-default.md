@@ -45,7 +45,8 @@ mode entirely.
         "maxGoalRuntimeS": 14400,
         "maxGoalAskAttempts": 3,
         "sdkExecutionMode": "goal_aware",
-        "apiMode": "auto"
+        "apiMode": "auto",
+        "apiAsyncAcceptTimeoutS": 5
       }
     }
   }
