@@ -12,7 +12,7 @@ from loguru import logger
 
 from femtobot.agent.tools.base import Tool, tool_parameters
 from femtobot.agent.tools.file_state import FileStates, _hash_file, current_file_states
-from femtobot.agent.tools.path_utils import resolve_workspace_path
+from femtobot.agent.tools.path_utils import resolve_default_cwd, resolve_workspace_path
 from femtobot.agent.tools.schema import (
     BooleanSchema,
     IntegerSchema,
@@ -84,6 +84,50 @@ class _FsTool(Tool):
             restrict_to_workspace=self._restrict_to_workspace,
             sandbox_restricts_workspace=self._sandbox_restricts_workspace,
         )
+        # When the tool is anchored on the Femtobot internal workspace
+        # (``<project_root>/.femtobot/workspace``) and the active scope
+        # does not pin a different project_path, prefer the project root
+        # for relative-path resolution so commands like
+        # ``read_file femtobot/agent/runner.py`` hit the user's source
+        # tree instead of ``.femtobot/workspace/femtobot/agent/runner.py``.
+        #
+        # The Femtobot-workspace check uses ``get_instance_dir`` so the
+        # override only kicks in for the canonical anchor (the workspace
+        # directory the Femtobot CLI created at startup).  Tools that were
+        # constructed with an arbitrary ``workspace=`` argument — for
+        # instance the ``apply_patch`` tests that point ``workspace`` at a
+        # ``tmp_path`` fixture — keep the legacy anchor semantics.
+        # See ``path_utils.resolve_default_cwd`` for the full policy.
+        from femtobot.config.loader import get_instance_dir
+
+        scope_overrides_project = (
+            access.scope is not None and access.scope.project_path is not None
+        )
+        anchored_on_femtobot_workspace = False
+        if self._workspace is not None:
+            try:
+                instance_dir = get_instance_dir()
+                anchored_on_femtobot_workspace = (
+                    self._workspace.resolve() == instance_dir / "workspace"
+                )
+            except Exception:
+                anchored_on_femtobot_workspace = False
+        if (
+            anchored_on_femtobot_workspace
+            and not scope_overrides_project
+            and not access.restrict_to_workspace
+        ):
+            anchor = resolve_default_cwd(
+                workspace=self._workspace,
+                restrict_to_workspace=access.restrict_to_workspace,
+            )
+            return resolve_workspace_path(
+                path,
+                anchor,
+                None,
+                self._extra_allowed_dirs,
+                restrict_to_workspace=False,
+            )
         return resolve_workspace_path(
             path,
             access.project_path,
