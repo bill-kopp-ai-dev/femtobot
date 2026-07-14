@@ -1179,51 +1179,65 @@ def runtime_lines(
 
 async def connect_missing_servers(state: Any, registry: ToolRegistry) -> None:
     """Connect configured MCP servers that are not currently live."""
-    missing_servers = {
-        name: cfg for name, cfg in state._mcp_servers.items() if name not in state._mcp_stacks
-    }
-    if state._mcp_connecting or not missing_servers:
-        return
-    state._mcp_connecting = True
-    try:
-        connected = await connect_mcp_servers(missing_servers, registry)
-        state._mcp_stacks.update(connected)
-        _attach_reconnect_handlers(state, registry, connected)
-        state._mcp_connected = bool(state._mcp_stacks)
-        if connected:
-            logger.info("MCP connected servers: {}", sorted(connected))
-        else:
-            logger.warning("No MCP servers connected successfully (will retry next message)")
-    except asyncio.CancelledError:
-        # Audit (H4 of the v0.0.9 fourth-pass review): this
-        # branch was shadowed by the ``except BaseException``
-        # below (BaseException is a superclass of
-        # CancelledError).  Python picks the first matching
-        # except clause, so when CancelledError was raised, the
-        # first branch ran as expected — *but* the dead code
-        # confused readers and made the cancel path
-        # ungrep-able.  We re-raise after logging so cancellation
-        # propagates as designed (the outer
-        # ``state._mcp_connecting = False`` in the ``finally``
-        # block still runs).
-        logger.warning("MCP connection cancelled (will retry next message)")
-        state._mcp_connected = bool(state._mcp_stacks)
-        raise
-    except Exception as e:
-        # ``BaseException`` was used here previously, but that
-        # also caught ``CancelledError`` (shadowing the explicit
-        # branch above) and ``SystemExit`` / ``KeyboardInterrupt``,
-        # which should propagate.  ``Exception`` is the right
-        # boundary for "MCP failed, log and continue".
-        logger.warning("Failed to connect MCP servers (will retry next message): {}", e)
-        state._mcp_connected = bool(state._mcp_stacks)
-    finally:
-        state._mcp_connecting = False
+    async with _reload_lock(state):
+        if getattr(state, "_mcp_closing", False):
+            return
+        missing_servers = {
+            name: cfg for name, cfg in state._mcp_servers.items() if name not in state._mcp_stacks
+        }
+        if state._mcp_connecting or not missing_servers:
+            return
+        state._mcp_connecting = True
+        try:
+            connected = await connect_mcp_servers(missing_servers, registry)
+            if getattr(state, "_mcp_closing", False):
+                for stack in connected.values():
+                    with suppress(Exception):
+                        await stack.aclose()
+                return
+            state._mcp_stacks.update(connected)
+            _attach_reconnect_handlers(state, registry, connected)
+            state._mcp_connected = bool(state._mcp_stacks)
+            if connected:
+                logger.info("MCP connected servers: {}", sorted(connected))
+            else:
+                logger.warning("No MCP servers connected successfully (will retry next message)")
+        except asyncio.CancelledError:
+            # Audit (H4 of the v0.0.9 fourth-pass review): this
+            # branch was shadowed by the ``except BaseException``
+            # below (BaseException is a superclass of
+            # CancelledError).  Python picks the first matching
+            # except clause, so when CancelledError was raised, the
+            # first branch ran as expected — *but* the dead code
+            # confused readers and made the cancel path
+            # ungrep-able.  We re-raise after logging so cancellation
+            # propagates as designed (the outer
+            # ``state._mcp_connecting = False`` in the ``finally``
+            # block still runs).
+            logger.warning("MCP connection cancelled (will retry next message)")
+            state._mcp_connected = bool(state._mcp_stacks)
+            raise
+        except Exception as e:
+            # ``BaseException`` was used here previously, but that
+            # also caught ``CancelledError`` (shadowing the explicit
+            # branch above) and ``SystemExit`` / ``KeyboardInterrupt``,
+            # which should propagate.  ``Exception`` is the right
+            # boundary for "MCP failed, log and continue".
+            logger.warning("Failed to connect MCP servers (will retry next message): {}", e)
+            state._mcp_connected = bool(state._mcp_stacks)
+        finally:
+            state._mcp_connecting = False
 
 
 async def reload_servers(state: Any, registry: ToolRegistry) -> dict[str, Any]:
     """Reconcile live MCP connections with the current config file."""
     async with _reload_lock(state):
+        if getattr(state, "_mcp_closing", False):
+            return {
+                "ok": False,
+                "message": "MCP connections are shutting down.",
+                "requires_restart": True,
+            }
         try:
             from femtobot.config.loader import load_config, resolve_config_env_vars
 
@@ -1265,6 +1279,15 @@ async def reload_servers(state: Any, registry: ToolRegistry) -> dict[str, Any]:
         connected: dict[str, AsyncExitStack] = {}
         if to_connect:
             connected = await connect_mcp_servers(to_connect, registry)
+            if getattr(state, "_mcp_closing", False):
+                for stack in connected.values():
+                    with suppress(Exception):
+                        await stack.aclose()
+                return {
+                    "ok": False,
+                    "message": "MCP connections are shutting down.",
+                    "requires_restart": True,
+                }
             state._mcp_stacks.update(connected)
             _attach_reconnect_handlers(state, registry, connected)
 
@@ -1404,6 +1427,8 @@ async def _refresh_terminated_server(
     stale_tool: Tool,
 ) -> Tool | None:
     async with _reload_lock(state):
+        if getattr(state, "_mcp_closing", False):
+            return None
         cfg = state._mcp_servers.get(server_name)
         if cfg is None:
             logger.warning(
@@ -1425,6 +1450,11 @@ async def _refresh_terminated_server(
         await _close_server(state, server_name)
 
         connected = await connect_mcp_servers({server_name: cfg}, registry)
+        if getattr(state, "_mcp_closing", False):
+            for stack in connected.values():
+                with suppress(Exception):
+                    await stack.aclose()
+            return None
         state._mcp_stacks.update(connected)
         _attach_reconnect_handlers(state, registry, connected)
         state._mcp_connected = bool(state._mcp_stacks)
@@ -1475,3 +1505,30 @@ async def _close_server(state: Any, server_name: str) -> None:
     # Clear the side-channel cache for this server so context builders see
     # the right "connected" picture on the next ``build_system_prompt``.
     _clear_connected_cache(server_name)
+
+
+async def close_mcp_servers(state: Any) -> None:
+    """Close every MCP connection while excluding reconnect and hot reload.
+
+    Sets ``state._mcp_closing`` so concurrent ``connect_missing_servers`` /
+    ``reload_servers`` / ``_refresh_terminated_server`` calls bail out
+    cleanly instead of racing the shutdown.
+
+    Ported from nanobot — femtobot previously lacked this guard, so
+    shutdown paths could leave orphan AnyIO cancel scopes alive and crash
+    on the next reconnect attempt with ``RuntimeError`` /
+    ``BaseExceptionGroup``.
+    """
+    state._mcp_closing = True
+    async with _reload_lock(state):
+        connections = list(state._mcp_stacks.items())
+        state._mcp_stacks.clear()
+        for name, stack in connections:
+            try:
+                await stack.aclose()
+            except (RuntimeError, BaseExceptionGroup):
+                logger.debug("MCP server '{}' cleanup error (can be ignored)", name)
+            # Clear the side-channel cache so context builders see an empty
+            # connected picture the next time ``build_system_prompt`` runs.
+            _clear_connected_cache(name)
+        state._mcp_connected = False

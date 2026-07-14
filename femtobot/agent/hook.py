@@ -49,6 +49,47 @@ class AgentHook:
     async def before_execute_tools(self, context: AgentHookContext) -> None:
         pass
 
+    async def before_execute_tool(
+        self,
+        context: AgentHookContext,
+        tool_call: "ToolCallRequest",
+        tool: Any,
+        params: Any,
+    ) -> None:
+        """Called immediately before each individual tool call.
+
+        Distinct from ``before_execute_tools`` (which fires once before the
+        batch).  Default is a no-op; subclasses override to capture per-tool
+        telemetry or to short-circuit via raising.
+        """
+        pass
+
+    async def after_execute_tool(
+        self,
+        context: AgentHookContext,
+        tool_call: "ToolCallRequest",
+        tool: Any,
+        params: Any,
+        result: Any,
+    ) -> None:
+        """Called after a successful tool call completes."""
+        pass
+
+    async def on_execute_tool_error(
+        self,
+        context: AgentHookContext,
+        tool_call: "ToolCallRequest",
+        tool: Any,
+        params: Any,
+        error: Any,
+    ) -> None:
+        """Called when a tool call raises or returns a tool-level error.
+
+        ``error`` may be an ``Exception`` instance (raised) or a string
+        payload (returned by ``is_tool_error_result``).
+        """
+        pass
+
     async def emit_reasoning(self, reasoning_content: str | None) -> None:
         pass
 
@@ -106,6 +147,41 @@ class CompositeHook(AgentHook):
 
     async def before_execute_tools(self, context: AgentHookContext) -> None:
         await self._for_each_hook_safe("before_execute_tools", context)
+
+    async def before_execute_tool(
+        self,
+        context: AgentHookContext,
+        tool_call: "ToolCallRequest",
+        tool: Any,
+        params: Any,
+    ) -> None:
+        await self._for_each_hook_safe(
+            "before_execute_tool", context, tool_call, tool, params
+        )
+
+    async def after_execute_tool(
+        self,
+        context: AgentHookContext,
+        tool_call: "ToolCallRequest",
+        tool: Any,
+        params: Any,
+        result: Any,
+    ) -> None:
+        await self._for_each_hook_safe(
+            "after_execute_tool", context, tool_call, tool, params, result
+        )
+
+    async def on_execute_tool_error(
+        self,
+        context: AgentHookContext,
+        tool_call: "ToolCallRequest",
+        tool: Any,
+        params: Any,
+        error: Any,
+    ) -> None:
+        await self._for_each_hook_safe(
+            "on_execute_tool_error", context, tool_call, tool, params, error
+        )
 
     async def emit_reasoning(self, reasoning_content: str | None) -> None:
         await self._for_each_hook_safe("emit_reasoning", reasoning_content)

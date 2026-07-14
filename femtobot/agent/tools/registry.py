@@ -5,6 +5,25 @@ from typing import Any
 from femtobot.agent.tools.base import Tool
 
 
+def is_tool_error_result(name: str, result: Any) -> bool:
+    """Return True when ``result`` represents a tool-level error.
+
+    Femtobot's tools return error responses as plain strings that begin with
+    ``"Error:"`` (this is the convention enforced by the runner and the MCP
+    wrappers).  The legacy femtobot runner used to detect this prefix inline
+    in ``_run_tool``; the helper centralises the rule so both the runner and
+    custom hooks can share the same definition.
+
+    Mirrors nanobot's ``is_tool_error_result`` (which checks
+    ``ToolResult.is_error``); the rule is semantically equivalent because
+    every Femtobot tool that returns an error-shaped payload prefixes its
+    string with ``"Error:"`` or wraps it in an exception.
+    """
+    if isinstance(result, str):
+        return result.startswith("Error")
+    return False
+
+
 class ToolRegistry:
     """
     Registry for agent tools.

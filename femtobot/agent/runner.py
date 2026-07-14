@@ -12,8 +12,12 @@ from typing import Any, Callable
 
 from loguru import logger
 
+from femtobot.agent.context_governance import (
+    ContextGovernanceConfig,
+    ContextGovernor,
+)
 from femtobot.agent.hook import AgentHook, AgentHookContext
-from femtobot.agent.tools.registry import ToolRegistry
+from femtobot.agent.tools.registry import ToolRegistry, is_tool_error_result
 from femtobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from femtobot.utils.file_edit_events import (
     StreamingFileEditTracker,
@@ -394,6 +398,24 @@ class AgentRunner:
         length_recovery_count = 0
         had_injections = False
         injection_cycles = 0
+        # V3 (port of nanobot ContextGovernor): track tool calls that the
+        # in-flight overflow compactor has already collapsed this turn so we
+        # do not re-compact them on the next iteration. Reset at the start of
+        # each new user turn.
+        compacted_tool_call_ids: set[str] = set()
+        governance_config = ContextGovernanceConfig(
+            provider=self.provider,
+            model=spec.model,
+            tools=spec.tools,
+            workspace=spec.workspace,
+            session_key=spec.session_key,
+            max_tool_result_chars=spec.max_tool_result_chars,
+            context_window_tokens=spec.context_window_tokens,
+            context_block_limit=spec.context_block_limit,
+            max_tokens=spec.max_tokens,
+            inflight_start_index=len(spec.initial_messages),
+        )
+        self._governor = ContextGovernor()
 
         # B2 (nanobot v0.2.1 #3999 + #4127): when a sustained goal
         # is active, allow a one-time extra budget of
@@ -476,27 +498,28 @@ class AgentRunner:
                 capped_out = True
                 break
             try:
-                # W2: strip placeholder assistant messages (compaction
-                # artifacts) and malformed tool calls BEFORE the
-                # orphan/budget pipeline so the model never sees
-                # degenerate calls that would be rejected upstream.
-                # Keep the persisted conversation untouched. Context
-                # governance may repair or compact historical messages
-                # for the model, but those synthetic edits must not
-                # shift the append boundary used later when the
-                # caller saves only the new turn.
-                messages_for_model = self._strip_placeholder_assistant_messages(messages)
-                messages_for_model = self._strip_malformed_tool_calls(messages_for_model)
-                messages_for_model = self._drop_orphan_tool_results(messages_for_model)
-                messages_for_model = self._backfill_missing_tool_results(messages_for_model)
-                messages_for_model = self._microcompact(messages_for_model)
-                messages_for_model = self._apply_tool_result_budget(spec, messages_for_model)
-                messages_for_model = self._snip_history(spec, messages_for_model)
-                # Snipping may have created new orphans; clean them up.
-                messages_for_model = self._strip_placeholder_assistant_messages(messages_for_model)
-                messages_for_model = self._strip_malformed_tool_calls(messages_for_model)
-                messages_for_model = self._drop_orphan_tool_results(messages_for_model)
-                messages_for_model = self._backfill_missing_tool_results(messages_for_model)
+                # V3 (port of nanobot ContextGovernor): the in-flight overflow
+                # compactor only fires when ``estimate > budget``.  Previously,
+                # Femtobot called ``_microcompact`` unconditionally on every
+                # turn, which destroyed results from
+                # ``read_file``/``exec``/``grep``/etc. as soon as the
+                # conversation had more than 10 such tool outputs — making the
+                # agent unable to keep a coherent context.
+                #
+                # Order mirrors nanobot exactly: strip placeholders → strip
+                # malformed calls → drop orphans → backfill missing →
+                # apply_tool_result_budget → compact_inflight_overflow
+                # (CONDITIONAL) → snip_history → drop orphans → backfill.
+                #
+                # The persisted conversation is left untouched; only the
+                # model-facing copy is repaired.  ``compacted_tool_call_ids``
+                # survives across iterations so we don't re-compact the same
+                # tool result in the same turn.
+                messages_for_model = self._governor.prepare_for_model(
+                    governance_config,
+                    messages,
+                    compacted_tool_call_ids,
+                )
             except Exception:
                 logger.exception(
                     "Context governance failed on turn {} for {}; applying minimal repair",
@@ -504,13 +527,22 @@ class AgentRunner:
                     spec.session_key or "default",
                 )
                 try:
-                    # W2: minimal repair also runs the placeholders +
-                    # malformed-call strippers so corrupted sessions
-                    # can self-heal on the next turn.
-                    messages_for_model = self._strip_placeholder_assistant_messages(messages)
-                    messages_for_model = self._strip_malformed_tool_calls(messages_for_model)
-                    messages_for_model = self._drop_orphan_tool_results(messages_for_model)
-                    messages_for_model = self._backfill_missing_tool_results(messages_for_model)
+                    # Minimal repair: keep the same placeholders + malformed
+                    # stripping so corrupted sessions can self-heal on the
+                    # next turn.  Skip overflow compactor entirely — the
+                    # failure path should not silently compact things.
+                    messages_for_model = (
+                        ContextGovernor.strip_placeholder_assistant_messages(messages)
+                    )
+                    messages_for_model = ContextGovernor.strip_malformed_tool_calls(
+                        messages_for_model
+                    )
+                    messages_for_model = ContextGovernor.drop_orphan_tool_results(
+                        messages_for_model
+                    )
+                    messages_for_model = ContextGovernor.backfill_missing_tool_results(
+                        messages_for_model
+                    )
                 except Exception:
                     messages_for_model = messages
             context = AgentHookContext(iteration=iteration, messages=messages)
@@ -567,6 +599,8 @@ class AgentRunner:
                     response.tool_calls,
                     external_lookup_counts,
                     workspace_violation_counts,
+                    hook,
+                    context,
                 )
                 tool_events.extend(new_events)
                 context.tool_results = list(results)
@@ -1102,7 +1136,11 @@ class AgentRunner:
         tool_calls: list[ToolCallRequest],
         external_lookup_counts: dict[str, int],
         workspace_violation_counts: dict[str, int],
+        hook: AgentHook | None = None,
+        context: AgentHookContext | None = None,
     ) -> tuple[list[Any], list[dict[str, str]], BaseException | None]:
+        hook = hook or AgentHook()
+        context = context or AgentHookContext(iteration=0, messages=[])
         batches = self._partition_tool_batches(spec, tool_calls)
         tool_results: list[tuple[Any, dict[str, str], BaseException | None]] = []
         for batch in batches:
@@ -1126,6 +1164,8 @@ class AgentRunner:
                             tool_call,
                             external_lookup_counts,
                             workspace_violation_counts,
+                            hook,
+                            context,
                         )
                         for tool_call in batch
                     ),
@@ -1150,6 +1190,8 @@ class AgentRunner:
                         tool_call,
                         external_lookup_counts,
                         workspace_violation_counts,
+                        hook,
+                        context,
                     )
                     tool_results.append(result)
                     batch_results.append(result)
@@ -1170,7 +1212,11 @@ class AgentRunner:
         tool_call: ToolCallRequest,
         external_lookup_counts: dict[str, int],
         workspace_violation_counts: dict[str, int],
+        hook: AgentHook | None = None,
+        context: AgentHookContext | None = None,
     ) -> tuple[Any, dict[str, str], BaseException | None]:
+        hook = hook or AgentHook()
+        context = context or AgentHookContext(iteration=0, messages=[])
         hint = "\n\n[Analyze the error above and try a different approach.]"
         lookup_error = repeated_external_lookup_error(
             tool_call.name,
@@ -1251,6 +1297,7 @@ class AgentRunner:
                 ],
             )
         try:
+            await hook.before_execute_tool(context, tool_call, tool, params)
             if tool is not None:
                 result = await tool.execute(**params)
             else:
@@ -1267,6 +1314,7 @@ class AgentRunner:
             # (``BaseException``) propagate as designed.  The
             # explicit ``except asyncio.CancelledError: raise`` above
             # keeps cancellation as a first-class signal.
+            await hook.on_execute_tool_error(context, tool_call, tool, params, exc)
             if file_edit_trackers and progress_callback is not None:
                 await invoke_file_edit_progress(
                     progress_callback,
@@ -1295,7 +1343,8 @@ class AgentRunner:
                 return payload, event, exc
             return payload, event, None
 
-        if isinstance(result, str) and result.startswith("Error"):
+        if is_tool_error_result(tool_call.name, result):
+            await hook.on_execute_tool_error(context, tool_call, tool, params, result)
             if file_edit_trackers and progress_callback is not None:
                 await invoke_file_edit_progress(
                     progress_callback,
@@ -1321,6 +1370,8 @@ class AgentRunner:
             if spec.fail_on_tool_error:
                 return result + hint, event, RuntimeError(result)
             return result + hint, event, None
+
+        await hook.after_execute_tool(context, tool_call, tool, params, result)
 
         if file_edit_trackers and progress_callback is not None:
             await invoke_file_edit_progress(
@@ -1475,28 +1526,22 @@ class AgentRunner:
         tool_name: str,
         result: Any,
     ) -> Any:
-        result = ensure_nonempty_tool_result(tool_name, result)
-        if tool_name in _TOOL_RESULT_OFFLOAD_EXEMPT_TOOLS:
-            # Exempt tools bound their own output; skip generic offload and truncation.
-            return result
-        try:
-            content = maybe_persist_tool_result(
-                spec.workspace,
-                spec.session_key,
-                tool_call_id,
-                result,
-                max_chars=spec.max_tool_result_chars,
-            )
-        except Exception:
-            logger.exception(
-                "Tool result persist failed for {} in {}; using raw result",
-                tool_call_id,
-                spec.session_key or "default",
-            )
-            content = result
-        if isinstance(content, str) and len(content) > spec.max_tool_result_chars:
-            return truncate_text(content, spec.max_tool_result_chars)
-        return content
+        # V3 (port of nanobot ContextGovernor): delegate to the shared
+        # ``normalize_tool_result`` so per-call normalization and the
+        # ``apply_tool_result_budget`` budget pass see identical semantics.
+        # The on-disk format and exempt set are unchanged.
+        config = ContextGovernanceConfig(
+            provider=self.provider,
+            model=spec.model,
+            tools=spec.tools,
+            workspace=spec.workspace,
+            session_key=spec.session_key,
+            max_tool_result_chars=spec.max_tool_result_chars,
+            context_window_tokens=spec.context_window_tokens,
+            context_block_limit=spec.context_block_limit,
+            max_tokens=spec.max_tokens,
+        )
+        return ContextGovernor.normalize_tool_result(config, tool_call_id, tool_name, result)
 
     # W2 (of the v0.1.3 eighth-pass review, comparative audit with
     # nanobot): the upstream nanobot project owns a
