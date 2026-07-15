@@ -1275,9 +1275,18 @@ def agent(
 
         _init_prompt_session()
         _model, _preset_tag = _model_display(config)
-        console.print(
-            f"{__logo__} Interactive mode [bold blue]({_model})[/bold blue]{_preset_tag} — type [bold]exit[/bold] or [bold]Ctrl+C[/bold] to quit\n"
-        )
+        # Resolve the active parity profile (auto-fallback handled in the
+        # factory). The legacy "Interactive mode" banner uses the legacy
+        # ``__logo__`` ASCII wordmark and is suppressed when the parity
+        # layer is going to print its own ``HeaderBar`` + Welcome card
+        # on first turn — otherwise we end up with two competing
+        # first-screen headers and the welcome card never settles.
+        from femtobot.cli.renderer_factory import _resolve_profile as _resolve_parity_profile
+
+        if _resolve_parity_profile(config) == "off":
+            console.print(
+                f"{__logo__} Interactive mode [bold blue]({_model})[/bold blue]{_preset_tag} — type [bold]exit[/bold] or [bold]Ctrl+C[/bold] to quit\n"
+            )
 
         if ":" in session_id:
             cli_channel, cli_chat_id = session_id.split(":", 1)
@@ -1324,12 +1333,30 @@ def agent(
         if hasattr(signal, "SIGPIPE"):
             signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
+        # Build the renderer ONCE before the REPL loop so the parity
+        # layer's first-screen header / welcome card settle and don't
+        # re-print on every turn. The renderer is reused across turns;
+        # only its transport (Live / spinner) gets reset between turns
+        # (see ``renderer.stop_for_input()`` and ``renderer.on_end()``).
+        renderer = build_renderer(
+            config,
+            bot_name=config.agents.defaults.bot_name,
+            bot_icon=config.agents.defaults.bot_icon,
+            spacing_renderer=_make_spacing_renderer(config),
+            render_markdown=markdown,
+        )
+        global _ACTIVE_RENDERER
+        _ACTIVE_RENDERER = renderer
+
         async def run_interactive():
             bus_task = asyncio.create_task(agent_loop.run())
             turn_done = asyncio.Event()
             turn_done.set()
             turn_response: list[tuple[str, dict]] = []
-            renderer: StreamRenderer | None = None
+            # ``renderer`` is intentionally captured from the enclosing
+            # scope above (build_renderer ran once, before the loop, so
+            # the parity welcome/header render only once). No rebinding
+            # here; that is the whole point.
             reasoning_buffer = _ReasoningBuffer()
 
             async def _consume_outbound():
@@ -1364,7 +1391,19 @@ def agent(
                             if msg.content:
                                 turn_response.append((msg.content, dict(msg.metadata or {})))
                             turn_done.set()
-                        elif msg.content:
+                        elif msg.content and not msg.metadata.get("_streamed"):
+                            # Late-arriving message that wasn't a
+                            # stream chunk (or end), and didn't carry
+                            # the ``_streamed`` marker. The CLI channel
+                            # already renders streamed content via
+                            # ``on_delta`` + ``on_end`` (Rich Live
+                            # transient → final persistent render), so
+                            # suppressing here is what stops the same
+                            # response from appearing twice — the
+                            # ``_streamed`` flag is set by the agent
+                            # loop on the *trailing* message of a
+                            # streamed turn. WebSocket clients that
+                            # don't stream still hit this branch.
                             await _print_interactive_response(
                                 msg.content,
                                 render_markdown=markdown,
@@ -1413,15 +1452,15 @@ def agent(
                         turn_done.clear()
                         turn_response.clear()
                         reasoning_buffer.clear()
-                        renderer = build_renderer(
-                            config,
-                            bot_name=config.agents.defaults.bot_name,
-                            bot_icon=config.agents.defaults.bot_icon,
-                            spacing_renderer=_make_spacing_renderer(config),
-                            render_markdown=markdown,
-                        )
-                        global _ACTIVE_RENDERER
-                        _ACTIVE_RENDERER = renderer
+                        # ``renderer`` is reused from the enclosing scope
+                        # (built once before the loop). Resetting the
+                        # parity renderer's per-turn transport (Live /
+                        # spinner / streamed flag) is the responsibility
+                        # of ``stop_for_input`` (above) and ``on_end``
+                        # (called by the bus when the turn completes).
+                        # Keeping a single instance across turns is what
+                        # prevents the Welcome card and HeaderBar from
+                        # re-appearing on every prompt.
 
                         await bus.publish_inbound(
                             InboundMessage(
