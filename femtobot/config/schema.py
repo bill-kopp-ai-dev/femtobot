@@ -240,6 +240,59 @@ class CliWhimsyConfig(Base):
     verb_pool_size: int = 40
 
 
+class CliUiParityConfig(Base):
+    """Claude-Code v2.1.x aesthetic parity layer for the CLI REPL (v0.1.0-ui.0+).
+
+    Three profiles, opt-in per the roadmap in
+    ``plans/claude_code_cli_parity/PLAN_claude_code_cli_parity_20260715.md``:
+
+      ``off``    — current Femtobot behaviour (StreamRenderer legacy, no
+                   aesthetic changes). Default in v0.1.0-ui.0.
+      ``compat`` — Rich Live + prompt_toolkit with header bar, welcome card,
+                   spinner with elapsed time, tool cards, permission prompt,
+                   and status footer matching Claude Code v2.1.x aesthetics.
+                   Opt-in in v0.1.0-ui.0; default in v0.1.0-ui.1.
+      ``full``   — Textual full TUI. NOT available in v0.1.0-ui.0 (preview
+                   release); arrives in the RC ``v0.1.0-ui.1`` per
+                   revision F4 of the plan.
+
+    Auto-fallback to ``off`` (regardless of the configured value) when
+    stdout is not a TTY, ``TERM=dumb`` is set, or ``NO_COLOR`` is set.
+    See ``femtobot/cli/renderer_factory.py`` for the resolver.
+    """
+
+    profile: Literal["off", "compat", "full"] = "off"
+    """Active UI profile. See :class:`CliUiParityConfig` for the full matrix."""
+
+    notice: bool = True
+    """When ``True``, print the preview notice block ("Extended through
+    July 19 — try parity UI on/off with ``/ui``") on the first turn.
+    Auto-flips to ``False`` after the first preview release cycle."""
+
+
+class CliPermissionPromptConfig(Base):
+    """Interactive permission prompts before tool execution (v0.1.0-ui.0+).
+
+    When ``enabled`` is ``False`` (default), tool calls run without
+    prompting — this is the v0.0.x Femtobot behaviour. When ``True`` and
+    the tool's risk level is ``high`` (per ``security/tool_risk.py``),
+    a numbered prompt is shown before the tool executes. The collector
+    is per-session (Q10): no prompts are persisted to disk.
+
+    See plan D4 for the risk taxonomy. The ``high_risk_only`` knob lets
+    the user opt into broader prompting (medium + high) if desired.
+    """
+
+    enabled: bool = False
+    """Master switch. ``False`` = no prompts (legacy). ``True`` = ask before
+    any tool whose ``risk_level`` matches the prompt filter (see below)."""
+
+    high_risk_only: bool = True
+    """When ``True`` (default), only ``risk_level == "high"`` tools trigger
+    a prompt — read-only and in-workspace writes pass silently. Set to
+    ``False`` to prompt for both ``high`` and ``medium`` tools."""
+
+
 class CliSessionStatusConfig(Base):
     """Lightweight session indicators rendered at end-of-turn and in /status."""
 
@@ -327,6 +380,20 @@ class CliConfig(Base):
     btw: CliBtwConfig = Field(default_factory=CliBtwConfig)
     """Configuration for the ``/btw`` side-question handler. See
     :class:`CliBtwConfig`."""
+
+    # ------------------------------------------------------------------
+    # v0.1.0-ui.0+ — UI parity layer (Claude Code v2.1.x aesthetic)
+    # ------------------------------------------------------------------
+    ui_parity: CliUiParityConfig = Field(default_factory=CliUiParityConfig)
+    """UI parity profile (off | compat | full). See :class:`CliUiParityConfig`
+    and the plan in ``plans/claude_code_cli_parity/``. Default in
+    v0.1.0-ui.0 is ``"off"`` (no behaviour change)."""
+
+    permission_prompt: CliPermissionPromptConfig = Field(
+        default_factory=CliPermissionPromptConfig
+    )
+    """Interactive permission prompts before tool calls. See
+    :class:`CliPermissionPromptConfig`. Default off (legacy Femtobot)."""
 
     # ------------------------------------------------------------------
     # Camada 4 — turn-spacing aesthetics (Issue UX-1 / UX-2)
@@ -502,6 +569,24 @@ class LongTaskConfig(Base):
     )  # max time the server spends admitting a request before 202
 
 
+class UserConfig(Base):
+    """Identity of the human operating the agent (v0.1.0-ui.0+).
+
+    The display name is used by the parity header bar and welcome card
+    ("Welcome back <name>!"). It can be set explicitly in ``config.json``
+    via ``agents.user.name`` (Q2 of the parity plan), or left as the
+    placeholder ``"<your-name>"`` for the user to fill in. The CLI
+    resolves the effective name through a small lookup chain — see
+    ``femtobot/cli/parity_stream.py::resolve_user_name`` — and falls
+    back to ``os.getlogin()`` when no name is configured.
+    """
+
+    name: str = "<your-name>"
+    """Display name for header bar / welcome card. Placeholder
+    ``"<your-name>"`` indicates the user has not yet personalised it;
+    the CLI replaces this with a safe fallback at render time."""
+
+
 class AgentDefaults(Base):
     """Default agent configuration."""
 
@@ -559,6 +644,9 @@ class AgentDefaults(Base):
     )
     cli: CliConfig = Field(default_factory=CliConfig)  # Camada 1 CLI behavior
     long_task: LongTaskConfig = Field(default_factory=LongTaskConfig)
+    user: UserConfig = Field(
+        default_factory=UserConfig
+    )  # v0.1.0-ui.0+ — identity for header bar / welcome card (Q2)
 
 
 class AgentsConfig(Base):
