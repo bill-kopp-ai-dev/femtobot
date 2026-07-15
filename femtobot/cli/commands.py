@@ -49,6 +49,7 @@ from rich.text import Text  # noqa: E402
 
 from femtobot import __logo__, __version__  # noqa: E402
 from femtobot.agent.loop import AgentLoop  # noqa: E402
+from femtobot.cli.renderer_factory import build_renderer
 from femtobot.cli.stream import StreamRenderer, ThinkingSpinner  # noqa: E402
 from femtobot.config.paths import get_workspace_path  # noqa: E402
 from femtobot.config.schema import Config  # noqa: E402
@@ -135,10 +136,14 @@ def _heartbeat_has_active_tasks(content: str) -> bool:
 
 _PROMPT_SESSION: PromptSession | None = None
 _SAVED_TERM_ATTRS = None  # original termios settings, restored on exit
-# Camada 5 — track the most recently created StreamRenderer so we can
+# Camada 5 — track the most recently created renderer so we can
 # print the user-box + input-gap before the next prompt. Set by the
-# REPL when a new turn starts; cleared on exit.
-_ACTIVE_RENDERER: StreamRenderer | None = None
+# REPL when a new turn starts; cleared on exit. Type is ``Any`` because
+# the factory may return a :class:`StreamRenderer` (legacy ``off``
+# profile) or a :class:`ParityStreamRenderer` (``compat`` profile);
+# both expose the same surface used below (``print_input_gap`` /
+# ``print_user_box``).
+_ACTIVE_RENDERER: Any = None
 
 
 def _flush_pending_tty_input() -> None:
@@ -1146,6 +1151,9 @@ def agent(
     logs: bool = typer.Option(
         False, "--logs/--no-logs", help="Show Femtobot runtime logs during chat"
     ),
+    ui: str | None = typer.Option(
+        None, "--ui", help="UI parity profile: off|compat|full (per-session, see docs/cli-ui-parity.md)"
+    ),
 ):
     """Interact with Femtobot directly."""
     from loguru import logger
@@ -1154,6 +1162,23 @@ def agent(
 
     config = _load_runtime_config(config, workspace, folder_path, suffix)
     sync_workspace_templates(config.workspace_path)
+
+    # v0.1.0-ui.0+ — honour `--ui` (per-session, not persisted). The
+    # ``/ui`` slash command does the same mutation; we set it here
+    # BEFORE the renderer is built so the very first turn sees the
+    # right profile.
+    if ui is not None:
+        ui_norm = ui.strip().lower()
+        if ui_norm in ("off", "compat", "full"):
+            config.agents.defaults.cli.ui_parity.profile = ui_norm
+        else:
+            # Unknown value: warn and continue with the configured
+            # profile (do not crash the REPL on a typo).
+            typer.echo(
+                f"Unknown --ui value {ui!r}; using "
+                f"{config.agents.defaults.cli.ui_parity.profile!r} from config.",
+                err=True,
+            )
 
     bus = MessageBus()
 
@@ -1214,11 +1239,12 @@ def agent(
     if message:
         # Single message mode — direct call, no bus needed
         async def run_once():
-            renderer = StreamRenderer(
-                render_markdown=markdown,
+            renderer = build_renderer(
+                config,
                 bot_name=config.agents.defaults.bot_name,
                 bot_icon=config.agents.defaults.bot_icon,
                 spacing_renderer=_make_spacing_renderer(config),
+                render_markdown=markdown,
             )
             global _ACTIVE_RENDERER
             _ACTIVE_RENDERER = renderer
@@ -1387,11 +1413,12 @@ def agent(
                         turn_done.clear()
                         turn_response.clear()
                         reasoning_buffer.clear()
-                        renderer = StreamRenderer(
-                            render_markdown=markdown,
+                        renderer = build_renderer(
+                            config,
                             bot_name=config.agents.defaults.bot_name,
                             bot_icon=config.agents.defaults.bot_icon,
                             spacing_renderer=_make_spacing_renderer(config),
+                            render_markdown=markdown,
                         )
                         global _ACTIVE_RENDERER
                         _ACTIVE_RENDERER = renderer

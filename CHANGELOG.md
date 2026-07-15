@@ -9,6 +9,93 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0-ui.0] — 2026-07-15
+
+> Preview release — opt-in UI parity layer that aligns the Femtobot
+> `agent` REPL with the Claude Code v2.1.x aesthetic. **No behavioural
+> regression** by default: `ui_parity=off` keeps the v0.1.x behaviour
+> exactly. The `compat` profile is the new opt-in path; `full` (Textual
+> TUI) arrives in the RC `v0.1.0-ui.1`. Design plan:
+> [`plans/claude_code_cli_parity/PLAN_claude_code_cli_parity_20260715.md`](plans/claude_code_cli_parity/PLAN_claude_code_cli_parity_20260715.md).
+
+### Added
+* **`agents.cli.ui_parity` config block** — opt-in profile selector
+  (`off | compat | full`) with auto-fallback to `off` on pipes /
+  `NO_COLOR` / `TERM=dumb`. Default in this preview is `off` (no
+  behaviour change). See `docs/cli-ui-parity.md`.
+* **`agents.cli.permission_prompt` config block** — interactive
+  permission prompts before tool calls, opt-in. Only `risk_level=high`
+  tools (`exec`, `long_task`, `complete_goal`, `ask_orchestrator`)
+  trigger a prompt by default; `medium` tools can be opted in via
+  `high_risk_only=false`.
+* **`agents.user.name` config field** — display name used by the
+  parity header bar and welcome card. Seeded with the
+  `<your-name>` placeholder by `build_default_onboard_config()`
+  so users can grep for it and personalise via
+  `/style set user.name="Bill Kopp"`.
+* **`security/tool_risk.py`** — per-tool risk taxonomy (high / medium
+  / low). New module: the v0.1.x code did not classify tools by
+  risk, so this is **new work**, not a re-use of an existing
+  catalogue. Unknown tools default to `medium` (conservative
+  mid-point). Path-based escalation promotes in-workspace writes
+  to `high` when the target is outside `agents.defaults.workspace`.
+* **`femtobot/cli/parity_widgets.py`** — Rich renderables for the
+  parity layer: `HeaderBar` (using the `__logo__` ASCII wordmark
+  from `femtobot/__init__.py`), `WelcomeCard` with parsed
+  `CHANGELOG.md` "What's new" (Q6), `ToolCard` (collapsed by
+  default, first-line heuristic preview per Q7), `SpinnerWithElapsed`
+  (no extra thread — reuses the existing Rich `Live` auto-refresh,
+  per rev. F5), `StatusFooterParity`, and `InputPill`.
+* **`femtobot/cli/parity_stream.py`** — `ParityStreamRenderer`, a
+  drop-in wrapper around `StreamRenderer` that composes the
+  parity widgets on top of the legacy rendering pipeline. Same
+  `on_delta / on_end / on_tool_call / on_trace` interface; the
+  agent loop is unchanged.
+* **`femtobot/cli/renderer_factory.py`** — `build_renderer(config)`
+  returns the right renderer for the active profile. Pipes and
+  `NO_COLOR` force `off`; `full` is not yet available in this
+  preview and falls back with a one-line notice.
+* **`femtobot/cli/permission_prompt.py`** — per-session
+  `PermissionCollector`. Self-contained (does not depend on
+  `session/pending_asks.py` — that is an async cross-process
+  correlation mechanism, not a synchronous REPL prompt, per
+  rev. F2). Numbered prompt: `1` Yes / `2` Yes-always-for-session
+  / `3` No / `Esc` Cancel.
+* **`--ui` flag on `femtobot agent`** — per-session profile
+  selector: `femtobot agent --ui compat` (does not persist to
+  `config.json`; use `/style set ui_parity=compat` for that).
+* **Slash commands** — `/ui` (show / swap profile per-session,
+  Q10), `/welcome` (re-display the welcome card mid-session,
+  Q3), `/release-notes` (parsed top-of-CHANGELOG, Q6).
+* **`docs/cli-ui-parity.md`** — dedicated documentation page
+  covering the visual specification, the risk taxonomy, the
+  permission flow, and a troubleshooting matrix.
+* **CLI theme tokens** — `welcome_border`, `permission_accent`,
+  `tool_card_border` added to all four bundled themes
+  (`terracotta-claude`, `solarized-light`, `cyber-dark`,
+  `monochrome`).
+
+### Tests
+* 126 new tests across:
+  - `tests/cli/test_ui_parity_config.py` (11)
+  - `tests/security/test_tool_risk.py` (30)
+  - `tests/cli/test_theme.py` (+6 for parity tokens)
+  - `tests/cli/test_parity_widgets.py` (28)
+  - `tests/cli/test_renderer_factory.py` (14)
+  - `tests/cli/test_parity_stream.py` (9)
+  - `tests/cli/test_permission_prompt.py` (16)
+  - `tests/cli/test_ui_slash_commands.py` (9)
+  - `tests/test_helpers_user_name.py` (3)
+* **Total:** 1164 passing (up from 1038 in v0.1.8), no regressions.
+
+### Notes
+* The Textual TUI (`ui_parity=full`) is **not** in this preview.
+  It is scheduled for the RC `v0.1.0-ui.1`. The factory emits a
+  one-line notice and falls back to `off` if `full` is requested.
+* `permission_prompt` does not write to `config.json`. The
+  "Yes, and don't ask again" answer is per-session (Q10) — it
+  resets when the REPL exits.
+
 ## [0.1.8] — 2026-07-10
 
 > Lote P: Twelfth-pass Session-Manager parity push (Issues 1-6 closed,

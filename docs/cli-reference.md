@@ -158,6 +158,37 @@ femtobot gateway --port 9001 --suffix prod
 | `--folder-path`, `-f` | Instance folder. |
 | `--suffix`, `-s` | Instance suffix. |
 | `--verbose`, `-v` | Verbose output. |
+| `--ui` | UI parity profile: `off` (default), `compat`, `full` (RC only). See [UI parity](cli-ui-parity.md). |
+
+---
+
+## UI parity (v0.1.0-ui.0+)
+
+`femtobot agent` accepts a `--ui` flag that selects one of three
+rendering profiles:
+
+| Profile    | Renderer                          | Pipes? | Notes                                       |
+|------------|-----------------------------------|--------|---------------------------------------------|
+| `off`      | Legacy `StreamRenderer` (v0.0.x)  | ✅     | Default. No aesthetic changes.              |
+| `compat`   | Rich `Live` + parity widgets      | auto   | Header, welcome, tool cards, footer, prompt.|
+| `full`     | Textual full TUI                  | ❌     | Arrives in the RC release `v0.1.0-ui.1`.    |
+
+The flag is **per-session**. To persist the choice, use
+`/style set ui_parity=compat` (writes to `config.json`) or edit
+`config.json` directly.
+
+### Slash commands (v0.1.0-ui.0+)
+
+| Command          | Effect                                              |
+|------------------|-----------------------------------------------------|
+| `/ui`            | Show the active profile + available profiles        |
+| `/ui <profile>`  | Switch profile (per-session)                        |
+| `/welcome`       | Re-display the welcome card mid-session             |
+| `/release-notes` | Print the top of `CHANGELOG.md` (parsed)            |
+
+See the dedicated [UI parity page](cli-ui-parity.md) for the full
+visual specification, the permission prompt flow, the risk taxonomy,
+and the troubleshooting matrix.
 
 ---
 
