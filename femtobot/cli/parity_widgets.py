@@ -447,6 +447,33 @@ from prompt_toolkit.formatted_text import HTML
 _INPUT_BAR_MIN_WIDTH = 24
 _INPUT_BAR_RULE_CHAR = "─"
 
+# Hex colors that the prompt_toolkit default toolbar style ("reverse")
+# produces a saturated full-background fill for. We soften the rule to
+# keep the bar readable against the terminal background while staying
+# on-theme.
+_HEAVY_BORDER_HEX = {"#d77757", "#cf6a4c", "#ff6b80", "#ffaa00"}
+_HEAVY_BORDER_SOFTEN_MAP = {
+    "#d77757": "#8a5a4b",
+    "#cf6a4c": "#8a5a4b",
+    "#ff6b80": "#a05a64",
+    "#ffaa00": "#a07a3c",
+}
+
+
+def _softer_border_color(theme: "CliTheme | None") -> str:
+    """Pick the bar color, slightly desaturating if the theme is loud.
+
+    Welcome/welcome_border accent (used for the bar) is intentionally
+    quieter than the agent reply accent so the input area doesn't
+    compete with the chat content. ``#d77757`` is the project default;
+    we map it and a couple of loud neighbours to a muted rose.
+    """
+    th = theme or get_theme("terracotta-claude")
+    border = th.welcome_border or th.primary
+    if border.lower() in _HEAVY_BORDER_HEX:
+        return _HEAVY_BORDER_SOFTEN_MAP.get(border.lower(), border)
+    return border
+
 
 def _resolve_width(*, width: int | None, margin_x: int | None = 0) -> int:
     """Return the bar width, clamped to ``[_INPUT_BAR_MIN_WIDTH, width]``."""
@@ -472,7 +499,7 @@ def render_input_bar_top(
     regime (the factory gates the bar on TTY width ≥ 40 already).
     """
     th = theme or get_theme("terracotta-claude")
-    accent = th.welcome_border or th.primary
+    accent = _softer_border_color(th)
     bar_width = _resolve_width(width=width, margin_x=margin_x)
     rule = Text(_INPUT_BAR_RULE_CHAR * bar_width, style=f"bold {accent}")
     return rule
@@ -510,7 +537,7 @@ def render_input_bar_bottom_markup(
     :func:`render_input_toolbar_markup`.
     """
     th = theme or get_theme("terracotta-claude")
-    accent = th.welcome_border or th.primary
+    accent = _softer_border_color(th)
     _resolve_width(width=width, margin_x=margin_x)
     # HTML escaping: the placeholder /
     # prompt / cursor are user-controlled strings so we escape ``<>&``
@@ -553,14 +580,15 @@ def render_input_toolbar_markup(
     ``▌ manual mode on``
     """
     th = theme or get_theme("terracotta-claude")
-    accent = th.welcome_border or th.primary
+    accent = _softer_border_color(th)
+    footer_color = th.primary
     bar_width = _resolve_width(width=width, margin_x=margin_x)
     rule = _INPUT_BAR_RULE_CHAR * bar_width
     escaped_rule = rule
     escaped_mode = _html_escape(mode)
     body = (
         f"<rule><style fg='{accent}'>{escaped_rule}</style></rule>\n"
-        f"<footer><style fg='ansibrightblack'>▌ {escaped_mode} mode on</style></footer>"
+        f"<footer><style fg='{footer_color}'>▌ {escaped_mode} mode on</style></footer>"
     )
     return HTML(body)
 

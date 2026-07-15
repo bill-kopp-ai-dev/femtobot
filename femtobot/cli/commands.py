@@ -43,6 +43,7 @@ from prompt_toolkit.application import run_in_terminal  # noqa: E402
 from prompt_toolkit.formatted_text import ANSI, HTML  # noqa: E402
 from prompt_toolkit.history import FileHistory  # noqa: E402
 from prompt_toolkit.patch_stdout import patch_stdout  # noqa: E402
+from prompt_toolkit.styles import Style  # noqa: E402
 from rich.console import Console  # noqa: E402
 from rich.markdown import Markdown  # noqa: E402
 from rich.text import Text  # noqa: E402
@@ -617,11 +618,28 @@ async def _read_interactive_input_async(config=None) -> str:
         # The parity bottom-rule markup is already self-contained; only
         # inject the margin spacer for the plain legacy markup.
         prompt_markup = f"{margin_spaces}{prompt_markup}"
+    # prompt_toolkit defaults the bottom-toolbar to ``reverse``, which
+    # inverts the active accent color and paints the toolbar background
+    # solid orange (the screenshot effect that doesn't match Claude's
+    # flat separator line). Override the styles so the toolbar stays
+    # transparent and the content uses the same color as the prompt.
+    input_style = (
+        Style.from_dict(
+            {
+                "bottom-toolbar": "noreverse nobold",
+                "bottom-toolbar.text": "",
+                "": "",  # neutral default
+            }
+        )
+        if renderer is not None and toolbar_markup is not None
+        else None
+    )
     try:
         with patch_stdout():
             return await _PROMPT_SESSION.prompt_async(
                 prompt_markup,
                 bottom_toolbar=toolbar_markup,
+                style=input_style,
             )
     except EOFError as exc:
         raise KeyboardInterrupt from exc
