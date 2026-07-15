@@ -765,6 +765,13 @@ def build_default_onboard_config(instance_dir: Path, suffix: str | None = None) 
         config.agents.defaults.bot_name = f"Femtobot-{suffix.upper()}"
         config.agents.defaults.bot_icon = "🤖"
 
+    # T13 (ui-parity Q2): explicit placeholder for the human operator so
+    # the parity header bar / welcome card know where to interpolate the
+    # name. ``<your-name>`` is the same sentinel used by
+    # ``schema.UserConfig``; downstream code replaces it with a safe
+    # fallback (``os.getlogin()``) at render time.
+    config.agents.defaults.user.name = "<your-name>"
+
     return config
 
 
