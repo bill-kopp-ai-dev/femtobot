@@ -1464,6 +1464,18 @@ def agent(
                         if bash_handled:
                             continue
 
+                        # v0.1.0-ui.1 polish: print the idle footer
+                        # ``▌ manual mode on`` immediately after the
+                        # user submits, so the parity layout reads
+                        # ``[bar][prompt][mode on row]`` while the
+                        # agent is cooking. This matches the Claude
+                        # Code v2.1.x screenshot (image 4 ref).
+                        if renderer is not None:
+                            try:
+                                renderer.print_idle_footer()
+                            except Exception:
+                                pass
+
                         turn_done.clear()
                         turn_response.clear()
                         reasoning_buffer.clear()
@@ -1505,6 +1517,17 @@ def agent(
                                 )
                         elif renderer and not renderer.streamed:
                             await renderer.close()
+                        # Bug A fix (plan §3 D9): render the "Cooked for
+                        # Ns" footer AFTER the agent's reply, never
+                        # before. The parity layer keeps the elapsed
+                        # timer alive across the buffered response so the
+                        # footer still reflects the real duration of the
+                        # turn. Legacy profile is a no-op.
+                        if renderer is not None:
+                            try:
+                                renderer.print_cooked_footer()
+                            except Exception:
+                                pass
                     except KeyboardInterrupt:
                         _restore_terminal()
                         console.print("\nGoodbye!")

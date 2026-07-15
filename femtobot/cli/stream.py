@@ -285,6 +285,28 @@ class StreamRenderer:
 
         return HTML("<b fg='ansiblue'>You:</b> ")
 
+    def print_cooked_footer(self) -> None:
+        """Print the post-turn status footer.
+
+        Bug A fix: the parity layer moved this call out of ``on_end``;
+        the legacy profile keeps no-op parity to avoid behavioural drift
+        on the v0.1.0-ui.0 byte-identical contract (the legacy REPL
+        never printed a "Cooked for Ns" footer in the first place, so
+        ``None`` here is correct).
+        """
+        return None
+
+    def print_idle_footer(self) -> None:
+        """Print the idle-time ``▌ manual mode on`` footer.
+
+        v0.1.0-ui.1 polish: the parity profile shows Claude Code's
+        two-line idle footer (top rule, prompt row, bottom rule, mode
+        line). The legacy profile keeps no-op parity (its REPL has its
+        own legacy footer logic in legacy code paths and we don't want
+        to introduce churn on the ``off`` path).
+        """
+        return None
+
     async def on_delta(self, delta: str) -> None:
         self.streamed = True
         self._buf += delta

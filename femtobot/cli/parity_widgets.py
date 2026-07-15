@@ -485,6 +485,7 @@ def render_input_bar_bottom_markup(
     prompt: str = ">",
     placeholder: str = "",
     theme: CliTheme | None = None,
+    cursor: str = "▌",
 ) -> str:
     """Return the bottom rule + bold prompt glyph as ``HTML`` markup.
 
@@ -493,10 +494,19 @@ def render_input_bar_bottom_markup(
     consume ``Text``/``Rule`` directly; ANSI control characters would
     leak into the editable buffer otherwise.
 
-    Layout::
+    Layout (matches Claude Code v2.1.x)::
 
-        ─────────────  (rule, accent)
-        > {typed input}            (when buffer has content)
+        ──────────────────────────────────────────────────  (top rule)
+        ❯  Nova mensagem▌                                 (empty buffer)
+        ❯  typed input                                    (typing)
+        ──────────────────────────────────────────────────  (bottom rule, drawn
+                                                            by prompt_toolkit)
+
+    The ``cursor`` glyph sits inline next to the placeholder to mimic
+    Claude's pulsing cursor (the terminal renders it visibly). When
+    the user starts typing, prompt_toolkit swaps the placeholder for
+    their actual buffer content; we always emit the empty-state markup
+    here and let the toolkit do the rest.
 
     Returns just ``"> "`` glyph markup (no top rule) when ``width`` is
     too narrow for a meaningful bar; callers gate on width first.
@@ -505,23 +515,28 @@ def render_input_bar_bottom_markup(
     accent = th.welcome_border or th.primary
     bar_width = _resolve_width(width=width, margin_x=margin_x)
     rule = _INPUT_BAR_RULE_CHAR * bar_width
-    # prompt_toolkit HTML interprets ``#xxxxxx`` as an RGB color tag; the
-    # rule and glyph both take the bar accent. The placeholder is dim
-    # and shifts to a non-dim prompt when the buffer is non-empty (caller
-    # responsibility — we always emit the empty-state markup here).
+    # HTML escaping: the rule is plain ``─`` (safe). The placeholder /
+    # prompt / cursor are user-controlled strings so we escape ``<>&``
+    # to keep prompt_toolkit's HTML parser happy.
     escaped_rule = rule
-    escaped_placeholder = _html_escape(placeholder)
     escaped_prompt = _html_escape(prompt)
+    escaped_cursor = _html_escape(cursor)
+    escaped_placeholder = _html_escape(placeholder) if placeholder else ""
+    # Two-space gap between glyph and placeholder so they never sit
+    # glued together — fixes the visual "❯Nova mensagem" seen in the
+    # v0.1.0-ui.1 preview build (Bug D).
     if placeholder:
         body = (
             f"<rule>{escaped_rule}</rule>\n"
-            f"<prompt><b><style fg='{accent}'>{escaped_prompt}</style></b></prompt> "
+            f"<prompt><b><style fg='{accent}'>{escaped_prompt}</style></b></prompt>  "
             f"<placeholder><style fg='ansibrightblack'>{escaped_placeholder}</style></placeholder>"
+            f"<cursor><style fg='{accent}'>{escaped_cursor}</style></cursor>"
         )
     else:
         body = (
             f"<rule>{escaped_rule}</rule>\n"
-            f"<prompt><b><style fg='{accent}'>{escaped_prompt}</style></b></prompt> "
+            f"<prompt><b><style fg='{accent}'>{escaped_prompt}</style></b></prompt>  "
+            f"<cursor><style fg='{accent}'>{escaped_cursor}</style></cursor>"
         )
     return HTML(body)
 

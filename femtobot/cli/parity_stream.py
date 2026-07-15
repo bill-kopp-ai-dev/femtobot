@@ -204,7 +204,29 @@ class ParityStreamRenderer:
         # After the first completed turn, hide the welcome card.
         self._turn_count += 1
         self._welcome_shown = True
-        # Render a "Cooked for Ns" status footer.
+        # The "Cooked for Ns" status footer is intentionally NOT printed
+        # here — the parity layer emits it via ``print_cooked_footer()``
+        # *after* the agent's reply is rendered in full (see
+        # ``commands.py::_consume_outbound``), so the user sees:
+        #
+        #   [🤖 Femtobot] pong. online, ~3min desde o último exec…
+        #   ✻ Cooked for 2s · esc to interrupt
+        #
+        # instead of the footer appearing above the response.
+        # We still reset the per-turn transport state here.
+        self._spinner_renderable = None
+        self._spinner_start_ts = None
+        self._tokens = None
+
+    def print_cooked_footer(self) -> None:
+        """Render the post-turn status footer.
+
+        Plan §3 D9 (Bug A fix): the footer is printed AFTER the
+        agent's reply so the timeline reads top-to-bottom as
+        ``response → footer``. ``commands.py`` calls this immediately
+        after the response is on screen; the legacy ``StreamRenderer``
+        is a no-op here too.
+        """
         if self._spinner_start_ts is not None:
             elapsed = max(0.0, time.monotonic() - self._spinner_start_ts)
         else:
@@ -217,10 +239,22 @@ class ParityStreamRenderer:
                 theme=self._theme,
             )
         )
-        # Reset for the next turn.
-        self._spinner_renderable = None
-        self._spinner_start_ts = None
-        self._tokens = None
+
+    def print_idle_footer(self) -> None:
+        """Render the idle-time ``▌ manual mode on`` footer.
+
+        v0.1.0-ui.1 polish: the Claude-Code parity layout has
+        ``[top bar][prompt row][mode on row]`` while waiting for the
+        next user input. The mode row uses the same dim style as the
+        rest of the footer so it doesn't compete with the prompt.
+        """
+        self._console.print(
+            render_status_footer(
+                mode="manual",
+                state="idle",
+                theme=self._theme,
+            )
+        )
 
     def on_tool_call(self, name: str, args_preview: str = "") -> None:
         # Render a collapsed tool card before delegating to the base

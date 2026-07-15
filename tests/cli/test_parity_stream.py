@@ -153,15 +153,43 @@ def test_summarize_helper_picks_first_meaningful_line() -> None:
 
 
 def test_parity_renderer_cooked_footer_appears_on_end(config, captured_console) -> None:
-    r = _make_renderer(config, captured_console)
+    """The "Cooked for Ns" footer is *not* printed from ``on_end``
+    anymore (Bug A fix — it moved to ``print_cooked_footer`` so the
+    footer renders AFTER the agent's reply). We assert:
+
+    * ``on_end`` does not emit a footer by itself.
+    * ``print_cooked_footer`` does, with the right glyph ("Cooked").
+    """
     import asyncio
+
+    r = _make_renderer(config, captured_console)
+    captured_console.file.seek(0)
+    captured_console.file.truncate()
     loop = asyncio.new_event_loop()
     try:
         loop.run_until_complete(r.on_end())
     finally:
         loop.close()
+    text_after_on_end = captured_console.file.getvalue()
+    assert "Cooked" not in text_after_on_end
+
+    captured_console.file.seek(0)
+    captured_console.file.truncate()
+    r.print_cooked_footer()
+    text_after_print = captured_console.file.getvalue()
+    assert "Cooked" in text_after_print
+
+
+def test_parity_renderer_idle_footer_renders_manual_mode(config, captured_console) -> None:
+    """Polish: ``print_idle_footer`` renders ``▌ manual mode on`` so the
+    parity layout is ``[top bar][prompt row][mode row]`` between turns.
+    """
+    r = _make_renderer(config, captured_console)
+    captured_console.file.seek(0)
+    captured_console.file.truncate()
+    r.print_idle_footer()
     text = captured_console.file.getvalue()
-    assert "Cooked" in text
+    assert "manual mode on" in text
 
 
 def test_parity_renderer_passes_through_on_delta(config, captured_console) -> None:

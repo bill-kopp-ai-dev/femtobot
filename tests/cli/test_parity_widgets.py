@@ -392,12 +392,15 @@ def test_render_input_bar_top_clamps_to_min_width() -> None:
 
 def test_render_input_bar_bottom_markup_contains_rule_and_glyph() -> None:
     markup = str(pw.render_input_bar_bottom_markup(width=120, margin_x=2, prompt="❯", placeholder="hello"))
-    # Bottom rule + line break + bold glyph + placeholder.
+    # Bottom rule + line break + bold glyph + placeholder + cursor.
     assert "❯" in markup
     assert "hello" in markup
     assert pw._INPUT_BAR_RULE_CHAR * 80 in markup
     # prompt_toolkit color tags wrap the rule and glyph.
     assert "<style" in markup and "</style>" in markup
+    # Bug D fix (v0.1.0-ui.1): cursor block follows the placeholder so
+    # the user always sees where the typing focus is.
+    assert "▌" in markup
 
 
 def test_render_input_bar_bottom_markup_omits_placeholder_when_empty() -> None:
@@ -406,6 +409,22 @@ def test_render_input_bar_bottom_markup_omits_placeholder_when_empty() -> None:
     # No placeholder tag when the placeholder is empty.
     assert "<placeholder" not in markup
     assert "hello" not in markup
+    # Cursor still rendered even without a placeholder.
+    assert "▌" in markup
+
+
+def test_render_input_bar_bottom_markup_two_space_gap_between_glyph_and_placeholder() -> None:
+    """Bug D fix: the markup must include ``❯  `` with a literal gap.
+
+    Without the second space the terminal renders the placeholder glued
+    to the glyph (e.g. ``❯Nova mensagem``), which is what the user
+    reported on the v0.1.0-ui.1 preview screenshot.
+    """
+    markup = str(pw.render_input_bar_bottom_markup(width=120, margin_x=2, prompt="❯", placeholder="hello"))
+    # The HTML formatter must emit a literal two-space gap between the
+    # closing ``</prompt>`` tag and the opening ``<placeholder>`` tag.
+    # Single space was the buggy behaviour that glued them together.
+    assert "</prompt>  <placeholder" in markup
 
 
 def test_render_input_bar_bottom_markup_escapes_html_special_chars() -> None:
