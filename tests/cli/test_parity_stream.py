@@ -255,6 +255,21 @@ def test_parity_renderer_input_prompt_markup_returns_html(config, captured_conso
     # Bottom rule and the prompt glyph both make it through.
     assert "❯" in s
     assert "─" * 60 in s
+    assert "nova mensagem" in s
+    assert "Nova mensagem" not in s
+
+
+def test_parity_renderer_suppresses_legacy_user_box(config, captured_console) -> None:
+    """Claude-style compat UI must not print the legacy ``[👤 You]`` box.
+
+    The input affordance itself is enough; the extra user box makes the
+    layout heavier than Claude Code and duplicates the role cue.
+    """
+    r = _make_renderer(config, captured_console)
+    captured_console.file.seek(0)
+    captured_console.file.truncate()
+    assert r.print_user_box() is None
+    assert captured_console.file.getvalue() == ""
 
 
 def test_legacy_stream_renderer_print_input_bar_is_noop(config, captured_console) -> None:

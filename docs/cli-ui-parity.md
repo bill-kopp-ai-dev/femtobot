@@ -62,13 +62,16 @@ redraws the bottom row on every key event.
 
 ```
  ────────────────────────────────────────────────────────────  (top rule)
- ❯ Nova mensagem                                                  (placeholder)
+ ❯ nova mensagem                                                  (placeholder)
  ────────────────────────────────────────────────────────────  (bottom rule)
 ```
 
 When the user starts typing, the placeholder disappears and the
-input buffer fills that cell. The bar survives paste, history
-navigation, and `Ctrl+O` (verbose toggle) without ghost artefacts.
+input buffer fills that cell. Under `compat`, there is no extra
+`[👤 You]` turn box above the prompt — the bottom input area is the
+only user affordance, mirroring Claude Code's lighter layout. The
+bar survives paste, history navigation, and `Ctrl+O` (verbose toggle)
+without ghost artefacts.
 
 ## How to enable it
 

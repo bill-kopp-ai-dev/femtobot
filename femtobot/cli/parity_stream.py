@@ -334,7 +334,14 @@ class ParityStreamRenderer:
         self._base.print_input_gap()
 
     def print_user_box(self) -> None:
-        self._base.print_user_box()
+        """Suppress the legacy user-turn box under ``compat``.
+
+        Claude Code's REPL does not render a `[👤 You]` header between
+        turns; the input area itself is the only user affordance at the
+        bottom of the screen. Reusing the base spacing renderer here
+        makes the UI feel heavier and duplicates the role cue.
+        """
+        return None
 
     def print_input_bar(self) -> None:
         """Print the Claude-Code-style top accent rule above the prompt.
@@ -362,7 +369,7 @@ class ParityStreamRenderer:
             width=self._console.width,
             margin_x=getattr(self._spacing, "margin_x", 0),
             prompt="❯",
-            placeholder="Nova mensagem",
+            placeholder="nova mensagem",
             theme=self._theme,
         )
 
