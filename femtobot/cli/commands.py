@@ -1147,6 +1147,9 @@ def agent(
     logs: bool = typer.Option(
         False, "--logs/--no-logs", help="Show Femtobot runtime logs during chat"
     ),
+    ui: str | None = typer.Option(
+        None, "--ui", help="UI parity profile: off|compat|full (per-session, see docs/cli-ui-parity.md)"
+    ),
 ):
     """Interact with Femtobot directly."""
     from loguru import logger
@@ -1155,6 +1158,23 @@ def agent(
 
     config = _load_runtime_config(config, workspace, folder_path, suffix)
     sync_workspace_templates(config.workspace_path)
+
+    # v0.1.0-ui.0+ — honour `--ui` (per-session, not persisted). The
+    # ``/ui`` slash command does the same mutation; we set it here
+    # BEFORE the renderer is built so the very first turn sees the
+    # right profile.
+    if ui is not None:
+        ui_norm = ui.strip().lower()
+        if ui_norm in ("off", "compat", "full"):
+            config.agents.defaults.cli.ui_parity.profile = ui_norm
+        else:
+            # Unknown value: warn and continue with the configured
+            # profile (do not crash the REPL on a typo).
+            typer.echo(
+                f"Unknown --ui value {ui!r}; using "
+                f"{config.agents.defaults.cli.ui_parity.profile!r} from config.",
+                err=True,
+            )
 
     bus = MessageBus()
 
