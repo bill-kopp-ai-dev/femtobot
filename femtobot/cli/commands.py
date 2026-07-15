@@ -596,12 +596,22 @@ async def _read_interactive_input_async(config=None) -> str:
     if spacing_obj is not None:
         margin_spaces = " " * spacing_obj.margin_x
     # The legacy profile keeps the original "You:" markup byte-identical;
-    # the parity profile returns the bottom rule + bold ``❯`` glyph in
-    # the same logical row so prompt_toolkit can redraw it on every key.
+    # the parity profile returns the Claude-style prompt row and toolbar:
+    #
+    #   ────────────────  (printed via ``print_input_bar()``)
+    #   ❯  nova mensagem▌
+    #   ────────────────  (via ``bottom_toolbar``)
+    #   ▌ manual mode on
+    #
+    # This matches the reference screenshot more closely than printing a
+    # free-floating footer after the prompt.
     prompt_markup = (
         renderer.input_prompt_markup
         if renderer is not None
         else HTML("<b fg='ansiblue'>You:</b> ")
+    )
+    toolbar_markup = (
+        renderer.input_toolbar_markup if renderer is not None else None
     )
     if isinstance(prompt_markup, str) and margin_spaces:
         # The parity bottom-rule markup is already self-contained; only
@@ -609,7 +619,10 @@ async def _read_interactive_input_async(config=None) -> str:
         prompt_markup = f"{margin_spaces}{prompt_markup}"
     try:
         with patch_stdout():
-            return await _PROMPT_SESSION.prompt_async(prompt_markup)
+            return await _PROMPT_SESSION.prompt_async(
+                prompt_markup,
+                bottom_toolbar=toolbar_markup,
+            )
     except EOFError as exc:
         raise KeyboardInterrupt from exc
 
@@ -1463,18 +1476,6 @@ def agent(
                         )
                         if bash_handled:
                             continue
-
-                        # v0.1.0-ui.1 polish: print the idle footer
-                        # ``▌ manual mode on`` immediately after the
-                        # user submits, so the parity layout reads
-                        # ``[bar][prompt][mode on row]`` while the
-                        # agent is cooking. This matches the Claude
-                        # Code v2.1.x screenshot (image 4 ref).
-                        if renderer is not None:
-                            try:
-                                renderer.print_idle_footer()
-                            except Exception:
-                                pass
 
                         turn_done.clear()
                         turn_response.clear()

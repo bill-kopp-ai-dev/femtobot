@@ -242,9 +242,8 @@ def test_parity_renderer_print_input_bar_emits_top_rule(config, captured_console
 
 
 def test_parity_renderer_input_prompt_markup_returns_html(config, captured_console) -> None:
-    """``input_prompt_markup`` returns prompt_toolkit ``HTML`` with both
-    the bottom rule and the bold glyph markup so the toolkit can
-    redraw on every key event.
+    """``input_prompt_markup`` returns the prompt row as prompt_toolkit
+    ``HTML`` so the toolkit can redraw it on every key event.
     """
     from prompt_toolkit.formatted_text import HTML
 
@@ -252,9 +251,8 @@ def test_parity_renderer_input_prompt_markup_returns_html(config, captured_conso
     markup = r.input_prompt_markup
     assert isinstance(markup, HTML)
     s = str(markup)
-    # Bottom rule and the prompt glyph both make it through.
+    # Prompt glyph + placeholder make it through.
     assert "❯" in s
-    assert "─" * 60 in s
     assert "nova mensagem" in s
     assert "Nova mensagem" not in s
 
@@ -270,6 +268,20 @@ def test_parity_renderer_suppresses_legacy_user_box(config, captured_console) ->
     captured_console.file.truncate()
     assert r.print_user_box() is None
     assert captured_console.file.getvalue() == ""
+
+
+def test_parity_renderer_input_toolbar_markup_returns_html(config, captured_console) -> None:
+    """The compat prompt uses a prompt_toolkit bottom toolbar to close the
+    input box and render the subtle footer below it.
+    """
+    from prompt_toolkit.formatted_text import HTML
+
+    r = _make_renderer(config, captured_console)
+    markup = r.input_toolbar_markup
+    assert isinstance(markup, HTML)
+    s = str(markup)
+    assert "─" * 60 in s
+    assert "manual mode on" in s
 
 
 def test_legacy_stream_renderer_print_input_bar_is_noop(config, captured_console) -> None:

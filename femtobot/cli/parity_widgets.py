@@ -487,7 +487,7 @@ def render_input_bar_bottom_markup(
     theme: CliTheme | None = None,
     cursor: str = "▌",
 ) -> str:
-    """Return the bottom rule + bold prompt glyph as ``HTML`` markup.
+    """Return the prompt row markup for the Claude-style input box.
 
     prompt_toolkit re-renders this string on every key event. We use
     ``HTML`` (not a Rich renderable) because prompt_toolkit cannot
@@ -496,11 +496,8 @@ def render_input_bar_bottom_markup(
 
     Layout (matches Claude Code v2.1.x)::
 
-        ──────────────────────────────────────────────────  (top rule)
         ❯  Nova mensagem▌                                 (empty buffer)
         ❯  typed input                                    (typing)
-        ──────────────────────────────────────────────────  (bottom rule, drawn
-                                                            by prompt_toolkit)
 
     The ``cursor`` glyph sits inline next to the placeholder to mimic
     Claude's pulsing cursor (the terminal renders it visibly). When
@@ -508,17 +505,16 @@ def render_input_bar_bottom_markup(
     their actual buffer content; we always emit the empty-state markup
     here and let the toolkit do the rest.
 
-    Returns just ``"> "`` glyph markup (no top rule) when ``width`` is
-    too narrow for a meaningful bar; callers gate on width first.
+    The top border of the box is rendered separately by
+    :func:`render_input_bar_top`; the bottom border + footer live in
+    :func:`render_input_toolbar_markup`.
     """
     th = theme or get_theme("terracotta-claude")
     accent = th.welcome_border or th.primary
-    bar_width = _resolve_width(width=width, margin_x=margin_x)
-    rule = _INPUT_BAR_RULE_CHAR * bar_width
-    # HTML escaping: the rule is plain ``─`` (safe). The placeholder /
+    _resolve_width(width=width, margin_x=margin_x)
+    # HTML escaping: the placeholder /
     # prompt / cursor are user-controlled strings so we escape ``<>&``
     # to keep prompt_toolkit's HTML parser happy.
-    escaped_rule = rule
     escaped_prompt = _html_escape(prompt)
     escaped_cursor = _html_escape(cursor)
     escaped_placeholder = _html_escape(placeholder) if placeholder else ""
@@ -527,17 +523,45 @@ def render_input_bar_bottom_markup(
     # v0.1.0-ui.1 preview build (Bug D).
     if placeholder:
         body = (
-            f"<rule>{escaped_rule}</rule>\n"
             f"<prompt><b><style fg='{accent}'>{escaped_prompt}</style></b></prompt>  "
             f"<placeholder><style fg='ansibrightblack'>{escaped_placeholder}</style></placeholder>"
             f"<cursor><style fg='{accent}'>{escaped_cursor}</style></cursor>"
         )
     else:
         body = (
-            f"<rule>{escaped_rule}</rule>\n"
             f"<prompt><b><style fg='{accent}'>{escaped_prompt}</style></b></prompt>  "
             f"<cursor><style fg='{accent}'>{escaped_cursor}</style></cursor>"
         )
+    return HTML(body)
+
+
+def render_input_toolbar_markup(
+    *,
+    width: int | None = None,
+    margin_x: int | None = 0,
+    mode: str = "manual",
+    theme: CliTheme | None = None,
+) -> str:
+    """Return the bottom border + footer text under the input box.
+
+    This is rendered via ``PromptSession.prompt_async(bottom_toolbar=...)``.
+    The first line closes the input box, the second line is the subtle
+    separator text between the prompt area and the bottom of the
+    terminal, matching Claude Code's layout:
+
+    ``────────────────────``
+    ``▌ manual mode on``
+    """
+    th = theme or get_theme("terracotta-claude")
+    accent = th.welcome_border or th.primary
+    bar_width = _resolve_width(width=width, margin_x=margin_x)
+    rule = _INPUT_BAR_RULE_CHAR * bar_width
+    escaped_rule = rule
+    escaped_mode = _html_escape(mode)
+    body = (
+        f"<rule><style fg='{accent}'>{escaped_rule}</style></rule>\n"
+        f"<footer><style fg='ansibrightblack'>▌ {escaped_mode} mode on</style></footer>"
+    )
     return HTML(body)
 
 

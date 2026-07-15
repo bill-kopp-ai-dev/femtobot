@@ -390,12 +390,11 @@ def test_render_input_bar_top_clamps_to_min_width() -> None:
     assert len(bar.plain) == pw._resolve_width(width=4, margin_x=0)
 
 
-def test_render_input_bar_bottom_markup_contains_rule_and_glyph() -> None:
+def test_render_input_bar_bottom_markup_contains_glyph_placeholder_and_cursor() -> None:
     markup = str(pw.render_input_bar_bottom_markup(width=120, margin_x=2, prompt="❯", placeholder="hello"))
-    # Bottom rule + line break + bold glyph + placeholder + cursor.
+    # Prompt row: glyph + placeholder + cursor.
     assert "❯" in markup
     assert "hello" in markup
-    assert pw._INPUT_BAR_RULE_CHAR * 80 in markup
     # prompt_toolkit color tags wrap the rule and glyph.
     assert "<style" in markup and "</style>" in markup
     # Bug D fix (v0.1.0-ui.1): cursor block follows the placeholder so
@@ -433,3 +432,10 @@ def test_render_input_bar_bottom_markup_escapes_html_special_chars() -> None:
     assert "&amp;" in markup
     assert "&lt;" in markup
     assert "&gt;" in markup
+
+
+def test_render_input_toolbar_markup_contains_bottom_rule_and_footer() -> None:
+    markup = str(pw.render_input_toolbar_markup(width=120, margin_x=2, mode="manual"))
+    assert pw._INPUT_BAR_RULE_CHAR * 80 in markup
+    assert "manual mode on" in markup
+    assert "▌" in markup

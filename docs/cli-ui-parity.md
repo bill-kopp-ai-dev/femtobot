@@ -62,16 +62,19 @@ redraws the bottom row on every key event.
 
 ```
  ────────────────────────────────────────────────────────────  (top rule)
- ❯ nova mensagem                                                  (placeholder)
+ ❯  nova mensagem▌                                               (prompt row)
  ────────────────────────────────────────────────────────────  (bottom rule)
+ ▌ manual mode on                                                (footer)
 ```
 
 When the user starts typing, the placeholder disappears and the
 input buffer fills that cell. Under `compat`, there is no extra
 `[👤 You]` turn box above the prompt — the bottom input area is the
 only user affordance, mirroring Claude Code's lighter layout. The
-bar survives paste, history navigation, and `Ctrl+O` (verbose toggle)
-without ghost artefacts.
+prompt row itself sits inside a box; the closing rule and `manual mode
+on` footer live below it and visually separate the input from the base
+of the terminal. The bar survives paste, history navigation, and
+`Ctrl+O` (verbose toggle) without ghost artefacts.
 
 ## How to enable it
 

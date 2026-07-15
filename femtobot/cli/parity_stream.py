@@ -35,6 +35,7 @@ from femtobot.cli.parity_widgets import (
     parse_changelog,
     render_input_bar_bottom_markup,
     render_input_bar_top,
+    render_input_toolbar_markup,
     render_status_footer,
     render_tool_card,
     render_welcome_card,
@@ -360,16 +361,27 @@ class ParityStreamRenderer:
 
     @property
     def input_prompt_markup(self) -> Any:
-        """Return the bottom rule + prompt glyph as prompt_toolkit ``HTML``.
+        """Return the prompt row as prompt_toolkit ``HTML``.
 
-        ``prompt_toolkit`` re-renders this string on every key event, so
-        the bottom bar is drawn as plain markup (no Rich objects).
+        ``prompt_toolkit`` re-renders this string on every key event.
+        The top border is printed separately above the prompt and the
+        bottom border/footer live in :attr:`input_toolbar_markup`.
         """
         return render_input_bar_bottom_markup(
             width=self._console.width,
             margin_x=getattr(self._spacing, "margin_x", 0),
             prompt="❯",
             placeholder="nova mensagem",
+            theme=self._theme,
+        )
+
+    @property
+    def input_toolbar_markup(self) -> Any:
+        """Return the box-closing border + footer below the prompt."""
+        return render_input_toolbar_markup(
+            width=self._console.width,
+            margin_x=getattr(self._spacing, "margin_x", 0),
+            mode="manual",
             theme=self._theme,
         )
 

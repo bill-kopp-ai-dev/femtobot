@@ -285,6 +285,16 @@ class StreamRenderer:
 
         return HTML("<b fg='ansiblue'>You:</b> ")
 
+    @property
+    def input_toolbar_markup(self) -> Any:
+        """Return the prompt toolbar markup for ``prompt_async``.
+
+        Legacy profile keeps no extra toolbar under the prompt. The
+        Claude-style compat profile overrides this with the box-closing
+        rule + subtle ``manual mode on`` footer.
+        """
+        return None
+
     def print_cooked_footer(self) -> None:
         """Print the post-turn status footer.
 

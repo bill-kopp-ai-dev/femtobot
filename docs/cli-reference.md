@@ -176,9 +176,11 @@ rendering profiles:
 Under `compat`, the prompt row is framed by an **input pill bar**: a
 thin accent rule above and below the prompt, a bold `❯` glyph in the
 active theme accent, and a dim placeholder ("nova mensagem") shown
-only while the buffer is empty. The legacy `[👤 You]` turn box is
-suppressed in this profile to keep the bottom input area visually
-closer to Claude Code. See [UI parity → input pill bar](cli-ui-parity.md#input-pill-bar-visual-reference).
+only while the buffer is empty. A subtle footer (`▌ manual mode on`)
+is rendered below the box, separating the input area from the base of
+the terminal. The legacy `[👤 You]` turn box is suppressed in this
+profile to keep the bottom input area visually closer to Claude Code.
+See [UI parity → input pill bar](cli-ui-parity.md#input-pill-bar-visual-reference).
 
 The flag is **per-session**. To persist the choice, use
 `/style set ui_parity=compat` (writes to `config.json`) or edit
