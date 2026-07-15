@@ -171,22 +171,24 @@ class ParityStreamRenderer:
             return ""
 
     # ------------------------------------------------------------------
-    # Spinner integration (D5, rev. F5 — no extra thread)
+    # Spinner integration (D5, rev. F5 — no extra thread) — NOT WIRED YET
     # ------------------------------------------------------------------
-    # The parity layer tracks the elapsed time and token count in
-    # ``_spinner_start_ts`` / ``_tokens`` so the status footer printed
-    # at the end of the turn can show "Cooked for Ns" and "↓ N tokens"
-    # (see :meth:`on_end`). The animated spinner itself is owned by
-    # the wrapped :class:`StreamRenderer` and uses its own internal
-    # :class:`ThinkingSpinner`; the :class:`SpinnerWithElapsed`
-    # renderable is therefore kept for **future** use once the base
-    # renderer exposes a message-factory hook (planned for v0.1.x,
-    # not part of the v0.1.0-ui.0 preview).
+    # KNOWN GAP (found in code review, not yet fixed): the plan's D5/F5
+    # fix was for the *live* spinner shown during streaming to tick an
+    # elapsed-time counter off the auto-refresh that ``cli/stream.py``'s
+    # ``ThinkingSpinner``/``Console.status()`` already runs. That never
+    # happened — ``cli/stream.py`` was not touched by this refactor, so
+    # the base renderer's spinner still shows the plain "<bot> is
+    # <verb>..." text with no elapsed time. ``SpinnerWithElapsed`` in
+    # ``parity_widgets.py`` is a fully-built, tested renderable, but
+    # nothing constructs it against the live ``Status``/``Live`` object,
+    # so it never actually renders during a real session.
     #
-    # In the preview, :meth:`_ensure_spinner` and
-    # :meth:`_update_spinner_tokens` are intentionally no-ops so the
-    # base spinner keeps working untouched (no surprise behaviour
-    # changes on the legacy ``off`` profile).
+    # ``_spinner_start_ts`` / ``_tokens`` here are only used to compute
+    # the "Cooked for Ns" summary in :meth:`on_end` — they do not drive
+    # a live-updating spinner. Wiring ``SpinnerWithElapsed`` into
+    # ``ThinkingSpinner`` (or replacing it) is required before the
+    # elapsed-time spinner gap (plan G7) is actually closed.
 
     # ------------------------------------------------------------------
     # StreamRenderer-compatible surface

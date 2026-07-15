@@ -201,7 +201,36 @@ def classify_tool(
         return RiskAssessment(level=RiskLevel.HIGH, reason=reasons.get(name, "High-risk tool."))
 
     if name in _MEDIUM_RISK:
-        if name in {"write_file", "edit_file", "apply_patch"}:
+        if name == "apply_patch":
+            # ``apply_patch`` has no top-level ``path`` — its real shape is
+            # ``{"edits": [{"path": ..., "action": ...}, ...]}`` (see
+            # ``agent/tools/apply_patch.py:86-103``). Check every edit's
+            # path; if ANY of them resolves outside the workspace, the
+            # whole call is elevated to HIGH.
+            edits = params.get("edits")
+            paths = [
+                str(e.get("path"))
+                for e in edits
+                if isinstance(e, dict) and e.get("path")
+            ] if isinstance(edits, list) else []
+            out_of_scope = [
+                p for p in paths if _workspace_in_scope(workspace_root, p) is False
+            ]
+            if out_of_scope:
+                return RiskAssessment(
+                    level=RiskLevel.HIGH,
+                    reason=(
+                        f"apply_patch targets a path outside the active workspace "
+                        f"({out_of_scope[0]!r})."
+                    ),
+                    in_scope=False,
+                )
+            return RiskAssessment(
+                level=RiskLevel.MEDIUM,
+                reason="apply_patch modifies a file inside the workspace.",
+                in_scope=True if paths else None,
+            )
+        if name in {"write_file", "edit_file"}:
             target_path = str(params.get("path") or params.get("file_path") or params.get("target") or "")
             in_scope = _workspace_in_scope(workspace_root, target_path) if target_path else None
             if in_scope is False:

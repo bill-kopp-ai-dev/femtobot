@@ -1805,7 +1805,21 @@ async def cmd_welcome(ctx: CommandContext) -> OutboundMessage:
     # Defer to the parity renderer's ``show_welcome_card`` if a parity
     # renderer is active; otherwise emit a static text body so the
     # command works on the legacy profile too.
-    renderer = globals().get("_ACTIVE_RENDERER") or globals().get("_ui_active_renderer")
+    #
+    # ``_ACTIVE_RENDERER`` lives in ``femtobot.cli.commands``'s module
+    # namespace, not this module's — ``globals()`` here can never see it.
+    # Import lazily (module-level would risk a circular import with
+    # ``cli.commands``, which registers these commands) and fall back to
+    # the ``_ui_active_renderer`` test hook for callers/tests that inject
+    # a renderer directly onto this module.
+    renderer = globals().get("_ui_active_renderer")
+    if renderer is None:
+        try:
+            from femtobot.cli import commands as _cli_commands
+
+            renderer = getattr(_cli_commands, "_ACTIVE_RENDERER", None)
+        except ImportError:
+            renderer = None
     if renderer is not None and hasattr(renderer, "show_welcome_card"):
         renderer.show_welcome_card(force=True)
         content = "Welcome card re-rendered."

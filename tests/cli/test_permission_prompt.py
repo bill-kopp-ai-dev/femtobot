@@ -136,6 +136,19 @@ def test_show_yes_always_persists_in_session() -> None:
     assert c.needs_prompt("exec", {"command": "ls"}) is False
 
 
+def test_show_yes_always_persists_for_medium_risk_tool() -> None:
+    """Regression test: the allow-list bypass used to be gated on
+    ``assessment.level == HIGH``, so "Yes, always" silently never took
+    effect for a tool that stayed MEDIUM (e.g. ``web_fetch`` when
+    ``high_risk_only=False`` surfaces MEDIUM tools too)."""
+    cfg = _make_config(enabled=True, high_risk_only=False)
+    c = _make_collector(cfg, ["2"])
+    assert c.needs_prompt("web_fetch", {"url": "https://example.com"}) is True
+    decision = _run(c.show("web_fetch", {"url": "https://example.com"}))
+    assert decision.choice is PermissionChoice.YES_ALWAYS
+    assert c.needs_prompt("web_fetch", {"url": "https://example.com"}) is False
+
+
 def test_show_no_blocks_tool() -> None:
     cfg = _make_config(enabled=True, high_risk_only=True)
     c = _make_collector(cfg, ["3"])

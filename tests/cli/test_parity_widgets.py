@@ -254,6 +254,21 @@ def test_status_footer_renders_for_each_state(state: str) -> None:
         assert "Cooked" in text
 
 
+def test_status_footer_propagating_without_elapsed_has_no_dangling_paren() -> None:
+    """Regression test: ``elapsed_s=None`` used to still append a
+    trailing ``)`` for the "propagating" state even though no opening
+    ``(`` was ever written, leaving a stray ``)`` in the output."""
+    out_buf = StringIO()
+    console = Console(file=out_buf, force_terminal=False, width=120, color_system=None)
+    console.print(
+        pw.render_status_footer(state="propagating", mode="manual", elapsed_s=None, tokens=None)
+    )
+    text = out_buf.getvalue()
+    assert "Propagating" in text
+    assert ")" not in text
+    assert "(" not in text
+
+
 # ---------------------------------------------------------------------------
 # Spinner
 # ---------------------------------------------------------------------------

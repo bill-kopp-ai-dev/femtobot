@@ -134,11 +134,15 @@ class PermissionCollector:
 
         Honours the user's ``enabled`` / ``high_risk_only`` knobs and
         the per-session "always allow" list — a tool that was accepted
-        with ``YES_ALWAYS`` no longer prompts.
+        with ``YES_ALWAYS`` no longer prompts, regardless of the risk
+        level it was accepted at (previously this bypass only applied
+        to HIGH-risk assessments, so "always allow" silently never took
+        effect for a tool that stayed MEDIUM, e.g. ``web_fetch`` under
+        ``high_risk_only=False``).
         """
-        assessment = self.assess(tool_name, params)
-        if self._allow.is_allowed(tool_name) and assessment.level.value == "high":
+        if self._allow.is_allowed(tool_name):
             return False
+        assessment = self.assess(tool_name, params)
         return should_prompt(
             assessment,
             enabled=self._enabled,

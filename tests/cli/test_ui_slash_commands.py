@@ -115,6 +115,33 @@ def test_welcome_uses_active_renderer_when_available() -> None:
         del builtin_mod._ui_active_renderer
 
 
+def test_welcome_uses_the_real_active_renderer_from_cli_commands() -> None:
+    """Regression test: in production nothing ever sets
+    ``femtobot.command.builtin._ui_active_renderer`` — the real REPL sets
+    ``femtobot.cli.commands._ACTIVE_RENDERER`` instead. ``cmd_welcome``
+    used to look this up via ``globals()`` in its own module, which can
+    never see a name defined in a different module, so this path was
+    unreachable outside of tests that poked the fake hook directly."""
+
+    class _StubRenderer:
+        called_with: object = None
+
+        def show_welcome_card(self, *, force: bool = False) -> None:
+            self.called_with = force
+
+    renderer = _StubRenderer()
+    import femtobot.cli.commands as cli_commands
+
+    previous = cli_commands._ACTIVE_RENDERER
+    cli_commands._ACTIVE_RENDERER = renderer
+    try:
+        out = _run(cmd_welcome(_make_ctx(SimpleNamespace(_config=Config()), args="")))
+        assert "Welcome card re-rendered" in out.content
+        assert renderer.called_with is True
+    finally:
+        cli_commands._ACTIVE_RENDERER = previous
+
+
 # ---------------------------------------------------------------------------
 # /release-notes
 # ---------------------------------------------------------------------------

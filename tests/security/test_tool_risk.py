@@ -54,9 +54,21 @@ def test_exec_classification_carries_helpful_reason() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("name", ["write_file", "edit_file", "apply_patch"])
+@pytest.mark.parametrize("name", ["write_file", "edit_file"])
 def test_medium_risk_tools_in_scope(tmp_path, name: str) -> None:
     a = classify_tool(name, {"path": str(tmp_path / "ok.py")}, workspace_root=str(tmp_path))
+    assert a.level == RiskLevel.MEDIUM
+    assert a.in_scope is True
+
+
+def test_apply_patch_in_scope(tmp_path) -> None:
+    # apply_patch's real shape is a list of edits, each with its own
+    # ``path`` (agent/tools/apply_patch.py:86-103) — no top-level ``path``.
+    a = classify_tool(
+        "apply_patch",
+        {"edits": [{"path": str(tmp_path / "ok.py"), "action": "replace"}]},
+        workspace_root=str(tmp_path),
+    )
     assert a.level == RiskLevel.MEDIUM
     assert a.in_scope is True
 
@@ -93,10 +105,30 @@ def test_apply_patch_outside_workspace_is_promoted_to_high(tmp_path) -> None:
     outside = tmp_path.parent / "evil.py"
     a = classify_tool(
         "apply_patch",
-        {"target": str(outside)},
+        {"edits": [{"path": str(outside), "action": "replace"}]},
         workspace_root=str(tmp_path),
     )
     assert a.level == RiskLevel.HIGH
+    assert a.in_scope is False
+
+
+def test_apply_patch_with_one_edit_outside_workspace_is_promoted_to_high(tmp_path) -> None:
+    """A multi-edit apply_patch call is HIGH if ANY edit crosses the boundary,
+    even when the others stay inside the workspace."""
+    outside = tmp_path.parent / "evil.py"
+    inside = tmp_path / "ok.py"
+    a = classify_tool(
+        "apply_patch",
+        {
+            "edits": [
+                {"path": str(inside), "action": "replace"},
+                {"path": str(outside), "action": "replace"},
+            ]
+        },
+        workspace_root=str(tmp_path),
+    )
+    assert a.level == RiskLevel.HIGH
+    assert a.in_scope is False
 
 
 def test_web_fetch_is_medium_even_with_no_workspace() -> None:

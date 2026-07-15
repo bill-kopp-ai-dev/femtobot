@@ -104,63 +104,6 @@ def _full_unavailable_message() -> str:
     )
 
 
-class _ProfileUnavailableRenderer:
-    """Stand-in renderer used while we are about to print the
-    "full is unavailable" message. The factory prints the message
-    inline and then returns a fresh :class:`StreamRenderer` so the
-    REPL continues to work — the user is informed, not interrupted.
-
-    This class is intentionally minimal: it inherits nothing from
-    :class:`StreamRenderer` so we don't accidentally drag in the
-    spinner / live machinery just to print a single line.
-    """
-
-    def __init__(self, console: Any, *, base_renderer: StreamRenderer) -> None:
-        self._console = console
-        self._base = base_renderer
-
-    async def on_delta(self, delta: str) -> None:
-        await self._base.on_delta(delta)
-
-    async def on_end(self, *, resuming: bool = False) -> None:
-        await self._base.on_end(resuming=resuming)
-
-    def on_tool_call(self, name: str, args_preview: str = "") -> None:
-        self._base.on_tool_call(name, args_preview)
-
-    def on_trace(self, text: str) -> None:
-        self._base.on_trace(text)
-
-    async def close(self) -> None:
-        await self._base.close()
-
-    def stop_for_input(self) -> None:
-        self._base.stop_for_input()
-
-    def pause(self) -> Any:
-        return self._base.pause()
-
-    @property
-    def console(self) -> Any:
-        return self._console
-
-    @property
-    def header_printed(self) -> bool:
-        return self._base.header_printed
-
-    def ensure_header(self) -> None:
-        self._base.ensure_header()
-
-    def pause_spinner(self) -> Any:
-        return self._base.pause_spinner()
-
-    def print_input_gap(self) -> None:
-        self._base.print_input_gap()
-
-    def print_user_box(self) -> None:
-        self._base.print_user_box()
-
-
 def build_renderer(
     config: Any,
     *,

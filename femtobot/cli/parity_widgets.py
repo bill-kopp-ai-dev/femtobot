@@ -388,7 +388,10 @@ def render_status_footer(
         "idle": f"{mode} mode on",
     }.get(state, f"{mode} mode on")
     text.append(label, style=glyph_style if state != "idle" else "dim")
-    if state == "propagating":
+    if state == "propagating" and elapsed_s is not None:
+        # Only close the paren we actually opened above — without the
+        # ``elapsed_s is not None`` guard this appended a dangling ``)``
+        # whenever propagating was rendered with no elapsed time yet.
         if tokens is not None and tokens > 0:
             text.append(f"  ·  ↓ {tokens} tokens", style="dim")
         text.append(")", style="dim")
