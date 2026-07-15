@@ -178,3 +178,19 @@ def test_parity_renderer_passes_through_on_delta(config, captured_console) -> No
         loop.close()
     # No assertion on text — the base renderer has its own threading
     # model. The point of this test is "parity layer doesn't break it".
+
+
+def test_parity_renderer_exposes_streamed_property(config, captured_console) -> None:
+    """Regression: ``commands.py:1452`` reads ``renderer.streamed`` to
+    decide whether to re-print the buffered response. The parity layer
+    must expose that attribute as a property that mirrors the base
+    renderer (defaults to ``False`` before the first ``on_delta``).
+    """
+    r = _make_renderer(config, captured_console)
+    # ``streamed`` must exist as a property — not raise AttributeError.
+    assert hasattr(r, "streamed")
+    assert r.streamed is False
+    # After a delta, the parity layer delegates to the base, so the
+    # source of truth is the base renderer.
+    base_streamed = r._base.streamed  # type: ignore[attr-defined]
+    assert r.streamed == base_streamed

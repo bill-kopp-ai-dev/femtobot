@@ -276,6 +276,18 @@ class ParityStreamRenderer:
     def header_printed(self) -> bool:
         return self._base.header_printed
 
+    @property
+    def streamed(self) -> bool:
+        """True once at least one ``on_delta`` arrived in this turn.
+
+        Mirrors :attr:`StreamRenderer.streamed`; the agent loop reads it
+        to decide whether to re-print the buffered response on a
+        non-streamed fallback path (``commands.py:1452``). Since
+        :meth:`on_delta` delegates to the base renderer, the source of
+        truth is the base.
+        """
+        return getattr(self._base, "streamed", False)
+
     def ensure_header(self) -> None:
         self._base.ensure_header()
 
