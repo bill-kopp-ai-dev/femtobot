@@ -194,3 +194,60 @@ def test_parity_renderer_exposes_streamed_property(config, captured_console) -> 
     # source of truth is the base renderer.
     base_streamed = r._base.streamed  # type: ignore[attr-defined]
     assert r.streamed == base_streamed
+
+
+def test_parity_renderer_print_input_bar_emits_top_rule(config, captured_console) -> None:
+    """Plan §3 D9 (T2/T3): the parity layer must expose
+    :meth:`print_input_bar` that draws the accent rule above the prompt.
+
+    The bottom rule lives in :meth:`input_prompt_markup`, which is
+    tested separately so prompt_toolkit's ``HTML`` can redraw it on
+    every key event.
+    """
+    r = _make_renderer(config, captured_console)
+    captured_console.file.seek(0)
+    captured_console.file.truncate()
+    r.print_input_bar()
+    text = captured_console.file.getvalue()
+    # Horizontal rule character is the parity bar marker.
+    assert "─" in text
+
+
+def test_parity_renderer_input_prompt_markup_returns_html(config, captured_console) -> None:
+    """``input_prompt_markup`` returns prompt_toolkit ``HTML`` with both
+    the bottom rule and the bold glyph markup so the toolkit can
+    redraw on every key event.
+    """
+    from prompt_toolkit.formatted_text import HTML
+
+    r = _make_renderer(config, captured_console)
+    markup = r.input_prompt_markup
+    assert isinstance(markup, HTML)
+    s = str(markup)
+    # Bottom rule and the prompt glyph both make it through.
+    assert "❯" in s
+    assert "─" * 60 in s
+
+
+def test_legacy_stream_renderer_print_input_bar_is_noop(config, captured_console) -> None:
+    """The legacy ``StreamRenderer`` (profile ``off``) returns ``None``
+    from ``print_input_bar`` and emits the plain ``You:`` markup so the
+    legacy REPL is byte-identical to ``v0.1.0-ui.0``.
+    """
+    from prompt_toolkit.formatted_text import HTML
+
+    base = StreamRenderer(
+        render_markdown=True,
+        show_spinner=False,
+        spacing_renderer=None,
+    )
+    base._console = captured_console  # type: ignore[attr-defined]
+    captured_console.file.seek(0)
+    captured_console.file.truncate()
+    # No-op (returns ``None`` and prints nothing).
+    assert base.print_input_bar() is None
+    # Legacy prompt markup.
+    markup = base.input_prompt_markup
+    assert isinstance(markup, HTML)
+    assert "You:" in str(markup)
+    assert "❯" not in str(markup)

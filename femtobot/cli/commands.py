@@ -576,11 +576,16 @@ async def _read_interactive_input_async(config=None) -> str:
         try:
             renderer.print_input_gap()
             renderer.print_user_box()
+            # Plan §3 D9 — Claude-Code-style accent rule printed just
+            # above the prompt row. ``print_input_bar`` is a no-op under
+            # the legacy ``StreamRenderer`` profile, so this is a strict
+            # superset of the pre-bar behaviour.
+            renderer.print_input_bar()
         except Exception:
             pass
-    # Camada 5 — apply lateral margin to the "You:" prompt so it lines
-    # up with the agent reply (which already receives padding via the
-    # Markdown renderer). Without this the prompt sits flush against the
+    # Camada 5 — apply lateral margin to the prompt so it lines up with
+    # the agent reply (which already receives padding via the Markdown
+    # renderer). Without this the prompt sits flush against the
     # terminal's left edge while the agent's reply stays indented.
     margin_spaces = ""
     spacing_obj = None
@@ -590,11 +595,21 @@ async def _read_interactive_input_async(config=None) -> str:
         spacing_obj = _make_spacing_renderer(config)
     if spacing_obj is not None:
         margin_spaces = " " * spacing_obj.margin_x
+    # The legacy profile keeps the original "You:" markup byte-identical;
+    # the parity profile returns the bottom rule + bold ``❯`` glyph in
+    # the same logical row so prompt_toolkit can redraw it on every key.
+    prompt_markup = (
+        renderer.input_prompt_markup
+        if renderer is not None
+        else HTML("<b fg='ansiblue'>You:</b> ")
+    )
+    if isinstance(prompt_markup, str) and margin_spaces:
+        # The parity bottom-rule markup is already self-contained; only
+        # inject the margin spacer for the plain legacy markup.
+        prompt_markup = f"{margin_spaces}{prompt_markup}"
     try:
         with patch_stdout():
-            return await _PROMPT_SESSION.prompt_async(
-                HTML(f"<b fg='ansiblue'>{margin_spaces}You:</b> "),
-            )
+            return await _PROMPT_SESSION.prompt_async(prompt_markup)
     except EOFError as exc:
         raise KeyboardInterrupt from exc
 

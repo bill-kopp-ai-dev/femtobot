@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from rich.box import ROUNDED
-from rich.console import Console, ConsoleOptions, Group, RenderableType
+from rich.console import Console, ConsoleOptions, RenderableType
 from rich.panel import Panel
 from rich.text import Text
 
@@ -403,22 +403,151 @@ def render_status_footer(
     return text
 
 
+def render_status_footer_idle(*, mode: str = "manual", theme: CliTheme | None = None) -> RenderableType:
+    """Render the bottom-of-screen "manual mode on" footer.
+
+    Plan §3 D9 (T4): the Claude-Code-style input pill bar replaces the
+    legacy idle footer under ``ui_parity=compat``. This helper is the
+    pure renderable, gated by ``renderer.print_input_bar`` callers (see
+    :meth:`ParityStreamRenderer.print_input_bar`); if ``print_input_bar``
+    is suppressed, this remains the fallback so legacy callers still
+    see a status row.
+    """
+    return render_status_footer(mode=mode, state="idle", theme=theme)
+
+
 # ---------------------------------------------------------------------------
-# Input pill
+# Input pill bar (Claude Code v2.1.x parity, plan §3 D9)
 # ---------------------------------------------------------------------------
+#
+# The Claude Code REPL frames its input with a thin horizontal accent rule
+# above *and* below the prompt glyph. Implementing it as a single Rich
+# renderable is convenient, but the bottom bar has to redraw on every
+# keypress — prompt_toolkit owns the input redraw and only honors plain
+# ANSI/HTML markup it can render itself. We therefore expose two
+# helpers:
+#
+#   :func:`render_input_bar_top`           — full-width ``Rule`` rendered
+#     just above the prompt (printed *before* ``patch_stdout()``).
+#   :func:`render_input_bar_bottom_markup` — bottom rule + bold ``>`` glyph
+#     in the same logical row as the prompt, returned as prompt_toolkit
+#     ``HTML`` markup so the toolkit re-draws it cleanly on every key
+#     event.
+#
+# Color is sourced from ``theme.welcome_border`` so the bar visually
+# matches the Welcome card / What's-new box (visual coherence).
+#
+# ``width`` — terminal width to render against (defaults to ``80`` so the
+#     pure helpers are unit-testable without a real console).
+# ``margin_x`` — horizontal margin (Camada 5) subtracted from ``width``
+#     so the bar sits flush with the agent reply's padding.
+
+from prompt_toolkit.formatted_text import HTML
+
+_INPUT_BAR_MIN_WIDTH = 24
+_INPUT_BAR_RULE_CHAR = "─"
 
 
-def render_input_pill(*, prompt: str = ">", placeholder: str = "", theme: CliTheme | None = None) -> RenderableType:
-    """Render the input area with a top border line and the prompt glyph.
+def _resolve_width(*, width: int | None, margin_x: int | None = 0) -> int:
+    """Return the bar width, clamped to ``[_INPUT_BAR_MIN_WIDTH, width]``."""
+    if width is None:
+        width = 80
+    mx = max(0, margin_x or 0)
+    inner = max(_INPUT_BAR_MIN_WIDTH, width - 2 * mx)
+    return inner
 
-    The plan (D9) prefers ``>`` in ``compat`` mode (vs the legacy ``❯``).
-    Callers wire this to ``prompt_toolkit`` for actual key handling; the
-    pill here is just the visual frame that goes above the input box.
+
+def render_input_bar_top(
+    *,
+    width: int | None = None,
+    margin_x: int | None = 0,
+    theme: CliTheme | None = None,
+) -> RenderableType:
+    """Return a thin horizontal accent ``Rule`` printed above the prompt row.
+
+    The bar spans the full available width minus the lateral margin used
+    by Camada 5 spacing so it lines up with the agent reply's padding.
+    Returns an empty ``Text`` when ``width`` is so narrow that the bar
+    would lose visual meaning — callers should never invoke this in that
+    regime (the factory gates the bar on TTY width ≥ 40 already).
     """
     th = theme or get_theme("terracotta-claude")
-    accent = th.accent
-    bar = Text("─" * max(8, len(prompt) + len(placeholder) + 4), style=f"bold {accent}")
-    text = Text()
-    text.append(f"{prompt} ", style=f"bold {accent}")
-    text.append(placeholder, style="")
-    return Group(bar, text, bar)
+    accent = th.welcome_border or th.primary
+    bar_width = _resolve_width(width=width, margin_x=margin_x)
+    rule = Text(_INPUT_BAR_RULE_CHAR * bar_width, style=f"bold {accent}")
+    return rule
+
+
+def render_input_bar_bottom_markup(
+    *,
+    width: int | None = None,
+    margin_x: int | None = 0,
+    prompt: str = ">",
+    placeholder: str = "",
+    theme: CliTheme | None = None,
+) -> str:
+    """Return the bottom rule + bold prompt glyph as ``HTML`` markup.
+
+    prompt_toolkit re-renders this string on every key event. We use
+    ``HTML`` (not a Rich renderable) because prompt_toolkit cannot
+    consume ``Text``/``Rule`` directly; ANSI control characters would
+    leak into the editable buffer otherwise.
+
+    Layout::
+
+        ─────────────  (rule, accent)
+        > {typed input}            (when buffer has content)
+
+    Returns just ``"> "`` glyph markup (no top rule) when ``width`` is
+    too narrow for a meaningful bar; callers gate on width first.
+    """
+    th = theme or get_theme("terracotta-claude")
+    accent = th.welcome_border or th.primary
+    bar_width = _resolve_width(width=width, margin_x=margin_x)
+    rule = _INPUT_BAR_RULE_CHAR * bar_width
+    # prompt_toolkit HTML interprets ``#xxxxxx`` as an RGB color tag; the
+    # rule and glyph both take the bar accent. The placeholder is dim
+    # and shifts to a non-dim prompt when the buffer is non-empty (caller
+    # responsibility — we always emit the empty-state markup here).
+    escaped_rule = rule
+    escaped_placeholder = _html_escape(placeholder)
+    escaped_prompt = _html_escape(prompt)
+    if placeholder:
+        body = (
+            f"<rule>{escaped_rule}</rule>\n"
+            f"<prompt><b><style fg='{accent}'>{escaped_prompt}</style></b></prompt> "
+            f"<placeholder><style fg='ansibrightblack'>{escaped_placeholder}</style></placeholder>"
+        )
+    else:
+        body = (
+            f"<rule>{escaped_rule}</rule>\n"
+            f"<prompt><b><style fg='{accent}'>{escaped_prompt}</style></b></prompt> "
+        )
+    return HTML(body)
+
+
+def _html_escape(text: str) -> str:
+    """Escape characters that prompt_toolkit's HTML formatter would interpret.
+
+    ``<`` / ``>`` / ``&`` are the only ones that matter for our placeholders
+    / prompts (we never embed user input here, so this is defensive).
+    """
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+# Backwards-compatible alias — older callers (and the existing test suite)
+# referenced ``render_input_pill`` even though it was never wired in. Keep a
+# thin re-export so nothing breaks during the rename.
+def render_input_pill(*, prompt: str = ">", placeholder: str = "", theme: CliTheme | None = None) -> RenderableType:
+    """Deprecated alias. Use :func:`render_input_bar_top` instead.
+
+    Kept so the import in any legacy test / module doesn't break. The
+    contents have been adapted to the new bar-only shape (a single
+    accent rule); the two-piece split lives in
+    :func:`render_input_bar_top` + :func:`render_input_bar_bottom_markup`.
+    """
+    return render_input_bar_top(theme=theme)

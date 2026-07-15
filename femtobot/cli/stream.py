@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 from contextlib import contextmanager, nullcontext
+from typing import Any
 
 from rich.console import Console, RenderableType
 from rich.live import Live
@@ -259,6 +260,30 @@ class StreamRenderer:
         """
         if self._spacing is not None:
             self._spacing.print_user_box(self._console)
+
+    def print_input_bar(self) -> None:
+        """Print the parity input pill bar (plan §3 D9, Claude Code parity).
+
+        The legacy ``StreamRenderer`` keeps the unframed ``You:`` prompt
+        byte-identical to ``v0.1.0-ui.0`` — no bar is drawn. The parity
+        layer overrides this to emit the accent rule via
+        :func:`femtobot.cli.parity_widgets.render_input_bar_top`.
+        """
+        # Legacy profile: no framed input bar. Kept for protocol
+        # compatibility so ``RendererLike`` is satisfied.
+        return None
+
+    @property
+    def input_prompt_markup(self) -> Any:
+        """Return the prompt glyph as ``HTML`` markup for ``prompt_async``.
+
+        The legacy profile emits the same ``<b fg='ansiblue'>You:</b>``
+        markup that was used prior to the parity bar rewrite. The parity
+        layer overrides this with the bottom-rule + glyph markup.
+        """
+        from prompt_toolkit.formatted_text import HTML
+
+        return HTML("<b fg='ansiblue'>You:</b> ")
 
     async def on_delta(self, delta: str) -> None:
         self.streamed = True

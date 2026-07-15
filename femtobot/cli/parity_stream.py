@@ -33,6 +33,8 @@ from femtobot.cli.parity_widgets import (
     HeaderBar,
     SpinnerWithElapsed,
     parse_changelog,
+    render_input_bar_bottom_markup,
+    render_input_bar_top,
     render_status_footer,
     render_tool_card,
     render_welcome_card,
@@ -299,6 +301,36 @@ class ParityStreamRenderer:
 
     def print_user_box(self) -> None:
         self._base.print_user_box()
+
+    def print_input_bar(self) -> None:
+        """Print the Claude-Code-style top accent rule above the prompt.
+
+        The bottom rule + ``>`` glyph are returned separately via
+        :attr:`input_prompt_markup` so ``prompt_toolkit`` can redraw
+        them on every key event.
+        """
+        self._console.print(
+            render_input_bar_top(
+                width=self._console.width,
+                margin_x=getattr(self._spacing, "margin_x", 0),
+                theme=self._theme,
+            )
+        )
+
+    @property
+    def input_prompt_markup(self) -> Any:
+        """Return the bottom rule + prompt glyph as prompt_toolkit ``HTML``.
+
+        ``prompt_toolkit`` re-renders this string on every key event, so
+        the bottom bar is drawn as plain markup (no Rich objects).
+        """
+        return render_input_bar_bottom_markup(
+            width=self._console.width,
+            margin_x=getattr(self._spacing, "margin_x", 0),
+            prompt="❯",
+            placeholder="Nova mensagem",
+            theme=self._theme,
+        )
 
 
 __all__ = ["ParityStreamRenderer"]

@@ -23,7 +23,6 @@ import femtobot.cli.parity_widgets as pw
 from femtobot import __logo__
 from femtobot.cli.theme import get_theme
 
-
 # ---------------------------------------------------------------------------
 # Q2 — resolve_user_name
 # ---------------------------------------------------------------------------
@@ -345,11 +344,73 @@ def test_header_bar_renders_in_every_theme() -> None:
 
 
 def test_input_pill_uses_gt_glyph_in_compat() -> None:
+    """Backward-compat alias — ``render_input_pill`` is preserved as a thin
+    re-export of :func:`render_input_bar_top` so anything that imported
+    it pre-rewrite keeps working. The legacy test asserted a pill that
+    bracketed the prompt; post-rewrite the bar-only helper renders just
+    the rule. Verify the rule is present and the (now-misnamed)
+    glyph/placeholder arguments are ignored without raising.
+    """
     out_buf = StringIO()
     console = Console(file=out_buf, force_terminal=False, width=120, color_system=None)
     console.print(pw.render_input_pill(prompt=">", placeholder="hello"))
     text = out_buf.getvalue()
-    assert ">" in text
-    assert "hello" in text
-    # Border lines should bracket the input.
+    # Border lines still bracket the input visually.
     assert "─" in text
+    # The legacy alias no longer embeds the prompt/placeholder; the
+    # real framing moved to :func:`render_input_bar_bottom_markup`.
+    assert "hello" not in text
+
+
+# ---------------------------------------------------------------------------
+# T1 — Input pill bar (plan §3 D9, Claude Code v2.1.x parity)
+# ---------------------------------------------------------------------------
+
+
+def test_render_input_bar_top_spans_full_width_minus_margin() -> None:
+    out_buf = StringIO()
+    console = Console(file=out_buf, force_terminal=False, width=120, color_system=None)
+    bar = pw.render_input_bar_top(width=120, margin_x=2)
+    console.print(bar)
+    text = out_buf.getvalue()
+    # 24-min width bar minus 2x2 margin = 116 chars minimum, but
+    # padded by Rich to terminal width 120. At minimum we expect at
+    # least 100 chars of the unicode rule.
+    assert text.count(pw._INPUT_BAR_RULE_CHAR) >= 100
+
+
+def test_render_input_bar_top_clamps_to_min_width() -> None:
+    """A width smaller than the minimum clamps the bar to 24 chars."""
+    out_buf = StringIO()
+    console = Console(file=out_buf, force_terminal=False, width=120, color_system=None)
+    bar = pw.render_input_bar_top(width=4, margin_x=0)
+    assert isinstance(bar, pw.Text)
+    # The internal ``_resolve_width`` returns the clamped width.
+    # ``Text.plain`` strips styles; check the text length.
+    assert len(bar.plain) == pw._resolve_width(width=4, margin_x=0)
+
+
+def test_render_input_bar_bottom_markup_contains_rule_and_glyph() -> None:
+    markup = str(pw.render_input_bar_bottom_markup(width=120, margin_x=2, prompt="❯", placeholder="hello"))
+    # Bottom rule + line break + bold glyph + placeholder.
+    assert "❯" in markup
+    assert "hello" in markup
+    assert pw._INPUT_BAR_RULE_CHAR * 80 in markup
+    # prompt_toolkit color tags wrap the rule and glyph.
+    assert "<style" in markup and "</style>" in markup
+
+
+def test_render_input_bar_bottom_markup_omits_placeholder_when_empty() -> None:
+    markup = str(pw.render_input_bar_bottom_markup(width=120, margin_x=2, prompt="❯"))
+    assert "❯" in markup
+    # No placeholder tag when the placeholder is empty.
+    assert "<placeholder" not in markup
+    assert "hello" not in markup
+
+
+def test_render_input_bar_bottom_markup_escapes_html_special_chars() -> None:
+    markup = str(pw.render_input_bar_bottom_markup(width=120, placeholder="&<>", prompt=">"))
+    # All HTML-special characters escaped.
+    assert "&amp;" in markup
+    assert "&lt;" in markup
+    assert "&gt;" in markup

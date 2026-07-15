@@ -170,8 +170,13 @@ rendering profiles:
 | Profile    | Renderer                          | Pipes? | Notes                                       |
 |------------|-----------------------------------|--------|---------------------------------------------|
 | `off`      | Legacy `StreamRenderer` (v0.0.x)  | ✅     | Default. No aesthetic changes.              |
-| `compat`   | Rich `Live` + parity widgets      | auto   | Header, welcome, tool cards, footer, prompt.|
+| `compat`   | Rich `Live` + parity widgets      | auto   | Header, welcome, tool cards, footer, **input pill bar**, prompt.|
 | `full`     | Textual full TUI                  | ❌     | Arrives in the RC release `v0.1.0-ui.1`.    |
+
+Under `compat`, the prompt row is framed by an **input pill bar**: a
+thin accent rule above and below the prompt, a bold `❯` glyph in the
+active theme accent, and a dim placeholder ("Nova mensagem") shown
+only while the buffer is empty. See [UI parity → input pill bar](cli-ui-parity.md#input-pill-bar-visual-reference).
 
 The flag is **per-session**. To persist the choice, use
 `/style set ui_parity=compat` (writes to `config.json`) or edit

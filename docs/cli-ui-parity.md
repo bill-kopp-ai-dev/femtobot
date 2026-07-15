@@ -40,7 +40,10 @@ When `ui_parity=compat`, the REPL renders:
 - A **status footer** with three states: idle (`⏸ manual mode`),
   propagating (`* Propagating… (Ns · ↓ N tokens)`), and cooked
   (`✻ Cooked for Ns`).
-- An **input pill** with a `>` prompt glyph and a top accent line.
+- An **input pill bar** (Claude Code v2.1.x parity, `v0.1.0-ui.1`+) with
+  a thin accent rule above and below the prompt row, a bold `❯` glyph
+  in the active theme accent, and a dim placeholder ("Nova mensagem")
+  shown only while the input buffer is empty.
 - An **interactive permission prompt** for `risk_level=high` tools
   (`exec`, `long_task`, `complete_goal`, `ask_orchestrator`), opt-in
   via `agents.cli.permission_prompt.enabled=true`.
@@ -48,6 +51,24 @@ When `ui_parity=compat`, the REPL renders:
 All of this composes **on top of** the existing
 `StreamRenderer` — the runtime is unchanged. There are zero
 behavioural regressions on the legacy `off` profile.
+
+### Input pill bar (visual reference)
+
+Below is a sketch of the prompt area under `ui_parity=compat`. The
+horizontal rule is the accent color (`theme.welcome_border`, dim
+when idle). While the buffer is empty, a dim placeholder ("Nova
+mensagem") is shown next to the bold `❯` glyph; prompt_toolkit
+redraws the bottom row on every key event.
+
+```
+ ────────────────────────────────────────────────────────────  (top rule)
+ ❯ Nova mensagem                                                  (placeholder)
+ ────────────────────────────────────────────────────────────  (bottom rule)
+```
+
+When the user starts typing, the placeholder disappears and the
+input buffer fills that cell. The bar survives paste, history
+navigation, and `Ctrl+O` (verbose toggle) without ghost artefacts.
 
 ## How to enable it
 
