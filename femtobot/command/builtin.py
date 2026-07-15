@@ -1811,10 +1811,12 @@ async def cmd_welcome(ctx: CommandContext) -> OutboundMessage:
         content = "Welcome card re-rendered."
     else:
         # Legacy profile: emit a static welcome card with a short tip list.
+        from io import StringIO
+
+        from rich.console import Console
+
         from femtobot.cli.parity_widgets import render_welcome_card
         from femtobot.cli.theme import get_theme
-        from io import StringIO
-        from rich.console import Console
         buf = StringIO()
         console = Console(file=buf, force_terminal=False, width=120, color_system=None)
         console.print(
@@ -1843,8 +1845,9 @@ async def cmd_welcome(ctx: CommandContext) -> OutboundMessage:
 async def cmd_release_notes(ctx: CommandContext) -> OutboundMessage:
     """Print the top of the CHANGELOG (Q6 — parsed automatically)."""
     metadata = {**dict(ctx.msg.metadata or {}), "render_as": "markdown"}
-    from femtobot.cli.parity_widgets import parse_changelog
     from pathlib import Path
+
+    from femtobot.cli.parity_widgets import parse_changelog
     changelog_path = Path(__file__).resolve().parents[2] / "CHANGELOG.md"
     entries = parse_changelog(changelog_path, max_entries=1, max_bullets=8)
     if not entries:

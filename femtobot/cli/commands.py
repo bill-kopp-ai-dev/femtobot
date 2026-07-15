@@ -136,10 +136,14 @@ def _heartbeat_has_active_tasks(content: str) -> bool:
 
 _PROMPT_SESSION: PromptSession | None = None
 _SAVED_TERM_ATTRS = None  # original termios settings, restored on exit
-# Camada 5 — track the most recently created StreamRenderer so we can
+# Camada 5 — track the most recently created renderer so we can
 # print the user-box + input-gap before the next prompt. Set by the
-# REPL when a new turn starts; cleared on exit.
-_ACTIVE_RENDERER: StreamRenderer | None = None
+# REPL when a new turn starts; cleared on exit. Type is ``Any`` because
+# the factory may return a :class:`StreamRenderer` (legacy ``off``
+# profile) or a :class:`ParityStreamRenderer` (``compat`` profile);
+# both expose the same surface used below (``print_input_gap`` /
+# ``print_user_box``).
+_ACTIVE_RENDERER: Any = None
 
 
 def _flush_pending_tty_input() -> None:

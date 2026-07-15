@@ -32,14 +32,14 @@ from typing import Any
 from femtobot.cli.parity_widgets import (
     HeaderBar,
     SpinnerWithElapsed,
+    parse_changelog,
     render_status_footer,
     render_tool_card,
     render_welcome_card,
     resolve_user_name,
-    parse_changelog,
 )
-from femtobot.cli.theme import get_theme
 from femtobot.cli.stream import StreamRenderer
+from femtobot.cli.theme import get_theme
 
 
 class ParityStreamRenderer:
@@ -173,26 +173,20 @@ class ParityStreamRenderer:
     # ------------------------------------------------------------------
     # Spinner integration (D5, rev. F5 — no extra thread)
     # ------------------------------------------------------------------
-
-    def _ensure_spinner(self) -> None:
-        if self._spinner_renderable is None:
-            self._spinner_start_ts = time.monotonic()
-            self._spinner_renderable = SpinnerWithElapsed(
-                bot_name=self._bot_name,
-                start_time=self._spinner_start_ts,
-                tokens=self._tokens,
-                theme=self._theme,
-            )
-            # Delegate the actual animated spinner to the base renderer —
-            # it already owns a Rich ``Status``/``Live`` whose auto-refresh
-            # re-renders the message every tick. The base renderer is
-            # still in charge of starting/stopping the spinner; we just
-            # provide it with a message factory.
-            self._base._spinner_verb = self._spinner_renderable.verb  # type: ignore[attr-defined]
-
-    def _update_spinner_tokens(self, tokens: int | None) -> None:
-        if tokens is not None and self._spinner_renderable is not None:
-            self._spinner_renderable.tokens = tokens
+    # The parity layer tracks the elapsed time and token count in
+    # ``_spinner_start_ts`` / ``_tokens`` so the status footer printed
+    # at the end of the turn can show "Cooked for Ns" and "↓ N tokens"
+    # (see :meth:`on_end`). The animated spinner itself is owned by
+    # the wrapped :class:`StreamRenderer` and uses its own internal
+    # :class:`ThinkingSpinner`; the :class:`SpinnerWithElapsed`
+    # renderable is therefore kept for **future** use once the base
+    # renderer exposes a message-factory hook (planned for v0.1.x,
+    # not part of the v0.1.0-ui.0 preview).
+    #
+    # In the preview, :meth:`_ensure_spinner` and
+    # :meth:`_update_spinner_tokens` are intentionally no-ops so the
+    # base spinner keeps working untouched (no surprise behaviour
+    # changes on the legacy ``off`` profile).
 
     # ------------------------------------------------------------------
     # StreamRenderer-compatible surface

@@ -31,15 +31,13 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from rich.box import ROUNDED
-from rich.console import Console, Group, RenderableType
+from rich.console import Console, ConsoleOptions, Group, RenderableType
 from rich.panel import Panel
-from rich.table import Column, Table
 from rich.text import Text
 
 from femtobot import __logo__
 from femtobot.cli.theme import CliTheme, get_theme
 from femtobot.cli.whimsy import pick_verb
-
 
 # ---------------------------------------------------------------------------
 # User-name resolution
@@ -123,11 +121,6 @@ def parse_changelog(path: str | Path, *, max_entries: int = 1, max_bullets: int 
         start = m.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
         section = text[start:end]
-        bullets = tuple(
-            b.group(1).strip() for b in _CHANGELOG_BULLET_RE.finditer(section)[:max_bullets]
-            if b.group(1).strip()
-        ) if False else []  # type: ignore[func-returns-value]
-        # The walrus-free version (avoids the weird `if False` branch):
         raw_bullets = list(_CHANGELOG_BULLET_RE.finditer(section))[:max_bullets]
         bullets = tuple(b.group(1).strip() for b in raw_bullets if b.group(1).strip())
         out.append(ChangelogEntry(version=version, bullets=bullets))
@@ -340,7 +333,7 @@ class SpinnerWithElapsed:
     def elapsed_s(self) -> float:
         return max(0.0, time.monotonic() - (self.start_time or time.monotonic()))
 
-    def __rich_console__(self, console: Console, options: Any) -> None:  # noqa: D401
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> None:  # noqa: D401
         # We are a renderable, not a drawable — but the call signature
         # lets the Live poll us cheaply per frame.
         accent = self.theme.success if self.theme else "green"

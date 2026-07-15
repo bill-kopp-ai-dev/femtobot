@@ -217,7 +217,7 @@ class PermissionCollector:
             s = str(value)
             if len(s) > 60:
                 s = s[:59] + "…"
-            return f"{key}={s!r}" if not isinstance(value, str) else f"{key}={s!r}"
+            return f"{key}={s!r}"
         return "…"
 
     def _read_choice(self) -> PermissionChoice:
