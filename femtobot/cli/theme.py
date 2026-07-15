@@ -27,6 +27,12 @@ class CliTheme:
     perm_border: str    # Permission dialog
     bg_input: str       # Dashed border accent (used by input border if any)
     accent: str = "cyan"  # Generic accent (logo, prompt label)
+    # v0.1.0-ui.0+ — UI parity tokens (Claude Code v2.1.x aesthetic).
+    # All themes provide sensible defaults so the parity widgets render
+    # with the existing palette — no theme surgery needed.
+    welcome_border: str = ""  # Welcome card + What's new box border
+    permission_accent: str = ""  # Permission prompt option highlight
+    tool_card_border: str = ""  # Tool call card border (collapsed/expanded)
 
 
 THEMES: Mapping[str, CliTheme] = {
@@ -41,6 +47,9 @@ THEMES: Mapping[str, CliTheme] = {
         perm_border="#b1b9f9",
         bg_input="#888888",
         accent="#d77757",
+        welcome_border="#d77757",
+        permission_accent="#b1b9f9",
+        tool_card_border="#fd5db1",
     ),
     "solarized-light": CliTheme(
         name="solarized-light",
@@ -53,6 +62,9 @@ THEMES: Mapping[str, CliTheme] = {
         perm_border="#6c71c4",
         bg_input="#93a1a1",
         accent="#268bd2",
+        welcome_border="#268bd2",
+        permission_accent="#6c71c4",
+        tool_card_border="#cb4b16",
     ),
     "cyber-dark": CliTheme(
         name="cyber-dark",
@@ -65,6 +77,9 @@ THEMES: Mapping[str, CliTheme] = {
         perm_border="#bcbcff",
         bg_input="#7f7f7f",
         accent="#00ffff",
+        welcome_border="#00ffff",
+        permission_accent="#bcbcff",
+        tool_card_border="#ff00ff",
     ),
     "monochrome": CliTheme(
         name="monochrome",
@@ -77,6 +92,9 @@ THEMES: Mapping[str, CliTheme] = {
         perm_border="#a0a0a0",
         bg_input="#707070",
         accent="#d0d0d0",
+        welcome_border="#d0d0d0",
+        permission_accent="#a0a0a0",
+        tool_card_border="#808080",
     ),
 }
 
