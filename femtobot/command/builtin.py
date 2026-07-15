@@ -1716,6 +1716,161 @@ async def cmd_style(ctx: CommandContext) -> OutboundMessage:
     )
 
 
+# ---------------------------------------------------------------------------
+# v0.1.0-ui.0+ — UI parity slash commands (T8)
+# ---------------------------------------------------------------------------
+
+
+async def cmd_ui(ctx: CommandContext) -> OutboundMessage:
+    """Show or change the active UI parity profile (per-session, Q10).
+
+    Usage:
+        /ui             — show the current profile
+        /ui off         — switch to the legacy Rich Live renderer
+        /ui compat      — switch to the Claude-Code parity renderer
+        /ui full        — Textual TUI (not available in the preview)
+
+    The change is **per-session**: it mutates the in-memory
+    ``Config.agents.defaults.cli.ui_parity.profile`` but does NOT
+    persist to ``config.json``. Use ``/style set ui_parity=...`` to
+    persist.
+    """
+    args = ctx.args.strip()
+    metadata = {**dict(ctx.msg.metadata or {}), "render_as": "markdown"}
+    config = getattr(ctx.loop, "_config", None)
+    if config is None or not hasattr(config, "agents"):
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content="/ui is unavailable: the active loop is not carrying a Config reference.",
+            metadata=metadata,
+        )
+
+    ui_cfg = config.agents.defaults.cli.ui_parity
+
+    if not args:
+        lines = [
+            f"Currently using: ui_parity={ui_cfg.profile}",
+            "Available profiles:",
+            "  1. off    — legacy Rich Live renderer",
+            "  2. compat — Claude-Code parity (Rich Live + header + tool cards)",
+            "  3. full   — Textual TUI (arrives in v0.1.0-ui.1 / RC)",
+            "",
+            "Note: changes are per-session and reset on REPL exit.",
+            "To persist, use `/style set ui_parity=compat` (writes to config.json).",
+        ]
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content="\n".join(lines),
+            metadata=metadata,
+        )
+
+    requested = args.lower().split()[0]
+    if requested not in ("off", "compat", "full"):
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=(
+                f"Unknown profile: {requested!r}. Use `/ui off|compat|full`."
+            ),
+            metadata=metadata,
+        )
+
+    ui_cfg.profile = requested
+    if requested == "full":
+        extra = (
+            "\n\nNote: `full` (Textual TUI) is not available in the v0.1.0-ui.0 "
+            "preview. It will fall back to `off` until the RC release."
+        )
+    else:
+        extra = ""
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content=(
+            f"Switched ui_parity to {requested!r} for this session.{extra}"
+        ),
+        metadata=metadata,
+    )
+
+
+async def cmd_welcome(ctx: CommandContext) -> OutboundMessage:
+    """Re-display the welcome card (Q3).
+
+    By default the welcome card is shown only on the first turn and
+    hidden afterwards. ``/welcome`` brings it back mid-session.
+    """
+    metadata = {**dict(ctx.msg.metadata or {}), "render_as": "markdown"}
+    # Defer to the parity renderer's ``show_welcome_card`` if a parity
+    # renderer is active; otherwise emit a static text body so the
+    # command works on the legacy profile too.
+    renderer = globals().get("_ACTIVE_RENDERER") or globals().get("_ui_active_renderer")
+    if renderer is not None and hasattr(renderer, "show_welcome_card"):
+        renderer.show_welcome_card(force=True)
+        content = "Welcome card re-rendered."
+    else:
+        # Legacy profile: emit a static welcome card with a short tip list.
+        from femtobot.cli.parity_widgets import render_welcome_card
+        from femtobot.cli.theme import get_theme
+        from io import StringIO
+        from rich.console import Console
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=False, width=120, color_system=None)
+        console.print(
+            render_welcome_card(
+                tips=[
+                    "Run /init to create a FEMTO.md file with instructions for Femto",
+                    "Try /ui compat to enable the Claude-Code parity renderer",
+                    "Toggle verbose transcript with Ctrl+O",
+                ],
+                whats_new=[
+                    "Added welcome card + header bar (v0.1.0-ui preview)",
+                    "Added elapsed-time spinner",
+                ],
+                theme=get_theme("terracotta-claude"),
+            )
+        )
+        content = buf.getvalue()
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content=content,
+        metadata=metadata,
+    )
+
+
+async def cmd_release_notes(ctx: CommandContext) -> OutboundMessage:
+    """Print the top of the CHANGELOG (Q6 — parsed automatically)."""
+    metadata = {**dict(ctx.msg.metadata or {}), "render_as": "markdown"}
+    from femtobot.cli.parity_widgets import parse_changelog
+    from pathlib import Path
+    changelog_path = Path(__file__).resolve().parents[2] / "CHANGELOG.md"
+    entries = parse_changelog(changelog_path, max_entries=1, max_bullets=8)
+    if not entries:
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=(
+                f"Could not parse {changelog_path}. The file may be missing or "
+                "unparseable; see `git log -- CHANGELOG.md` instead."
+            ),
+            metadata=metadata,
+        )
+    head = entries[0]
+    lines = [f"# Release notes — {head.version}", ""]
+    for b in head.bullets:
+        lines.append(f"- {b}")
+    lines.append("")
+    lines.append(f"Full history: {changelog_path}")
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content="\n".join(lines),
+        metadata=metadata,
+    )
+
+
 def register_builtin_commands(router: CommandRouter) -> None:
     """Register the default set of slash commands."""
     router.priority("/stop", cmd_stop)
@@ -1757,3 +1912,8 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.exact("/help", cmd_help)
     router.exact("/mcp", cmd_mcp)
     router.prefix("/mcp ", cmd_mcp)
+    # v0.1.0-ui.0+ — UI parity commands (T8). Per-session state only.
+    router.exact("/ui", cmd_ui)
+    router.prefix("/ui ", cmd_ui)
+    router.exact("/welcome", cmd_welcome)
+    router.exact("/release-notes", cmd_release_notes)

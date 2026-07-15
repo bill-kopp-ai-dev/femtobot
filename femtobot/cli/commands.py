@@ -49,6 +49,7 @@ from rich.text import Text  # noqa: E402
 
 from femtobot import __logo__, __version__  # noqa: E402
 from femtobot.agent.loop import AgentLoop  # noqa: E402
+from femtobot.cli.renderer_factory import build_renderer
 from femtobot.cli.stream import StreamRenderer, ThinkingSpinner  # noqa: E402
 from femtobot.config.paths import get_workspace_path  # noqa: E402
 from femtobot.config.schema import Config  # noqa: E402
@@ -1214,11 +1215,12 @@ def agent(
     if message:
         # Single message mode — direct call, no bus needed
         async def run_once():
-            renderer = StreamRenderer(
-                render_markdown=markdown,
+            renderer = build_renderer(
+                config,
                 bot_name=config.agents.defaults.bot_name,
                 bot_icon=config.agents.defaults.bot_icon,
                 spacing_renderer=_make_spacing_renderer(config),
+                render_markdown=markdown,
             )
             global _ACTIVE_RENDERER
             _ACTIVE_RENDERER = renderer
@@ -1387,11 +1389,12 @@ def agent(
                         turn_done.clear()
                         turn_response.clear()
                         reasoning_buffer.clear()
-                        renderer = StreamRenderer(
-                            render_markdown=markdown,
+                        renderer = build_renderer(
+                            config,
                             bot_name=config.agents.defaults.bot_name,
                             bot_icon=config.agents.defaults.bot_icon,
                             spacing_renderer=_make_spacing_renderer(config),
+                            render_markdown=markdown,
                         )
                         global _ACTIVE_RENDERER
                         _ACTIVE_RENDERER = renderer
