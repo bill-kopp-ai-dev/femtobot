@@ -596,6 +596,16 @@ def _migrate_config(data: dict) -> dict:
     if "restrictToWorkspace" in exec_cfg and "restrictToWorkspace" not in tools:
         tools["restrictToWorkspace"] = exec_cfg.pop("restrictToWorkspace")
 
+    # R2-femtobot (refactor-parity-with-nanobot.md Phase 6): the default
+    # of ``restrict_to_workspace`` flipped from False to True.  Migrate
+    # legacy configs that explicitly opted out (False) so the new
+    # safety posture takes effect on existing instances — operators
+    # who really need the old "full host shell" behaviour can set
+    # the field back to False after the migration runs (it is a
+    # no-op on subsequent loads).
+    if tools.get("restrictToWorkspace") is False:
+        tools["restrictToWorkspace"] = True
+
     # Move tools.myEnabled / tools.mySet → tools.my.{enable, allowSet}.
     # The old flat keys shipped in the initial MyTool landing; wrapping them in a
     # sub-config keeps `web` / `exec` / `my` symmetric and gives room to grow.

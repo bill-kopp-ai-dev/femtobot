@@ -277,7 +277,7 @@ Self-introspection tool (see [my-tool.md](./my-tool.md)).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `restrictToWorkspace` | bool | `false` | Policy intent: keep tool access inside the workspace when possible. Even at `false`, sensitive operations remain gated. |
+| `restrictToWorkspace` | bool | `true` | Constrain filesystem and shell tools to the workspace + explicitly allowed roots. Default flipped to `true` in v0.2.0 (see [refactor-parity-with-nanobot.md](./refactor-parity-with-nanobot.md) Phase 6). Set to `false` to restore the historical "full host shell" behaviour — the migration in `_migrate_config` only upgrades `false`/`absent` once, so re-saving after the migration keeps your choice intact. |
 | `webuiAllowLocalServiceAccess` | bool | `true` | Permit the local web UI to call back into local services (used by `femtobot gateway`). |
 | `ssrfWhitelist` | list[str] | `[]` | CIDR ranges to exempt from SSRF blocking (e.g. `["100.64.0.0/10"]` for Tailscale). See [security.md](./security.md). |
 

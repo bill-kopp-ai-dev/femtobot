@@ -813,7 +813,15 @@ class ToolsConfig(Base):
         default_factory=lambda: _lazy_default("femtobot.agent.tools.time", "TimerToolConfig")
     )
     restrict_to_workspace: bool = (
-        False  # policy intent: keep tool access inside workspace when possible
+        # R2-femtobot (refactor-parity-with-nanobot.md Phase 6): default
+        # flipped to True so a fresh instance constrains tool access to
+        # the workspace by default.  Operators who really need the old
+        # "full host shell" behaviour can opt back in by setting the
+        # field to False in their instance config.  The migration in
+        # ``_migrate_config`` only flips False/None → True for existing
+        # instances that do not already opt out — instances that
+        # explicitly set the field keep their choice.
+        True
     )
     webui_allow_local_service_access: bool = Field(default=True)
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
