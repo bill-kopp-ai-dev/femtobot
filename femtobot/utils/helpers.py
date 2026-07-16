@@ -743,12 +743,11 @@ __pycache__/
     return created
 
 
-def build_default_onboard_config(instance_dir: Path, suffix: str | None = None) -> Config:
+def build_default_onboard_config(instance_dir: Path) -> Config:
     """Build a default Config for onboard.
 
     Args:
         instance_dir: Root instance directory
-        suffix: Instance suffix (for display purposes)
 
     Returns:
         Config with sensible defaults for a new instance.
@@ -759,11 +758,6 @@ def build_default_onboard_config(instance_dir: Path, suffix: str | None = None) 
 
     # Set workspace relative to instance_dir
     config.agents.defaults.workspace = "workspace"
-
-    # Set instance-specific bot name if suffix provided
-    if suffix:
-        config.agents.defaults.bot_name = f"Femtobot-{suffix.upper()}"
-        config.agents.defaults.bot_icon = "🤖"
 
     # T13 (ui-parity Q2): explicit placeholder for the human operator so
     # the parity header bar / welcome card know where to interpolate the
@@ -899,12 +893,11 @@ __pycache__/
     return gitignore
 
 
-def create_instance_readme(instance_dir: Path, suffix: str | None = None) -> Path:
+def create_instance_readme(instance_dir: Path) -> Path:
     """Create README.md in instance root documenting this instance.
 
     Args:
         instance_dir: Root instance directory
-        suffix: Instance suffix (for display)
 
     Returns:
         Path to created README.md
@@ -913,7 +906,7 @@ def create_instance_readme(instance_dir: Path, suffix: str | None = None) -> Pat
     if readme.exists():
         return readme
 
-    name = f".femtobot{suffix and '_' + suffix or ''}"
+    name = ".femtobot"
     content = f"""# {name} - Femtobot Instance
 
 This directory contains the persistent data for a Femtobot agent instance.

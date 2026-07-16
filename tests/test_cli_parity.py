@@ -47,8 +47,7 @@ def test_issue1_onboard_no_args_in_tty_does_not_run_wizard(
     """A plain ``femtobot onboard`` in a TTY must NOT auto-fire the wizard."""
     runner = CliRunner()
     with patch("femtobot.cli.onboard_wizard.run_onboard_wizard") as f, \
-         patch("sys.stdin") as fake_stdin, \
-         patch("femtobot.config.loader.validate_instance_suffix", return_value="ok"):
+         patch("sys.stdin") as fake_stdin:
         fake_stdin.isatty.return_value = True
         runner.invoke(app, ["onboard"])
         # The wizard function must not have been called.
@@ -324,19 +323,11 @@ def test_issue7_suffix_validation_runs_before_wizard() -> None:
     onboard_idx = src.find('def onboard(')
     assert onboard_idx >= 0, "Issue 7: def onboard not found"
     # Slice generously so future expansions don't trip the test.
-    # Note: validate_instance_suffix is referenced by short name
-    # inside onboard() because it is imported at the top of the
-    # function body (line 759 in v0.1.7).
+    # R2-femtobot: validate_instance_suffix was removed alongside the
+    # --suffix flag.  We now only assert that the wizard marker is present
+    # in the function body, since there is no prefix validation step.
     onboard_src = src[onboard_idx: onboard_idx + 8000]
-    val_idx = onboard_src.find("validate_instance_suffix(")
     wizard_idx = onboard_src.find("if not wizard:")
-    assert val_idx >= 0, (
-        "Issue 7: validate_instance_suffix(...) call not found in onboard()."
-    )
     assert wizard_idx >= 0, (
         "Issue 7: 'if not wizard:' marker not found in onboard()."
-    )
-    assert val_idx < wizard_idx, (
-        "CLI-parity v0.1.7 Issue 7: suffix validation must run *before* "
-        "the wizard branch so a bad suffix reports before any prompt is asked."
     )

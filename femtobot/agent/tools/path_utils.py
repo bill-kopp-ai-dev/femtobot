@@ -13,9 +13,9 @@ from femtobot.security.workspace_policy import (
 def get_project_root() -> Path | None:
     """Return the project root that contains the Femtobot ``.femtobot`` instance.
 
-    The Femtobot instance directory lives at ``<project_root>/.femtobot``
-    (or ``<project_root>/.femtobot_<suffix>``), and the agent workspace
-    lives at ``<project_root>/.femtobot/workspace`` — but that workspace is
+    The Femtobot instance directory lives at ``<project_root>/.femtobot``,
+    and the agent workspace lives at ``<project_root>/.femtobot/workspace``
+    — but that workspace is
     where the agent stores its own notes, memory and goals, **not** the
     user's source tree.
 
