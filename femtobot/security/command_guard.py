@@ -68,6 +68,37 @@ DESTRUCTIVE_DENY_PATTERNS = [
     r"\bdd\b[^|;&<>]*?\bof=\S*\.femtobot/\S*config\.json\b",
     r"\bsed\s+-i[^|;&<>]*?\.femtobot/\S*config\.json\b",
     r"\b(?:cp|mv)\b(?:\s+[^\s|;&<>]+)+\s+\S*\.femtobot/\S*config\.json\b",
+    # ``tar`` / ``zip`` packaging the .femtobot directory.  We can't
+    # blanket-block ``tar`` because the operator uses it for legitimate
+    # backups; instead we block when the *input* (the file or directory
+    # being added to the archive) ends in ``.femtobot`` or lives under
+    # one.  Same trailing-token semantics as the cp/mv patterns above.
+    r"\btar\b[^|;&<>]*?(?:\.femtobot(?:/|\s|$)|\S+\.femtobot(?:/|\s|$))",
+    # Same idea for ``zip`` / ``unzip`` / ``jar`` (a determined attacker
+    # could use any archiver; ``tar`` is by far the most common).
+    r"\b(?:zip|jar)\b[^|;&<>]*?\.femtobot(?:/|\s|$)",
+    # ``python -c`` / ``python3 -c`` with ``.femtobot`` in the source.
+    # The string in the -c argument is opaque to our regex, so we
+    # match by the presence of the literal ``.femtobot`` token in the
+    # argument.  This has a small false-positive risk for legitimate
+    # Python one-liners that mention the directory by name (very
+    # unusual), so we only block when the Python invocation *also*
+    # targets a file/path operation keyword (``copy``, ``move``,
+    # ``chdir``, ``mkdir``, ``write``, ``rmtree``, ``chmod``, etc.).
+    # We use ``.`` (any char) for the body rather than a denial class
+    # because ``shutil.copytree(\".femtobot\"...)`` contains both
+    # ``;`` (statement separator) and ``\"`` (string literal) that
+    # would break an aggressive deny class.  Two patterns cover the
+    # two orderings (``copytree(\".femtobot\"...)`` and
+    # ``chdir(...); rm(\".femtobot\")``).
+    #
+    # Note: we deliberately omit ``\\b`` before/after the action
+    # keywords because compounds like ``copytree`` / ``move_to`` /
+    # ``rmtree`` should still match.  We also drop the trailing-token
+    # anchor here because the literal ``.femtobot`` is often followed
+    # by a closing quote / comma inside the Python source string.
+    r"\b(?:python|python3)\b.{0,300}?(?:copy|move|chdir|mkdir|write|rmtree|chmod).{0,300}?\.femtobot",
+    r"\b(?:python|python3)\b.{0,300}?\.femtobot.{0,300}?(?:copy|move|chdir|mkdir|write|rmtree|chmod)",
 ]
 
 
