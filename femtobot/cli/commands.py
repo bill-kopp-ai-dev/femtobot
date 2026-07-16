@@ -1049,7 +1049,11 @@ def serve(
     host = host if host is not None else api_cfg.host
     port = port if port is not None else api_cfg.port
     timeout = timeout if timeout is not None else api_cfg.timeout
-    sync_workspace_templates(runtime_config.workspace_path)
+    # R2-femtobot (refactor-parity-with-nanobot.md Phase 3): the
+    # `serve` command used to call ``sync_workspace_templates`` on
+    # every startup.  This leaked internal prompt templates into
+    # the user workspace on each restart.  The workspace is now
+    # seeded exactly once by ``onboard``, and ``serve`` just runs.
     bus = MessageBus()
     session_manager = SessionManager(runtime_config.workspace_path)
     try:
@@ -1183,7 +1187,11 @@ def agent(
     from femtobot.bus.queue import MessageBus
 
     config = _load_runtime_config(config, workspace, folder_path)
-    sync_workspace_templates(config.workspace_path)
+    # R2-femtobot (refactor-parity-with-nanobot.md Phase 3): the
+    # ``agent`` command used to call ``sync_workspace_templates`` on
+    # every REPL entry.  Same justification as ``serve``: the workspace
+    # is seeded by ``onboard`` exactly once, and re-syncing on every
+    # invocation re-leaks internal templates into the user workspace.
 
     # v0.1.0-ui.0+ — honour `--ui` (per-session, not persisted). The
     # ``/ui`` slash command does the same mutation; we set it here
