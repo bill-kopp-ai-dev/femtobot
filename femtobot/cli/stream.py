@@ -366,7 +366,14 @@ class StreamRenderer:
             # delta stream, see ``commands.py:_consume_outbound`` and
             # ``longlogs.txt`` 2026-07-15 19:47 turn where the Opção 1
             # block was rendered twice) no longer cause a second pass.
-            self._ended = True
+            # Only latch when this is the *true* end of the turn —
+            # ``resuming=True`` means the runner is about to stream more
+            # deltas for the same turn (after tool calls / length
+            # recovery / intent-only pushback / injections), and those
+            # are genuinely new content, not the racing duplicate.
+            # Latching unconditionally here silently dropped every
+            # post-tool-call answer for the rest of the turn.
+            self._ended = not resuming
             out = sys.stdout
             out.write(self._render_str())
             out.flush()
@@ -376,13 +383,26 @@ class StreamRenderer:
             if self._spacing is not None:
                 self._spacing.print_turn_gap(self._console)
         else:
-            self._ended = True
+            self._ended = not resuming
         if resuming:
             self._start_spinner()
 
     def stop_for_input(self) -> None:
-        """Stop spinner before user input to avoid prompt_toolkit conflicts."""
+        """Stop spinner before user input to avoid prompt_toolkit conflicts.
+
+        Also resets ``_ended`` for the next turn. The REPL calls this once
+        per loop iteration, right before it blocks on user input — i.e.
+        strictly after the previous turn's final ``on_end`` and strictly
+        before the next turn's first ``on_delta`` can fire. ``close()``
+        performs the same reset, but on the streamed path it is only
+        called when nothing streamed at all (see ``commands.py``'s
+        ``elif renderer and not renderer.streamed``), which never fires
+        again once a turn has streamed — so ``_ended`` would otherwise
+        stay latched for the rest of the session after the first
+        streamed turn, silently dropping every subsequent turn's output.
+        """
         self._stop_spinner()
+        self._ended = False
 
     def pause(self):
         """Context manager: pause spinner for external output. No-op once streaming has started."""

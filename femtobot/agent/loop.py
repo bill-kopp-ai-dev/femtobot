@@ -1729,21 +1729,17 @@ class AgentLoop:
     async def _state_save(self, ctx: TurnContext) -> str:
         turn_continuation.prepare_save_boundary(ctx)
 
-        # Make sure no leftover ``_internal_continuation_pending`` flag
-        # leaks into the next legitimate user turn.  When the runner
-        # terminates with anything other than ``max_iterations`` (e.g.
-        # ``completed`` after a final answer, ``empty_final_response``
-        # after the intent-only guard exhausted its retries, or
-        # ``tool_error`` after a soft failure) the turn is fully closed
-        # and the flag MUST be cleared; otherwise the next user prompt
-        # is misclassified as a continuation slice by
-        # ``should_persist_user_message`` and the session bookkeeping
-        # goes wrong.  ``prepare_save_boundary`` already calls
-        # ``clear_internal_continuation_state`` for session metadata;
-        # we additionally drop the per-message key here for symmetry.
-        ctx.msg.metadata.pop(
-            turn_continuation.INTERNAL_CONTINUATION_PENDING_META, None
-        )
+        # NOTE: ``_state_run`` (which always runs immediately before this
+        # state) already owns ``INTERNAL_CONTINUATION_PENDING_META`` on
+        # ``ctx.msg.metadata`` — it sets the flag when it just scheduled a
+        # legitimate ``max_iterations`` continuation, and clears it for
+        # every other stop reason. Popping it again here unconditionally
+        # would erase the flag ``_state_run`` just set for the
+        # max_iterations case, one state transition later in the same
+        # turn — which made ``internal_continuation_pending()`` always
+        # false downstream (in ``run()``'s dispatch loop), firing a
+        # premature ``turn_completed`` / idle status while an internal
+        # continuation slice was still queued to run.
 
         if (
             ctx.final_content is None or not ctx.final_content.strip()

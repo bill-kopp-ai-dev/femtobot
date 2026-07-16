@@ -5,7 +5,6 @@ call re-renders the same buffer to ``self._buf`` because ``_buf += delta``
 is unconditional. The fix: gate ``on_delta`` with ``_ended`` and clear
 ``_buf`` after the final print.
 """
-import asyncio
 import sys
 
 import pytest
@@ -77,3 +76,51 @@ async def test_close_resets_ended_for_next_turn(renderer):
 
     assert "Opção 1" in renderer._buf or renderer._buf == ""
     # The second-turn buffer should be cleared by on_end (per fix).
+
+
+@pytest.mark.asyncio
+async def test_resuming_on_end_does_not_swallow_next_delta(renderer):
+    """on_end(resuming=True) must not latch ``_ended``.
+
+    Regression: the original ``_ended`` fix set the flag unconditionally
+    in ``on_end``, including for ``resuming=True`` — the signal the
+    runner sends between tool-call iterations of the *same* turn before
+    it streams the model's follow-up answer. Latching there silently
+    dropped every post-tool-call delta for the rest of the turn.
+    """
+    await renderer.on_delta("Let me check that for you.")
+    await renderer.on_end(resuming=True)
+    assert renderer._ended is False, (
+        "on_end(resuming=True) must not latch _ended — more deltas follow "
+        "in the same turn (after tool calls)"
+    )
+
+    await renderer.on_delta("Done, the answer is 42.")
+    assert renderer._buf == "Done, the answer is 42.", (
+        "post-resume delta must accumulate — it is new content, not a "
+        "duplicate of the pre-tool-call buffer"
+    )
+    await renderer.on_end()
+    assert renderer._ended is True
+
+
+@pytest.mark.asyncio
+async def test_stop_for_input_resets_ended_for_next_turn(renderer):
+    """A second streamed turn must render even though ``close()`` is
+    never called between turns on the streamed path (the CLI REPL only
+    calls ``close()`` when nothing streamed at all — see
+    ``commands.py``'s ``elif renderer and not renderer.streamed``).
+    ``stop_for_input()`` is what the REPL calls once per turn instead.
+    """
+    await renderer.on_delta("Turn one answer.")
+    await renderer.on_end()
+    assert renderer._ended is True
+
+    renderer.stop_for_input()
+    assert renderer._ended is False
+
+    await renderer.on_delta("Turn two answer.")
+    assert renderer._buf == "Turn two answer.", (
+        "second turn must stream normally, not be swallowed by a stale "
+        "_ended latch from turn one"
+    )
