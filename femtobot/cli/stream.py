@@ -148,6 +148,12 @@ class StreamRenderer:
         self._live: Live | None = None
         self._spinner: ThinkingSpinner | None = None
         self._header_printed = False
+        # Set by ``on_end`` after the final render prints; consulted by
+        # ``on_delta`` to swallow late chunks that arrive after the
+        # stream is closed (race between the trailing body
+        # ``OutboundMessage`` and the deltas — see ``longlogs.txt``
+        # 2026-07-15 19:47 turn where the Opção 1 block rendered twice).
+        self._ended = False
         # Camada 4 — turn-spacing aesthetics. Default to legacy behaviour
         # (no extra spacing) when no renderer is supplied, so callers that
         # haven't migrated still see the original UX.
@@ -318,6 +324,14 @@ class StreamRenderer:
         return None
 
     async def on_delta(self, delta: str) -> None:
+        # Defend against duplicate chunks arriving after ``on_end`` has
+        # already printed the final render.  The agent loop can publish
+        # the trailing body twice (once as a stream delta, once as the
+        # ``_streamed`` final body) under race conditions observed in
+        # ``longlogs.txt`` 2026-07-15 19:47 — without this guard the
+        # entire response renders twice.
+        if self._ended:
+            return
         self.streamed = True
         self._buf += delta
         if self._live is None:
@@ -346,15 +360,24 @@ class StreamRenderer:
         self._stop_spinner()
         if self._buf.strip():
             # Print final rendered content (persists after Live is gone).
+            # ``_ended`` is set *after* the print so subsequent calls to
+            # ``on_delta`` that re-emit the same buffer (race between the
+            # trailing ``OutboundMessage`` carrying the full body and the
+            # delta stream, see ``commands.py:_consume_outbound`` and
+            # ``longlogs.txt`` 2026-07-15 19:47 turn where the Opção 1
+            # block was rendered twice) no longer cause a second pass.
+            self._ended = True
             out = sys.stdout
             out.write(self._render_str())
             out.flush()
+            self._buf = ""
             # Camada 4 — print N blank lines after the completed turn so the
             # next ``You:`` prompt has room to breathe (issue UX-1).
             if self._spacing is not None:
                 self._spacing.print_turn_gap(self._console)
+        else:
+            self._ended = True
         if resuming:
-            self._buf = ""
             self._start_spinner()
 
     def stop_for_input(self) -> None:
@@ -373,3 +396,8 @@ class StreamRenderer:
             self._live.stop()
             self._live = None
         self._stop_spinner()
+        # Reset ``_ended`` so a follow-up turn can stream again.  The
+        # REPL keeps the same renderer across multiple turns; without
+        # this the next ``on_delta`` would be silently dropped.
+        self._ended = False
+        self._buf = ""

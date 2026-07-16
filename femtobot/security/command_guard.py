@@ -23,6 +23,14 @@ DESTRUCTIVE_DENY_PATTERNS = [
     r"\b(?:cp|mv)\b(?:\s+[^\s|;&<>]+)+\s+\S*(?:history\.jsonl|\.dream_cursor)",  # cp/mv target
     r"\bdd\b[^|;&<>]*\bof=\S*(?:history\.jsonl|\.dream_cursor)",  # dd of=
     r"\bsed\s+-i[^|;&<>]*(?:history\.jsonl|\.dream_cursor)",  # sed -i
+    # Self-replication guard (longlogs.txt 2026-07-15): block Femtobot
+    # from bootstrapping sibling instances via ``exec`` — the agent
+    # already has access to ``/home/bill/Codes/CLI-router-project`` and
+    # nothing about a fresh ``.femtobot_ok`` benefits the user's task;
+    # if a new instance is needed it should be created by the operator
+    # directly.  This is a default-deny guard; users can override via
+    # ``allow_patterns`` in ``ExecToolConfig`` if they really want this.
+    r"\bfemtobot\b[^|;&<>]*\b(onboard|init|new)\b",  # femtobot onboard/init/new
 ]
 
 

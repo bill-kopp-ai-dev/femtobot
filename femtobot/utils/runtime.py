@@ -150,7 +150,20 @@ def is_intent_only_response(content: str | None) -> bool:
     with prose that *mentions* a path or tool name while still being a
     pure description — e.g. "Plano: 1. read_file em
     ``/path/file.md``.  Emitindo agora."  The guard must catch those
-    cases.  Short-circuit only happens when:
+    cases.
+
+    L4 (longlogs.txt analysis, 2026-07-15): the heuristic was
+    asymmetric — the farewell allow-list short-circuited the entire
+    intent-verb check, so a response that *both* quoted an intent verb
+    inside a string ("meu 'Vou te dar 2 boas opções'…") *and* ended
+    with a farewell ("Pronto.") was accepted as final.  That made the
+    runner miss the describe-but-don't-execute pathology and triggered
+    the cascading "Falso-positivo de novo" follow-up turns.  We now
+    treat intent verbs as the primary signal and only let a farewell
+    short-circuit the guard when the response is *entirely* a farewell
+    (no other content, no embedded quoted intent verbs).
+
+    Short-circuit happens when:
 
     1. The content contains a *strong* marker (``[Tool result``,
        ``tool_call_id``, ``function_call``) — unambiguous proof of a
@@ -158,8 +171,9 @@ def is_intent_only_response(content: str | None) -> bool:
     2. The content is a *fenced code block* of substantial size — the
        dominant content is real code, not narration with sprinkled
        backticks.
-    3. The content matches a *final farewell* pattern ("Pong.",
-       "Combinado.", etc.) — pure acknowledgment, not action.
+    3. The content is *entirely* a pure acknowledgment (whole-string
+       match against the farewell regex) — there is no narration of
+       intent and no substantive body.
 
     Anything else with an intent verb is flagged.
     """
@@ -179,13 +193,25 @@ def is_intent_only_response(content: str | None) -> bool:
     if triple_backtick_count >= 2:
         return False
 
-    # (3) Final farewells / pure acknowledgments short-circuit.
+    # No intent verb → not intent_only. We check this *before* the
+    # farewell allow-list so a neutral response (no narration, no
+    # tool calls) is correctly classified.
+    if not _INTENT_VERB_RE.search(content):
+        return False
+
+    # (3) Final farewells short-circuit ONLY when the entire content is
+    # a pure acknowledgment — not when a farewell is appended to a
+    # longer narration.  Without this guard the runner was tricked by
+    # responses like "Falso-positivo de novo. ... Pronto." into
+    # accepting them as terminal, which then leaked into the next turn
+    # and triggered the intent-only retry loop ("Falso-positivo de novo"
+    # repeated 3× in longlogs.txt).
+    stripped = content.strip()
     for pattern in _FINAL_FAREWELL_PATTERNS:
-        if re.search(pattern, content, flags=re.IGNORECASE | re.UNICODE):
+        if re.fullmatch(pattern, stripped, flags=re.IGNORECASE | re.UNICODE):
             return False
 
-    # No intent verb → not intent_only.
-    return bool(_INTENT_VERB_RE.search(content))
+    return True
 
 
 INTENT_ONLY_FEEDBACK_PROMPT = (

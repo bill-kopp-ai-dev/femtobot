@@ -1493,8 +1493,19 @@ class AgentLoop:
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
 
         meta = dict(msg.metadata or {})
+        # When the run streamed content via ``on_stream`` and finished
+        # normally, the per-delta stream already rendered the answer to
+        # the user. The trailing ``OutboundMessage`` here would otherwise
+        # cause the CLI consumer to render the same content a second time
+        # (see femtobot/cli/commands.py:_consume_outbound). Tag it with
+        # ``_streamed=True`` so the consumer knows to suppress the body,
+        # and with ``_stream_end_pending=True`` so the consumer can pair
+        # it with the matching ``on_stream_end`` callback that the runner
+        # already emitted. Channels that do not stream still hit the
+        # fallback path and render the body normally.
         if on_stream is not None and stop_reason not in {"error", "tool_error"}:
             meta["_streamed"] = True
+            meta["_stream_end_pending"] = True
         if turn_latency_ms is not None:
             meta["latency_ms"] = int(turn_latency_ms)
 
@@ -1691,11 +1702,48 @@ class AgentLoop:
         ctx.all_messages = all_msgs
         ctx.stop_reason = stop_reason
         ctx.had_injections = had_injections
-        await turn_continuation.maybe_continue_turn(ctx)
+        # Only sustained-goal continuation slices are scheduled when the
+        # runner exhausted the iteration budget. Other stop reasons
+        # (``completed``, ``empty_final_response``, ``intent_only``,
+        # ``tool_error``, ``error``) all represent the runner reaching a
+        # legitimate terminal state for *this* turn — queuing another
+        # ``InboundMessage`` here would (a) fire a phantom turn with no
+        # new user input and (b) leak ``_internal_continuation_pending``
+        # into the next legitimate turn, making the next prompt appear
+        # as a continuation slice. See femtobot/cli/commands.py:_consume_outbound
+        # for the consumer-side symptoms (the "Falso-positivo de novo"
+        # loop observed in longlogs.txt).
+        if stop_reason == "max_iterations":
+            await turn_continuation.maybe_continue_turn(ctx)
+        else:
+            # Make sure no stale continuation flag from a previous turn
+            # poisons the next legitimate user message.
+            turn_continuation.clear_internal_continuation_state(
+                ctx.session.metadata if ctx.session is not None else {}
+            )
+            ctx.msg.metadata.pop(
+                turn_continuation.INTERNAL_CONTINUATION_PENDING_META, None
+            )
         return "ok"
 
     async def _state_save(self, ctx: TurnContext) -> str:
         turn_continuation.prepare_save_boundary(ctx)
+
+        # Make sure no leftover ``_internal_continuation_pending`` flag
+        # leaks into the next legitimate user turn.  When the runner
+        # terminates with anything other than ``max_iterations`` (e.g.
+        # ``completed`` after a final answer, ``empty_final_response``
+        # after the intent-only guard exhausted its retries, or
+        # ``tool_error`` after a soft failure) the turn is fully closed
+        # and the flag MUST be cleared; otherwise the next user prompt
+        # is misclassified as a continuation slice by
+        # ``should_persist_user_message`` and the session bookkeeping
+        # goes wrong.  ``prepare_save_boundary`` already calls
+        # ``clear_internal_continuation_state`` for session metadata;
+        # we additionally drop the per-message key here for symmetry.
+        ctx.msg.metadata.pop(
+            turn_continuation.INTERNAL_CONTINUATION_PENDING_META, None
+        )
 
         if (
             ctx.final_content is None or not ctx.final_content.strip()

@@ -1404,11 +1404,29 @@ def agent(
             # the parity welcome/header render only once). No rebinding
             # here; that is the whole point.
             reasoning_buffer = _ReasoningBuffer()
+            # Pairs the trailing ``OutboundMessage`` (carrying the full
+            # ``content``) with its ``_stream_end`` notification. The
+            # runner emits them in this order:
+            #   1. on_stream_end(resuming=False) → outbound with
+            #      ``_stream_end=True`` and empty content.
+            #   2. _assemble_outbound → outbound with ``_streamed=True``
+            #      and ``_stream_end_pending=True`` and the full content.
+            # The CLI must render the body exactly once: if the
+            # ``_stream_end`` arrived first, the Rich Live transient has
+            # already persisted the body and the second message must be
+            # suppressed. If the body message arrived first (out-of-order
+            # delivery via the bus), buffer it until ``_stream_end``
+            # arrives and then discard — the user already saw the
+            # streamed version. Without this pairing the same response
+            # appears twice in the terminal (observed in longlogs.txt:
+            # the "Opção 1" block was rendered back-to-back).
+            _pending_streamed_body: dict[str, tuple[str, dict]] = {}
 
             async def _consume_outbound():
                 while True:
                     try:
                         msg = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+                        chat_key = f"{msg.channel}:{msg.chat_id}"
 
                         if msg.metadata.get("_stream_delta"):
                             if renderer:
@@ -1419,8 +1437,37 @@ def agent(
                                 await renderer.on_end(
                                     resuming=msg.metadata.get("_resuming", False),
                                 )
+                            # If the trailing body message raced ahead of
+                            # us, discard it now — the Live render is
+                            # already persisted.
+                            _pending_streamed_body.pop(chat_key, None)
+                            turn_done.set()
                             continue
                         if msg.metadata.get("_streamed"):
+                            if msg.metadata.get("_stream_end_pending"):
+                                # Body arrived before ``_stream_end``
+                                # callback: hold it until the end signal
+                                # tells us the stream is closed.
+                                _pending_streamed_body[chat_key] = (
+                                    msg.content,
+                                    dict(msg.metadata or {}),
+                                )
+                                # Don't release the REPL until the
+                                # stream-end signal arrives — otherwise
+                                # the next ``await turn_done.wait()``
+                                # could exit early and the user could
+                                # type before the stream closes.
+                                continue
+                            # No stream callback was associated (rare
+                            # edge case: streaming channel sent the
+                            # trailing body without an end signal). Fall
+                            # through and render normally so the user
+                            # sees something.
+                            if msg.content and not _pending_streamed_body.get(chat_key):
+                                _pending_streamed_body[chat_key] = (
+                                    msg.content,
+                                    dict(msg.metadata or {}),
+                                )
                             turn_done.set()
                             continue
 
@@ -1433,28 +1480,16 @@ def agent(
                         ):
                             continue
 
-                        if not turn_done.is_set():
-                            if msg.content:
-                                turn_response.append((msg.content, dict(msg.metadata or {})))
-                            turn_done.set()
-                        elif msg.content and not msg.metadata.get("_streamed"):
-                            # Late-arriving message that wasn't a
-                            # stream chunk (or end), and didn't carry
-                            # the ``_streamed`` marker. The CLI channel
-                            # already renders streamed content via
-                            # ``on_delta`` + ``on_end`` (Rich Live
-                            # transient → final persistent render), so
-                            # suppressing here is what stops the same
-                            # response from appearing twice — the
-                            # ``_streamed`` flag is set by the agent
-                            # loop on the *trailing* message of a
-                            # streamed turn. WebSocket clients that
-                            # don't stream still hit this branch.
-                            await _print_interactive_response(
-                                msg.content,
-                                render_markdown=markdown,
-                                metadata=msg.metadata,
+                        # Non-streamed turn: render the body once and
+                        # signal turn completion. ``turn_response`` is
+                        # the source of truth for the REPL loop below;
+                        # we never append to it on the streamed path so
+                        # we cannot accidentally double-render.
+                        if msg.content:
+                            turn_response.append(
+                                (msg.content, dict(msg.metadata or {}))
                             )
+                        turn_done.set()
 
                     except asyncio.TimeoutError:
                         continue
