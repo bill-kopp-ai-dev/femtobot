@@ -9,8 +9,7 @@ These work with every subcommand that targets an instance:
 
 | Flag | Alias | Description |
 |---|---|---|
-| `--suffix <name>` | `-s` | Instance suffix (e.g. `dev`, `prod`, `billing`). See [multiple-instances.md](./multiple-instances.md). |
-| `--folder-path <path>` | `-f` | Parent folder for the instance (overrides `$FEMTOBOT_HOME` and CWD). |
+| `--folder-path <path>` | `-f` | Parent folder for the instance (overrides `$FEMTOBOT_HOME` and CWD). See [multiple-instances.md](./multiple-instances.md). |
 | `--workspace <path>` | `-w` | Override `agents.defaults.workspace` from `config.json`. |
 | `--config <path>` | `-c` | Explicit path to `config.json` (otherwise auto-discovered). |
 
@@ -24,14 +23,12 @@ Initialize a new instance. Creates the instance directory, writes a default
 
 ```bash
 femtobot onboard                              # ./.femtobot/
-femtobot onboard --suffix dev                 # ./.femtobot_dev/
 femtobot onboard --folder-path /opt/agents    # /opt/agents/.femtobot/
-femtobot onboard --suffix billing --force     # overwrite existing config.json
+femtobot onboard --folder-path /opt/agents --force   # overwrite existing config.json
 ```
 
 | Option | Description |
 |---|---|
-| `--suffix`, `-s` | Instance suffix. |
 | `--folder-path`, `-f` | Parent folder. |
 | `--workspace`, `-w` | Workspace path. |
 | `--config`, `-c` | Path to a seed `config.json`. |
@@ -48,7 +45,7 @@ workspace path, active model and provider, configured providers, and the
 
 ```bash
 femtobot status
-femtobot status --suffix dev
+femtobot status --folder-path /opt/agents
 ```
 
 Always run this after editing `config.json` — if Pydantic validation failed
@@ -65,7 +62,7 @@ Run the agent loop. With no `-m`, drops you into an interactive REPL. With
 ```bash
 femtobot agent                              # interactive REPL
 femtobot agent -m "Hello!"                  # single-shot
-femtobot agent --suffix dev -m "Hi dev!"    # against the dev instance
+femtobot agent --folder-path /opt/agents -m "Hi!"  # against another instance
 femtobot agent --session myproject          # isolated session id
 femtobot agent --markdown                   # render output as Markdown (default)
 femtobot agent --no-markdown                # plain text only
@@ -80,7 +77,6 @@ femtobot agent --verbose                    # full femtobot.* logger output
 | `--workspace`, `-w` | Workspace override. |
 | `--config`, `-c` | Path to `config.json`. |
 | `--folder-path`, `-f` | Instance folder. |
-| `--suffix` | Instance suffix. |
 | `--markdown` / `--no-markdown` | Render assistant output as Markdown (default `true`). |
 | `--logs` | Show tool calls and intermediate steps in the REPL. |
 
@@ -121,7 +117,7 @@ By default binds to `127.0.0.1:8900` per the `api` block in `config.json`.
 femtobot serve                              # default api.host:api.port
 femtobot serve --port 9000                  # override
 femtobot serve --host 0.0.0.0 --verbose     # bind all interfaces + show logs
-femtobot serve --suffix dev --timeout 60    # 60s per-request timeout
+femtobot serve --folder-path /opt/agents --timeout 60    # 60s per-request timeout
 ```
 
 | Option | Description |
@@ -147,7 +143,7 @@ the placeholder for the Stage-2 A2A / Docker orchestration work.
 
 ```bash
 femtobot gateway
-femtobot gateway --port 9001 --suffix prod
+femtobot gateway --port 9001 --folder-path /opt/agents
 ```
 
 | Option | Description |
@@ -156,7 +152,6 @@ femtobot gateway --port 9001 --suffix prod
 | `--workspace`, `-w` | Workspace override. |
 | `--config`, `-c` | Path to `config.json`. |
 | `--folder-path`, `-f` | Instance folder. |
-| `--suffix`, `-s` | Instance suffix. |
 | `--verbose`, `-v` | Verbose output. |
 | `--ui` | UI parity profile: `off` (default), `compat`, `full` (RC only). See [UI parity](cli-ui-parity.md). |
 

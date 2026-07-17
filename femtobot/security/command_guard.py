@@ -31,6 +31,74 @@ DESTRUCTIVE_DENY_PATTERNS = [
     # directly.  This is a default-deny guard; users can override via
     # ``allow_patterns`` in ``ExecToolConfig`` if they really want this.
     r"\bfemtobot\b[^|;&<>]*\b(onboard|init|new)\b",  # femtobot onboard/init/new
+    # R2-femtobot (refactor-parity-with-nanobot.md, Phase 2): even with
+    # the ``--suffix`` flag removed, the agent can still materialise a
+    # sibling ``.femtobot`` directory by (a) recursively copying the
+    # existing one, or (b) writing into the instance ``config.json``.
+    # Both paths are below the Femtobot-onboard regex (which only
+    # matches the literal ``femtobot`` binary invocation), so we add
+    # explicit patterns here as defence in depth.
+    #
+    # Word-boundary + closing-token anchored: ``\.femtobot`` must NOT be
+    # followed by another dot or word char so we don't match
+    # ``.femtobot/workspace/skills/...`` (legitimate reads inside the
+    # instance) or ``.femtobot_ok_history`` (unrelated).  We allow
+    # ``.femtobot`` as a target (no slash) or ``.femtobot/...`` (with
+    # path separator) so ``cat .femtobot/config.json`` etc. keep
+    # working — only the copy/move-into-instance case is blocked.
+    # The leading-token class accepts whitespace OR a path separator so
+    # ``cp -r /opt/proj/.femtobot /tmp/x`` (absolute source) is matched.
+    r"\b(?:cp|mv|rsync|cp\s+-r|cp\s+-a)\b[^|;&<>]*?(?:^|[\s/])\.femtobot(?:/|\s|$)",
+    # Same idea for the legacy ``.nanobot`` dir name (we don't ship it,
+    # but a determined agent might try to clone from an unrelated
+    # nanobot install — same defence).
+    r"\b(?:cp|mv|rsync|cp\s+-r|cp\s+-a)\b[^|;&<>]*?(?:^|[\s/])\.nanobot(?:/|\s|$)",
+    # Writing to the instance ``config.json``: covers shell redirects,
+    # tee, dd, sed -i, and the cp/mv-target form.  The ``\.json`` form
+    # matches ``config.json`` and avoids colliding with
+    # ``config.jsonl`` (also a real filename in our codebase) thanks
+    # to the word boundary at the end.  The ``(?:^|\s)`` prefix avoids
+    # matching legitimate ``cat .femtobot/config.json`` reads.  The
+    # middle char class allows whitespace, ``<`` (tee input
+    # redirection), ``>`` (overwrite), and path separators — anything
+    # that can legitimately appear between a command and its argument
+    # without being a control-flow character we want to leave alone.
+    r">>?\s*\S*\.femtobot/\S*config\.json\b",
+    r"\btee\b[^|;&]*?\.femtobot/\S*config\.json\b",
+    r"\bdd\b[^|;&<>]*?\bof=\S*\.femtobot/\S*config\.json\b",
+    r"\bsed\s+-i[^|;&<>]*?\.femtobot/\S*config\.json\b",
+    r"\b(?:cp|mv)\b(?:\s+[^\s|;&<>]+)+\s+\S*\.femtobot/\S*config\.json\b",
+    # ``tar`` / ``zip`` packaging the .femtobot directory.  We can't
+    # blanket-block ``tar`` because the operator uses it for legitimate
+    # backups; instead we block when the *input* (the file or directory
+    # being added to the archive) ends in ``.femtobot`` or lives under
+    # one.  Same trailing-token semantics as the cp/mv patterns above.
+    r"\btar\b[^|;&<>]*?(?:\.femtobot(?:/|\s|$)|\S+\.femtobot(?:/|\s|$))",
+    # Same idea for ``zip`` / ``unzip`` / ``jar`` (a determined attacker
+    # could use any archiver; ``tar`` is by far the most common).
+    r"\b(?:zip|jar)\b[^|;&<>]*?\.femtobot(?:/|\s|$)",
+    # ``python -c`` / ``python3 -c`` with ``.femtobot`` in the source.
+    # The string in the -c argument is opaque to our regex, so we
+    # match by the presence of the literal ``.femtobot`` token in the
+    # argument.  This has a small false-positive risk for legitimate
+    # Python one-liners that mention the directory by name (very
+    # unusual), so we only block when the Python invocation *also*
+    # targets a file/path operation keyword (``copy``, ``move``,
+    # ``chdir``, ``mkdir``, ``write``, ``rmtree``, ``chmod``, etc.).
+    # We use ``.`` (any char) for the body rather than a denial class
+    # because ``shutil.copytree(\".femtobot\"...)`` contains both
+    # ``;`` (statement separator) and ``\"`` (string literal) that
+    # would break an aggressive deny class.  Two patterns cover the
+    # two orderings (``copytree(\".femtobot\"...)`` and
+    # ``chdir(...); rm(\".femtobot\")``).
+    #
+    # Note: we deliberately omit ``\\b`` before/after the action
+    # keywords because compounds like ``copytree`` / ``move_to`` /
+    # ``rmtree`` should still match.  We also drop the trailing-token
+    # anchor here because the literal ``.femtobot`` is often followed
+    # by a closing quote / comma inside the Python source string.
+    r"\b(?:python|python3)\b.{0,300}?(?:copy|move|chdir|mkdir|write|rmtree|chmod).{0,300}?\.femtobot",
+    r"\b(?:python|python3)\b.{0,300}?\.femtobot.{0,300}?(?:copy|move|chdir|mkdir|write|rmtree|chmod)",
 ]
 
 

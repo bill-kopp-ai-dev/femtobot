@@ -714,7 +714,6 @@ def _load_runtime_config(
     config: str | None,
     workspace: str | None,
     folder_path: str | None = None,
-    suffix: str | None = None,
 ) -> Config:
     """Load runtime configuration with optional instance selection."""
     from femtobot.config.loader import load_config, resolve_runtime_location
@@ -723,7 +722,6 @@ def _load_runtime_config(
     resolve_runtime_location(
         config_path=Path(config) if config else None,
         folder_path=Path(folder_path) if folder_path else None,
-        suffix=suffix,
     )
 
     # Load config
@@ -779,12 +777,6 @@ def onboard(
         "-c",
         help="Explicit config file path (default: <instance_dir>/config.json)",
     ),
-    suffix: str | None = typer.Option(
-        None,
-        "--suffix",
-        "-s",
-        help="Instance suffix for multi-agent setup (e.g., 'dev', 'prod'). Creates .femtobot_<suffix>",
-    ),
     wizard: bool = typer.Option(
         False,
         "--wizard",
@@ -802,18 +794,14 @@ def onboard(
 
     Examples:
         femtobot onboard                    # Creates .femtobot in parent directory
-        femtobot onboard --suffix dev       # Creates .femtobot_dev in parent directory
-        femtobot onboard --folder-path /opt  # Creates /opt/.femtobot
-        femtobot onboard -f /opt -s billing # Creates /opt/.femtobot_billing
+        femtobot onboard --folder-path /opt # Creates /opt/.femtobot
     """
     from rich.console import Console
     from rich.panel import Panel
 
     from femtobot.config.loader import (
-        build_instance_dir_name,
         resolve_instance_dir,
         set_instance_dir,
-        validate_instance_suffix,
     )
     from femtobot.utils.helpers import (
         build_default_onboard_config,
@@ -826,23 +814,17 @@ def onboard(
 
     console = Console()
 
-    # Validate suffix
-    validated_suffix = validate_instance_suffix(suffix)
-    if suffix and not validated_suffix:
-        console.print("[red]![/red] Invalid suffix. Use only letters, numbers, '_' or '-'.")
-        raise typer.Exit(1)
-
     # Resolve instance directory
     parent_dir = Path(folder_path) if folder_path else None
-    instance_dir = resolve_instance_dir(folder_path=parent_dir, suffix=validated_suffix)
+    instance_dir = resolve_instance_dir(folder_path=parent_dir)
 
-    # Determine the config file path. When an explicit folder_path/suffix is
+    # Determine the config file path. When an explicit folder_path is
     # supplied, use the instance_dir; otherwise honor the runtime config path
     # (which tests typically patch via `get_config_path`).
     from femtobot.config.loader import get_config_path
 
     config_file = (
-        instance_dir / "config.json" if (folder_path or validated_suffix) else get_config_path()
+        instance_dir / "config.json" if folder_path else get_config_path()
     )
 
     # Check if already exists
@@ -859,7 +841,7 @@ def onboard(
                 # config_file is the test mock path; let the rest of the
                 # command create config.json from defaults.
                 console.print("[dim]→[/dim] Re-initializing test instance")
-                config = build_default_onboard_config(instance_dir, validated_suffix)
+                config = build_default_onboard_config(instance_dir)
                 # Force overwrite so the mock file gets a real config.
                 config_written = write_default_config(config, config_file, force=True)
             else:
@@ -881,11 +863,11 @@ def onboard(
             console.print("[yellow]![/yellow] Config already exists")
             console.print("  existing values preserved.")
         except Exception:
-            config = build_default_onboard_config(instance_dir, validated_suffix)
+            config = build_default_onboard_config(instance_dir)
 
     # C5: optional interactive wizard for choosing model + provider
     # (only when stdin is a TTY and --wizard is set or the user passes
-    # no --folder-path / --suffix, signaling a first-time setup).
+    # no --folder-path, signaling a first-time setup).
     from femtobot.cli.onboard_wizard import run_onboard_wizard
 
     # C5 + CLI-parity v0.1.7: the wizard is now strictly opt-in via
@@ -893,8 +875,8 @@ def onboard(
     # caused every plain ``femtobot onboard`` in a terminal to drop
     # the user into interactive prompts with no warning.  We model
     # the nanobot behaviour: the wizard is only run when explicitly
-    # requested.  Suffix / folder-path validation has already
-    # happened by the time we reach this branch.
+    # requested.  Folder-path validation has already happened by the
+    # time we reach this branch.
     if not wizard:
         wizard_result = None
     elif sys.stdin.isatty():
@@ -961,10 +943,10 @@ def onboard(
         "config" not in dir()
         or config is None
         or not isinstance(
-            config, type(build_default_onboard_config(instance_dir, validated_suffix))
+            config, type(build_default_onboard_config(instance_dir))
         )
     ):
-        config = build_default_onboard_config(instance_dir, validated_suffix)
+        config = build_default_onboard_config(instance_dir)
     if "config_written" not in dir():
         config_written = write_default_config(config, config_file, force=force)
     elif config_written is None:
@@ -993,7 +975,7 @@ def onboard(
     console.print("  [green]+[/green] Created .gitignore")
 
     # Create README
-    readme = create_instance_readme(instance_dir, validated_suffix)
+    readme = create_instance_readme(instance_dir)
     console.print("  [green]+[/green] Created README.md")
 
     # Sync workspace templates (creates templates only, not the directory itself)
@@ -1011,7 +993,7 @@ def onboard(
     set_instance_dir(instance_dir)
 
     # Print summary
-    instance_name = build_instance_dir_name(validated_suffix)
+    instance_name = ".femtobot"
     summary = f"""[green]✓[/green] Instance [bold]{instance_name}[/bold] initialized successfully!
 femtobot is ready.
 
@@ -1020,12 +1002,8 @@ Instance root: [cyan]{instance_dir}[/cyan]
 To use this instance:
 """
 
-    if validated_suffix:
-        summary += f"  femtobot status --suffix {validated_suffix}\n"
-        summary += f'  femtobot agent -m "Hello" --suffix {validated_suffix}\n'
-    else:
-        summary += "  femtobot status\n"
-        summary += '  femtobot agent -m "Hello"\n'
+    summary += "  femtobot status\n"
+    summary += '  femtobot agent -m "Hello"\n'
 
     console.print(Panel(summary, title="[bold]Next Steps[/bold]", border_style="green"))
 
@@ -1071,7 +1049,11 @@ def serve(
     host = host if host is not None else api_cfg.host
     port = port if port is not None else api_cfg.port
     timeout = timeout if timeout is not None else api_cfg.timeout
-    sync_workspace_templates(runtime_config.workspace_path)
+    # R2-femtobot (refactor-parity-with-nanobot.md Phase 3): the
+    # `serve` command used to call ``sync_workspace_templates`` on
+    # every startup.  This leaked internal prompt templates into
+    # the user workspace on each restart.  The workspace is now
+    # seeded exactly once by ``onboard``, and ``serve`` just runs.
     bus = MessageBus()
     session_manager = SessionManager(runtime_config.workspace_path)
     try:
@@ -1124,11 +1106,10 @@ def gateway(
     folder_path: str | None = typer.Option(
         None, "--folder-path", "-f", help="Instance folder path"
     ),
-    suffix: str | None = typer.Option(None, "--suffix", "-s", help="Instance suffix"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
     """Start the Femtobot gateway."""
-    cfg = _load_runtime_config(config, workspace, folder_path, suffix)
+    cfg = _load_runtime_config(config, workspace, folder_path)
 
     if verbose:
         logger.remove(_log_handler_id)
@@ -1190,7 +1171,6 @@ def agent(
     folder_path: str | None = typer.Option(
         None, "--folder-path", "-f", help="Instance folder path"
     ),
-    suffix: str | None = typer.Option(None, "--suffix", help="Instance suffix"),
     markdown: bool = typer.Option(
         True, "--markdown/--no-markdown", help="Render assistant output as Markdown"
     ),
@@ -1206,8 +1186,12 @@ def agent(
 
     from femtobot.bus.queue import MessageBus
 
-    config = _load_runtime_config(config, workspace, folder_path, suffix)
-    sync_workspace_templates(config.workspace_path)
+    config = _load_runtime_config(config, workspace, folder_path)
+    # R2-femtobot (refactor-parity-with-nanobot.md Phase 3): the
+    # ``agent`` command used to call ``sync_workspace_templates`` on
+    # every REPL entry.  Same justification as ``serve``: the workspace
+    # is seeded by ``onboard`` exactly once, and re-syncing on every
+    # invocation re-leaks internal templates into the user workspace.
 
     # v0.1.0-ui.0+ — honour `--ui` (per-session, not persisted). The
     # ``/ui`` slash command does the same mutation; we set it here
@@ -1673,7 +1657,6 @@ def status(
     folder_path: str | None = typer.Option(
         None, "--folder-path", "-f", help="Instance folder path"
     ),
-    suffix: str | None = typer.Option(None, "--suffix", "-s", help="Instance suffix"),
 ):
     """Show Femtobot status."""
     from femtobot.config.loader import get_config_path, load_config, resolve_runtime_location
@@ -1682,7 +1665,6 @@ def status(
     resolve_runtime_location(
         config_path=None,
         folder_path=Path(folder_path) if folder_path else None,
-        suffix=suffix,
     )
 
     config_path = get_config_path()
@@ -1753,7 +1735,6 @@ def config_validate(
     folder_path: str | None = typer.Option(
         None, "--folder-path", "-f", help="Instance folder path"
     ),
-    suffix: str | None = typer.Option(None, "--suffix", "-s", help="Instance suffix"),
     config_path: str | None = typer.Option(
         None, "--config", "-c", help="Explicit path to config.json"
     ),
@@ -1778,7 +1759,6 @@ def config_validate(
     resolve_runtime_location(
         config_path=Path(config_path) if config_path else None,
         folder_path=Path(folder_path) if folder_path else None,
-        suffix=suffix,
     )
     target = Path(config_path) if config_path else None
     ok, message = _validate_config(config_path=target, strict=strict)
@@ -1802,7 +1782,6 @@ def tools_list(
     folder_path: str | None = typer.Option(
         None, "--folder-path", "-f", help="Instance folder path"
     ),
-    suffix: str | None = typer.Option(None, "--suffix", "-s", help="Instance suffix"),
     capability: str | None = typer.Option(
         None,
         "--capability",
@@ -1827,7 +1806,6 @@ def tools_list(
     resolve_runtime_location(
         config_path=None,
         folder_path=Path(folder_path) if folder_path else None,
-        suffix=suffix,
     )
     # C2: build a minimal in-memory registry and call ``by_capability``
     # so the filter logic is exercised end-to-end.  The list won't

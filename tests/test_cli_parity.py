@@ -15,7 +15,9 @@ parity review of ``femtobot/cli`` against upstream nanobot:
 * Issue 6: ``_CURATED_MODELS`` falls back to a registry-derived
   default for unknown providers and ``_env_key_for`` reads the
   ``env_key`` from ``ProviderSpec``.
-* Issue 7: Suffix validation runs *before* the wizard block.
+* Issue 7 (legacy): Suffix validation runs *before* the wizard
+  block.  Superseded in v0.2.0 by the explicit ``if not wizard:``
+  gate — see ``test_onboard_wizard_branch_is_explicitly_gated``.
 """
 
 from __future__ import annotations
@@ -47,8 +49,7 @@ def test_issue1_onboard_no_args_in_tty_does_not_run_wizard(
     """A plain ``femtobot onboard`` in a TTY must NOT auto-fire the wizard."""
     runner = CliRunner()
     with patch("femtobot.cli.onboard_wizard.run_onboard_wizard") as f, \
-         patch("sys.stdin") as fake_stdin, \
-         patch("femtobot.config.loader.validate_instance_suffix", return_value="ok"):
+         patch("sys.stdin") as fake_stdin:
         fake_stdin.isatty.return_value = True
         runner.invoke(app, ["onboard"])
         # The wizard function must not have been called.
@@ -305,15 +306,29 @@ def test_issue6_env_key_for_ant_ling_uses_registry_when_available() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Issue 7 — suffix validation runs before the wizard
+# Issue 7 (legacy) — was: "suffix validation runs before the wizard".
+#
+# R2-femtobot (refactor-parity-with-nanobot.md): the ``--suffix`` flag
+# was removed entirely, so ``validate_instance_suffix`` no longer
+# exists and there is no prefix-validation step in ``onboard()``.  The
+# equivalent guarantee we now want is that the wizard branch is still
+# gated by an explicit ``if not wizard:`` check (so a plain
+# ``femtobot onboard`` in a TTY does not drop the operator into
+# interactive prompts).  The test is renamed to reflect the new
+# contract — the historical "Issue 7" framing is preserved here for
+# traceability.
 # ---------------------------------------------------------------------------
 
 
-def test_issue7_suffix_validation_runs_before_wizard() -> None:
-    """CLI-parity v0.1.7 Issue 7: suffix validation is *before* the wizard.
+def test_onboard_wizard_branch_is_explicitly_gated() -> None:
+    """R2-femtobot: ``onboard()`` must gate the wizard on ``if not wizard:``.
 
-    Validate_instance_suffix must be called before the wizard branch,
-    so a bad suffix is rejected before any interactive prompt fires.
+    Original Issue 7 (CLI-parity v0.1.7) was about ordering: prefix
+    validation had to run before the wizard block.  After R2-femtobot
+    the prefix-validation step is gone (no ``--suffix``), so we only
+    verify the wizard branch itself is explicit.  A plain
+    ``femtobot onboard`` (no ``--wizard``) must not auto-fire the
+    wizard even on a TTY.
     """
     import inspect
 
@@ -322,21 +337,10 @@ def test_issue7_suffix_validation_runs_before_wizard() -> None:
     src = inspect.getsource(cli_module)
     # Locate def onboard (decorated typer command).
     onboard_idx = src.find('def onboard(')
-    assert onboard_idx >= 0, "Issue 7: def onboard not found"
+    assert onboard_idx >= 0, "def onboard not found"
     # Slice generously so future expansions don't trip the test.
-    # Note: validate_instance_suffix is referenced by short name
-    # inside onboard() because it is imported at the top of the
-    # function body (line 759 in v0.1.7).
     onboard_src = src[onboard_idx: onboard_idx + 8000]
-    val_idx = onboard_src.find("validate_instance_suffix(")
     wizard_idx = onboard_src.find("if not wizard:")
-    assert val_idx >= 0, (
-        "Issue 7: validate_instance_suffix(...) call not found in onboard()."
-    )
     assert wizard_idx >= 0, (
         "Issue 7: 'if not wizard:' marker not found in onboard()."
-    )
-    assert val_idx < wizard_idx, (
-        "CLI-parity v0.1.7 Issue 7: suffix validation must run *before* "
-        "the wizard branch so a bad suffix reports before any prompt is asked."
     )

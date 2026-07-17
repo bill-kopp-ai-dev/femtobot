@@ -117,3 +117,62 @@ def test_sync_workspace_templates_creates_agents_when_missing(tmp_path: Path) ->
     assert created.exists(), f"AGENTS.md not created at {created}"
     body = created.read_text(encoding="utf-8")
     assert "## MCP-Aware Operating Rules" in body
+
+
+# R2-femtobot (refactor-parity-with-nanobot.md Phase 3): the sync helper
+# used to copy every ``templates/agent/*.md`` into the user workspace
+# (identity.md, dream.md, tool_contract.md, evaluator.md, etc.).  Those
+# files are internal prompt templates read in-memory by
+# ``prompt_templates.render_template`` and must never be materialised on
+# disk.  This guard freezes the contract: a fresh workspace contains
+# exactly the canonical files, not the internal ones.
+_LEAKED_TEMPLATES = {
+    "identity.md",
+    "tool_contract.md",
+    "dream.md",
+    "evaluator.md",
+    "consolidator_archive.md",
+    "subagent_system.md",
+    "subagent_announce.md",
+    "skills_section.md",
+    "platform_policy.md",
+    "max_iterations_message.md",
+}
+
+
+def test_sync_workspace_does_not_leak_internal_templates(tmp_path: Path) -> None:
+    """A fresh workspace must not contain internal prompt templates."""
+    from femtobot.utils.helpers import sync_workspace_templates
+
+    ws = tmp_path / "workspace"
+
+    sync_workspace_templates(ws, silent=True)
+
+    leaked = {p.name for p in ws.iterdir() if p.is_file()} & _LEAKED_TEMPLATES
+    assert not leaked, (
+        f"sync_workspace_templates leaked internal templates into the workspace: "
+        f"{leaked}"
+    )
+
+
+def test_sync_workspace_creates_only_canonical_files(tmp_path: Path) -> None:
+    """A fresh workspace contains exactly the canonical user-facing files."""
+    from femtobot.utils.helpers import sync_workspace_templates
+
+    ws = tmp_path / "workspace"
+
+    sync_workspace_templates(ws, silent=True)
+
+    expected_files = {"AGENTS.md", "SOUL.md", "USER.md", "goal_runtime.md"}
+    expected_dirs = {"memory", "skills"}
+
+    actual = {p.name for p in ws.iterdir() if not p.name.startswith(".")}
+    actual_files = {n for n in actual if (ws / n).is_file()}
+    actual_dirs = {n for n in actual if (ws / n).is_dir()}
+
+    assert actual_files == expected_files, (
+        f"workspace files mismatch: got {actual_files}, expected {expected_files}"
+    )
+    assert actual_dirs == expected_dirs, (
+        f"workspace dirs mismatch: got {actual_dirs}, expected {expected_dirs}"
+    )

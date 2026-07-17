@@ -101,10 +101,11 @@ If none of the above applies, decide yourself and continue.
 
 ## Multi-Instance Notes
 
-If this directory was created with `--suffix`, this is a *named*
-instance (`.femtobot_<suffix>`). Multiple instances may run on the
-same host with isolated state. Use
-`femtobot status --suffix <name>` to inspect any of them.
+Femtobot runs one instance per directory. To use a second instance in
+parallel, point at a different project root with `--folder-path
+<dir>` or with the `FEMTOBOT_HOME=<dir>` environment variable. There
+is no `--suffix` flag — alignment with the upstream nanobot design,
+which uses env-vars or explicit paths for the same purpose.
 
 ## MCP-Aware Operating Rules
 

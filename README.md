@@ -27,7 +27,7 @@ Femtobot is designed to be a practical foundation for building specialized "work
 ## Why Femtobot
 
 - **CLI-first.** No GUI to install, no dashboard to babysit. The terminal is the operator's surface; the HTTP/WebSocket surface is for other agents.
-- **Multi-instance by design.** Run `.femtobot` for the default profile, `.femtobot_dev` for development, `.femtobot_billing` for production — all in parallel, fully isolated, no port collisions.
+- **Multi-instance by design.** Run `.femtobot` for the default profile; point `--folder-path` at any directory to spin up additional instances, fully isolated, no port collisions. See [`docs/multiple-instances.md`](./docs/multiple-instances.md).
 - **A2A-ready.** The built-in `femtobot serve` already speaks the OpenAI Chat Completions protocol, so any agent that can call OpenAI can call Femtobot. Stage 2 adds native Docker orchestration on top.
 - **30 LLM providers out of the box.** Declarative `ProviderSpec` registry covers OpenAI, Anthropic (via compatible gateways), AWS Bedrock (first-class), Ollama, vLLM, LM Studio, OpenVINO Model Server, and 24 regional providers (Mistral, Groq, NVIDIA NIM, Zhipu, DashScope, Moonshot, VolcEngine, BytePlus, …). See [`docs/providers.md`](./docs/providers.md).
 - **Workspace-scoped safety.** Tools are sandboxed to a per-instance workspace, with SSRF protection, command guards, and a deny-list for destructive shell operations.
@@ -97,7 +97,7 @@ the full reference.
 - SSRF protection on all HTTP-fetching tools
 - Command guard with a deny-list of destructive shell patterns
 - Workspace access scoping per turn
-- Per-instance isolation (no cross-talk between `.femtobot_*`)
+- Per-instance isolation (no cross-talk between `.femtobot/`, `/opt/agents/.femtobot/`, etc.)
 
 ### Multi-provider LLM support
 - Unified `openai_compat_provider` for any OpenAI-compatible endpoint (29 of 30 providers)
@@ -221,14 +221,11 @@ Initialize a new Femtobot instance. Creates the instance directory, writes a def
 # Default instance at ./.femtobot/   (silent install, v0.1.7+)
 uv run femtobot onboard
 
-# Named instance at ./.femtobot_dev/
-uv run femtobot onboard --suffix dev
-
 # Instance in a specific parent folder
-uv run femtobot onboard --folder-path /opt/agents --suffix billing
+uv run femtobot onboard --folder-path /opt/agents
 
 # Overwrite an existing config.json
-uv run femtobot onboard --suffix dev --force
+uv run femtobot onboard --folder-path /opt/agents --force
 
 # Run the interactive onboarding wizard
 uv run femtobot onboard --wizard
@@ -236,7 +233,6 @@ uv run femtobot onboard --wizard
 
 | Option | Alias | Description |
 |---|---|---|
-| `--suffix` | `-s` | Instance suffix (e.g. `dev`, `prod`, `billing`) |
 | `--folder-path` | `-f` | Parent folder for the instance |
 | `--force` |  | Overwrite an existing `config.json` |
 | `--wizard` |  | Run the interactive wizard (v0.1.7+) |
@@ -257,7 +253,7 @@ Show the current instance status: config path, workspace path, active model, and
 
 ```bash
 uv run femtobot status
-uv run femtobot status --suffix dev
+uv run femtobot status --folder-path /opt/agents
 ```
 
 ### `femtobot agent`
@@ -267,11 +263,11 @@ Run the agent. In interactive mode (no `-m`), you get a prompt; with `-m`, the a
 ```bash
 # Interactive
 uv run femtobot agent
-uv run femtobot agent --suffix dev
+uv run femtobot agent --folder-path /opt/agents
 
 # Single-shot
 uv run femtobot agent -m "Explain the layout of this codebase"
-uv run femtobot agent --suffix prod -m "Summarize the last 5 commits"
+uv run femtobot agent --folder-path /opt/agents -m "Summarize the last 5 commits"
 
 # Need the time? Use the femtobot_timer tool
 uv run femtobot agent -m "what time is it?"
@@ -283,7 +279,7 @@ Start the OpenAI-compatible HTTP server. Other agents and tools can then call th
 
 ```bash
 uv run femtobot serve
-uv run femtobot serve --suffix dev --host 0.0.0.0 --port 8000
+uv run femtobot serve --folder-path /opt/agents --host 0.0.0.0 --port 8000
 ```
 
 | Endpoint | Method | Description |
@@ -298,27 +294,28 @@ Start the WebSocket gateway. This is the primary interactive channel for clients
 
 ```bash
 uv run femtobot gateway
-uv run femtobot gateway --suffix dev
+uv run femtobot gateway --folder-path /opt/agents
 ```
 
 ## Multi-Instance Model
 
-Femtobot supports multiple isolated instances on the same machine. Each instance has its own config, workspace, history, and port. The instance directory is determined by the `--suffix` and `--folder-path` flags, with the following resolution order:
+Femtobot supports multiple isolated instances on the same machine. Each instance has its own config, workspace, history, and port. The instance directory is determined by `--folder-path` or `FEMTOBOT_HOME`, with the following resolution order:
 
 1. `--config <path>` (if implemented in the future)
-2. `--folder-path <path>` + `--suffix <suffix>` → `<path>/.femtobot_<suffix>/`
-3. `FEMTOBOT_HOME` environment variable → `$FEMTOBOT_HOME/.femtobot_<suffix>/`
-4. Current working directory: `./.femtobot_<suffix>/` (or `./.femtobot/` for the default)
+2. `--folder-path <path>` → `<path>/.femtobot/`
+3. `FEMTOBOT_HOME` environment variable → `$FEMTOBOT_HOME/.femtobot/`
+4. Current working directory: `./.femtobot/`
 
 Common directory layouts:
 
 ```text
 .femtobot/                 # default instance
-.femtobot_dev/             # development instance
-.femtobot_prod/            # production instance
 ```
 
-The suffix must match `[a-zA-Z0-9_-]+`. Examples of valid suffixes: `dev`, `prod`, `billing_2024`, `agent-test`. Invalid: `dev env`, `test/path`, `..`.
+Note: the legacy `--suffix` flag (which produced `.femtobot_<x>/` directory
+names) was removed in v0.2.0 to align with the upstream nanobot design.
+See [docs/multiple-instances.md](docs/multiple-instances.md) for the
+migration recipe.
 
 ### Environment variables
 
@@ -600,7 +597,7 @@ Full documentation lives under [docs/](docs/). Start here:
 - [docs/my-tool.md](docs/my-tool.md) — the introspection tool and its security layers.
 - [docs/security.md](docs/security.md) — the security model.
 - [docs/deployment.md](docs/deployment.md) — Docker, systemd, supervisord, reverse proxies.
-- [docs/multiple-instances.md](docs/multiple-instances.md) — running `.femtobot`, `.femtobot_dev`, etc. side by side.
+- [docs/multiple-instances.md](docs/multiple-instances.md) — running multiple isolated instances via `--folder-path` / `FEMTOBOT_HOME`.
 - [docs/troubleshooting.md](docs/troubleshooting.md) — common failure modes and fixes.
 - [docs/dream_parity_review.md](docs/dream_parity_review.md) — Dream consolidation parity review (v0.1.5).
 - [docs/nano_timer_implementation_plan.md](docs/nano_timer_implementation_plan.md) — `femtobot_timer` rollout plan (v0.1.6).

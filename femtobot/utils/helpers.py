@@ -611,6 +611,28 @@ def build_status_content(
     return "\n".join(lines)
 
 
+# R2-femtobot (refactor-parity-with-nanobot.md Phase 3): the sync helper
+# used to copy every ``templates/agent/*.md`` (identity.md, dream.md,
+# tool_contract.md, evaluator.md, …) into the user workspace, even
+# though those files are internal prompt templates rendered in memory
+# by ``prompt_templates.render_template`` and should never be edited
+# by the operator.  Restrict the sync to the four canonical user-
+# facing files plus the memory stubs.  Adding a new template below is
+# a deliberate decision; the previous open-loop policy leaked internal
+# prompt scaffolding into ``.gitignore``-protected workspace files.
+#
+# Each tuple is ``(template_path_relative_to_templates, workspace_name)``
+# so we can map ``templates/agent/goal_runtime.md`` to ``goal_runtime.md``
+# in the workspace — keeping the user-facing name stable while the
+# template lives next to its sibling internal prompts.
+_CANONICAL_WORKSPACE_TEMPLATES = (
+    ("AGENTS.md", "AGENTS.md"),
+    ("SOUL.md", "SOUL.md"),
+    ("USER.md", "USER.md"),
+    ("agent/goal_runtime.md", "goal_runtime.md"),
+)
+
+
 def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]:
     """Sync bundled templates to workspace. Creates missing files without overwriting user files."""
     from importlib.resources import files as pkg_files
@@ -635,19 +657,16 @@ def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]
         dest.write_text(content, encoding="utf-8")
         added.append(str(dest.relative_to(workspace)))
 
-    for item in tpl.iterdir():
-        if item.is_file() and item.name.endswith(".md") and not item.name.startswith("."):
-            _write(item, workspace / item.name)
+    # Only the four canonical user-facing files are emitted to the
+    # workspace.  Internal prompt templates (templates/agent/*.md) are
+    # read directly from the package by ``prompt_templates.render_template``
+    # and never materialised on disk — that mirrors nanobot, where the
+    # template bundle is shipped inside the package and never copied
+    # into ``.agent/`` either.
+    for src_rel, dest_name in _CANONICAL_WORKSPACE_TEMPLATES:
+        _write(tpl / src_rel, workspace / dest_name)
     _write(tpl / "memory" / "MEMORY.md", workspace / "memory" / "MEMORY.md")
     _write(None, workspace / "memory" / "history.jsonl")
-    # Sync agent-level templates (e.g. goal_runtime.md) — these are only
-    # written if they don't already exist, so an existing workspace is
-    # never overwritten with a newer version.  This preserves user edits.
-    agent_tpl = tpl / "agent"
-    if agent_tpl.is_dir():
-        for item in agent_tpl.iterdir():
-            if item.is_file() and item.name.endswith(".md"):
-                _write(item, workspace / item.name)
     (workspace / "skills").mkdir(exist_ok=True)
 
     if added and not silent:
@@ -743,12 +762,11 @@ __pycache__/
     return created
 
 
-def build_default_onboard_config(instance_dir: Path, suffix: str | None = None) -> Config:
+def build_default_onboard_config(instance_dir: Path) -> Config:
     """Build a default Config for onboard.
 
     Args:
         instance_dir: Root instance directory
-        suffix: Instance suffix (for display purposes)
 
     Returns:
         Config with sensible defaults for a new instance.
@@ -759,11 +777,6 @@ def build_default_onboard_config(instance_dir: Path, suffix: str | None = None) 
 
     # Set workspace relative to instance_dir
     config.agents.defaults.workspace = "workspace"
-
-    # Set instance-specific bot name if suffix provided
-    if suffix:
-        config.agents.defaults.bot_name = f"Femtobot-{suffix.upper()}"
-        config.agents.defaults.bot_icon = "🤖"
 
     # T13 (ui-parity Q2): explicit placeholder for the human operator so
     # the parity header bar / welcome card know where to interpolate the
@@ -899,12 +912,11 @@ __pycache__/
     return gitignore
 
 
-def create_instance_readme(instance_dir: Path, suffix: str | None = None) -> Path:
+def create_instance_readme(instance_dir: Path) -> Path:
     """Create README.md in instance root documenting this instance.
 
     Args:
         instance_dir: Root instance directory
-        suffix: Instance suffix (for display)
 
     Returns:
         Path to created README.md
@@ -913,7 +925,7 @@ def create_instance_readme(instance_dir: Path, suffix: str | None = None) -> Pat
     if readme.exists():
         return readme
 
-    name = f".femtobot{suffix and '_' + suffix or ''}"
+    name = ".femtobot"
     content = f"""# {name} - Femtobot Instance
 
 This directory contains the persistent data for a Femtobot agent instance.
@@ -936,12 +948,16 @@ This directory contains the persistent data for a Femtobot agent instance.
 
 ## Usage
 
-Run commands with `--suffix {suffix or "default"}` to target this instance:
+Run ``femtobot`` commands in this directory to interact with the instance:
 
 ```bash
-femtobot status --suffix {suffix or "default"}
+femtobot status
 femtobot agent -m "Hello"
 ```
+
+To target a different instance, use ``--folder-path <dir>`` or set the
+``FEMTOBOT_HOME`` environment variable.  See
+``docs/multiple-instances.md`` for details.
 
 ---
 *Generated by Femtobot onboard*
@@ -952,19 +968,17 @@ femtobot agent -m "Hello"
 
 
 def summarize_instance_creation(
-    instance_dir: Path, suffix: str | None = None, created_files: list[str] | None = None
+    instance_dir: Path, created_files: list[str] | None = None
 ) -> str:
     """Generate a summary message for instance creation.
 
     Args:
         instance_dir: Root instance directory
-        suffix: Instance suffix
         created_files: Optional list of created file names
 
     Returns:
         Formatted summary string
     """
-    name = f".femtobot{suffix and '_' + suffix or ''}"
     summary = f"""Instance created at: {instance_dir}
 
 Next steps:

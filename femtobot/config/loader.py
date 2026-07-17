@@ -17,8 +17,6 @@ _current_config_path: Path | None = None
 _current_instance_dir: Path | None = None
 _schema_refs_ready = False
 
-_VALID_SUFFIX_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
-
 
 def set_config_path(path: Path) -> None:
     """Set the current config path (used to derive data directory)."""
@@ -34,22 +32,6 @@ def get_config_path() -> Path:
     if _current_config_path:
         return _current_config_path
     return get_instance_dir() / "config.json"
-
-
-def build_instance_dir_name(suffix: str | None) -> str:
-    """Build instance directory name: .femtobot or .femtobot_<suffix>."""
-    if suffix:
-        return f".femtobot_{suffix}"
-    return ".femtobot"
-
-
-def validate_instance_suffix(suffix: str | None) -> str | None:
-    """Validate and normalize instance suffix. Returns None for invalid suffixes."""
-    if suffix is None:
-        return None
-    if not suffix or not _VALID_SUFFIX_PATTERN.match(suffix):
-        return None
-    return suffix
 
 
 def set_instance_dir(path: Path) -> None:
@@ -87,20 +69,17 @@ def clear_instance_dir() -> None:
     _current_instance_dir = None
 
 
-def resolve_instance_dir(folder_path: Path | None = None, suffix: str | None = None) -> Path:
+def resolve_instance_dir(folder_path: Path | None = None) -> Path:
     """Resolve the instance directory path.
 
     Args:
         folder_path: Parent directory where instance dir should be created/found.
                      If None, uses cwd.
-        suffix: Instance suffix. If None, uses default ".femtobot".
 
     Returns:
         Full path to the instance directory.
     """
-    # Validate suffix
-    validated_suffix = validate_instance_suffix(suffix)
-    instance_name = build_instance_dir_name(validated_suffix)
+    instance_name = ".femtobot"
 
     if folder_path:
         return folder_path / instance_name
@@ -117,18 +96,19 @@ def resolve_instance_dir(folder_path: Path | None = None, suffix: str | None = N
     return cwd / instance_name
 
 
-def discover_instance_dir(start: Path | None = None, suffix: str | None = None) -> Path:
+def discover_instance_dir(start: Path | None = None) -> Path:
     """Discover an existing instance directory.
 
     Args:
         start: Directory to start searching from. Defaults to resolved project root.
-        suffix: If provided, look for .femtobot_<suffix>. Otherwise look for .femtobot.
 
     Returns:
         Path to the discovered instance directory.
         Returns resolved instance_dir if none found (assumes it will be created there).
     """
     from pathlib import Path
+
+    instance_name = ".femtobot"
 
     # Determine the base search directory
     if start is None:
@@ -138,10 +118,6 @@ def discover_instance_dir(start: Path | None = None, suffix: str | None = None) 
             start = cwd.parent
         else:
             start = cwd
-
-    # Build the instance name we're looking for
-    validated_suffix = validate_instance_suffix(suffix)
-    instance_name = build_instance_dir_name(validated_suffix)
 
     # Search in start and its parent
     for base in [start, start.parent]:
@@ -158,11 +134,11 @@ def discover_instance_dir(start: Path | None = None, suffix: str | None = None) 
                 return candidate
 
     # Return resolved instance_dir as fallback (assumes it will be created there)
-    return resolve_instance_dir(folder_path=None, suffix=suffix)
+    return resolve_instance_dir(folder_path=None)
 
 
 def resolve_runtime_location(
-    config_path: Path | None, folder_path: Path | None, suffix: str | None
+    config_path: Path | None, folder_path: Path | None
 ) -> None:
     """Resolve and set the runtime location for the agent.
 
@@ -177,7 +153,7 @@ def resolve_runtime_location(
     else:
         # For runtime commands, discover the existing instance
         instance_dir = discover_instance_dir(
-            start=Path(folder_path) if folder_path else None, suffix=suffix
+            start=Path(folder_path) if folder_path else None
         )
         set_instance_dir(instance_dir)
 
@@ -619,6 +595,16 @@ def _migrate_config(data: dict) -> dict:
     exec_cfg = tools.get("exec", {})
     if "restrictToWorkspace" in exec_cfg and "restrictToWorkspace" not in tools:
         tools["restrictToWorkspace"] = exec_cfg.pop("restrictToWorkspace")
+
+    # R2-femtobot (refactor-parity-with-nanobot.md Phase 6): the default
+    # of ``restrict_to_workspace`` flipped from False to True.  Migrate
+    # legacy configs that explicitly opted out (False) so the new
+    # safety posture takes effect on existing instances — operators
+    # who really need the old "full host shell" behaviour can set
+    # the field back to False after the migration runs (it is a
+    # no-op on subsequent loads).
+    if tools.get("restrictToWorkspace") is False:
+        tools["restrictToWorkspace"] = True
 
     # Move tools.myEnabled / tools.mySet → tools.my.{enable, allowSet}.
     # The old flat keys shipped in the initial MyTool landing; wrapping them in a
