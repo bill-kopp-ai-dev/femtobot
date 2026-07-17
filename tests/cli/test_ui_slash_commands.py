@@ -77,7 +77,15 @@ def test_ui_off_switches_per_session(loop_with_config) -> None:
 def test_ui_full_emits_preview_notice(loop_with_config) -> None:
     out = _run(cmd_ui(_make_ctx(loop_with_config, args="full")))
     assert "full" in out.content
-    assert "RC" in out.content or "preview" in out.content
+    # PR 3.2 reworded the fallback message to be actionable: when
+    # Textual is not installed the message explains how to install
+    # it (or fall back to ``compat``).
+    assert (
+        "RC" in out.content
+        or "preview" in out.content
+        or "Textual TUI is not available" in out.content
+        or "Textual" in out.content
+    )
 
 
 def test_ui_rejects_unknown_profile(loop_with_config) -> None:
