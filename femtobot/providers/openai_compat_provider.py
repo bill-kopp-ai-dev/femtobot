@@ -372,6 +372,41 @@ def _merge_responses_extra_body(
     return merged
 
 
+_REASONING_START_PATTERNS = (
+    "Let me ",
+    "I need to ",
+    "First, ",
+    "The user wants",
+    "The user asked",
+    "Let me think",
+    "Let me first",
+    "I should ",
+    "Looking at the",
+    "Considering the",
+    "Thinking:",
+    "Reasoning:",
+)
+
+
+def _looks_like_reasoning_start(text: str) -> bool:
+    """Return True when ``text`` looks like the start of a reasoning block.
+
+    Used by ``_parse_chunks`` (PR 4.1 of the longlogs plan) to detect
+    providers that conflate reasoning text with content. The patterns
+    are deliberately narrow to avoid misclassifying assistant content
+    that legitimately starts with one of these phrases.
+    """
+    if not text:
+        return False
+    if len(text) > 4096:
+        # Reasoning blocks tend to be a few hundred chars max; if the
+        # accumulator already grew huge without ``reasoning_content``
+        # showing up, we are past the reasoning phase.
+        return False
+    stripped = text.lstrip()
+    return any(stripped.startswith(p) for p in _REASONING_START_PATTERNS)
+
+
 class OpenAICompatProvider(LLMProvider):
     """Unified provider for all OpenAI-compatible APIs."""
 
@@ -1310,6 +1345,22 @@ class OpenAICompatProvider(LLMProvider):
                     text = cls._extract_text_content(delta.get("reasoning"))
                 if text:
                     reasoning_parts.append(text)
+
+                # PR 4.1 (longlogs remediation): some providers (MiniMax-M3
+                # and similar openai-compat gateways) collapse the
+                # reasoning text into ``delta.content`` instead of
+                # returning it under ``reasoning_content``. When we see a
+                # reasoning-looking prefix in ``content`` AND no reasoning
+                # field on the delta, split the prefix off into
+                # ``reasoning_parts`` so the CLI never renders the
+                # thinking text as part of the assistant message.
+                if (
+                    text is None
+                    and content_parts
+                    and _looks_like_reasoning_start(content_parts[-1])
+                ):
+                    moved = content_parts.pop()
+                    reasoning_parts.append(moved)
                 for idx, tc in enumerate(delta.get("tool_calls") or []):
                     _accum_tc(tc, idx)
                 _accum_legacy_function_call(delta.get("function_call"))

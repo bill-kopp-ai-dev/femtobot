@@ -4,6 +4,7 @@ import base64
 import mimetypes
 import os
 import platform
+import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -91,6 +92,58 @@ def session_extra(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
     return mcp_tools.session_extra(metadata)
 
 
+# Pattern matching backtick-quoted tool names from MCP servers
+# (e.g. `osm_geocode`, `mcp_percival-osm_*`). Used by
+# ``collect_mcp_missing_references`` to detect when a workspace's
+# AGENTS.md / USER.md / SOUL.md reference MCP servers that are not
+# configured in ``tools.mcp_servers``. Added in PR 0.1 of the
+# ``longlogs.txt`` remediation plan (B1, B8).
+_MCP_TOOL_REF_RE = re.compile(r"`(mcp_[a-zA-Z0-9_-]+_[a-zA-Z0-9_]+)`")
+
+
+def collect_mcp_missing_references(
+    workspace: Path | None,
+    configured_servers: set[str],
+) -> list[str]:
+    """Return MCP server names referenced in workspace docs but not configured.
+
+    Scans ``<workspace>/AGENTS.md``, ``USER.md`` and ``SOUL.md`` (when
+    present) for tool references like ``mcp_<server>_*``. The leading
+    ``mcp_<server>_`` segment is matched against ``configured_servers``;
+    any segment that does not resolve to a configured server is added to
+    the returned list.
+
+    The function is purely diagnostic: it never raises, never mutates
+    state, and never reads from the network. Callers (PR 1.2) decide how
+    to surface the result to the user.
+    """
+    if workspace is None:
+        return []
+    missing: list[str] = []
+    seen: set[str] = set()
+    for fname in ("AGENTS.md", "USER.md", "SOUL.md"):
+        path = workspace / fname
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for match in _MCP_TOOL_REF_RE.finditer(text):
+            full = match.group(1)
+            # Strip the trailing ``_<tool>`` to recover the server name.
+            # The wrapping template always uses the ``mcp_<server>_<tool>``
+            # form (see ``mcp_tools._sanitize_name``), so a single split is
+            # sufficient.
+            parts = full.split("_", 2)
+            if len(parts) < 3:
+                continue
+            server_name = parts[1]
+            if server_name in configured_servers or server_name in seen:
+                continue
+            seen.add(server_name)
+            missing.append(server_name)
+    return missing
+
+
 def runtime_lines(state: Any, msg: Any, workspace: Path, *, skip: bool = False) -> list[str]:
     """Return model-visible runtime annotations for turn-attached capabilities."""
     return [
@@ -155,8 +208,19 @@ class ContextBuilder:
         session_summary: str | None = None,
         workspace: Path | None = None,
         include_memory_recent_history: bool = True,
+        tools_config: Any = None,
+        connected_servers: set[str] | None = None,
+        configured_servers: set[str] | None = None,
     ) -> str:
-        """Build the system prompt from identity, bootstrap files, memory, and skills."""
+        """Build the system prompt from identity, bootstrap files, memory, and skills.
+
+        PR 5.2 (longlogs remediation): the new ``tools_config``,
+        ``connected_servers`` and ``configured_servers`` parameters let
+        the builder emit an honest ``## Tools available right now``
+        block listing the tools the agent can actually reach this
+        session. Defaults remain backward-compatible (no block emitted
+        if the parameters are not passed).
+        """
         root = workspace or self.workspace
         parts = [self._get_identity(channel=channel, workspace=root)]
 
@@ -165,6 +229,14 @@ class ContextBuilder:
             parts.append(bootstrap)
 
         parts.append(render_template("agent/tool_contract.md"))
+
+        tools_available_block = self._build_tools_available_block(
+            tools_config=tools_config,
+            connected_servers=connected_servers,
+            configured_servers=configured_servers,
+        )
+        if tools_available_block:
+            parts.append(tools_available_block)
 
         mcp_capability_block = self._build_mcp_capability_block()
         if mcp_capability_block:
@@ -238,6 +310,73 @@ class ContextBuilder:
             platform_policy=render_template("agent/platform_policy.md", system=system),
             channel=channel or "",
         )
+
+    # Local tool names that are always available regardless of MCP state.
+    # Surfacing them explicitly closes the "agent says it has no tools"
+    # gap observed in longlogs.txt — even when every MCP server is
+    # missing, the agent still has exec / read_file / write / grep / glob
+    # / apply_patch / bash_mode at its disposal.
+    _LOCAL_TOOLS = (
+        "exec",
+        "read_file",
+        "write_file",
+        "apply_patch",
+        "grep",
+        "glob",
+        "list_dir",
+        "bash_mode (!)",
+        "web_fetch",
+    )
+
+    def _build_tools_available_block(
+        self,
+        *,
+        tools_config: Any,
+        connected_servers: set[str] | None,
+        configured_servers: set[str] | None,
+    ) -> str:
+        """Build the ``## Tools available right now`` block (PR 5.2).
+
+        Returns an empty string when the caller does not opt in (no
+        ``tools_config`` argument), so legacy call-sites keep the
+        pre-PR-5.2 system prompt byte-identical.
+        """
+        if tools_config is None:
+            return ""
+
+        lines: list[str] = ["## Tools available right now", ""]
+        lines.append("Local tools (always available):")
+        for name in self._LOCAL_TOOLS:
+            lines.append(f"- `{name}`")
+
+        connected = sorted(connected_servers or set())
+        configured = sorted(configured_servers or set())
+        # ``mcp_servers`` is a ``dict[str, MCPServerConfig]`` on
+        # ``ToolsConfig``. Iterate it so we can produce the tool-list
+        # per server when the config is present.
+        mcp_cfg = getattr(tools_config, "mcp_servers", None) or {}
+        if connected:
+            lines.append("")
+            lines.append("MCP tools (currently connected):")
+            for server in connected:
+                lines.append(f"- mcp_{server}_*  (server `{server}`)")
+        if configured and not connected:
+            lines.append("")
+            lines.append(
+                "⚠ MCP tools configured but not connected this session — "
+                "they will not work. Run `/mcp reload` or check the "
+                "server logs."
+            )
+            for server in configured:
+                lines.append(f"- mcp_{server}_*  (server `{server}` — ⚠ not connected)")
+
+        lines.append("")
+        lines.append(
+            "If a task requires a tool and the right tool is not listed above, "
+            "either request the missing configuration from the user or use the "
+            "closest local tool (e.g. `exec curl` to call a remote API)."
+        )
+        return "\n".join(lines)
 
     @staticmethod
     def _build_runtime_context(
@@ -373,6 +512,9 @@ class ContextBuilder:
         inbound_message: Any | None = None,
         skip_runtime_lines: bool = False,
         include_memory_recent_history: bool = True,
+        tools_config: Any = None,
+        connected_servers: set[str] | None = None,
+        configured_servers: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Build the complete message list for an LLM call."""
         root = workspace or self.workspace
@@ -417,6 +559,9 @@ class ContextBuilder:
                     session_summary=session_summary,
                     workspace=root,
                     include_memory_recent_history=include_memory_recent_history,
+                    tools_config=tools_config,
+                    connected_servers=connected_servers,
+                    configured_servers=configured_servers,
                 ),
             },
             *history,

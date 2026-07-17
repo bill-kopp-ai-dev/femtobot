@@ -1,0 +1,99 @@
+# Fixture de regressão — longlogs.txt
+#
+# Cobertura por bug (vide docs/exec-plan-resolucao-bugs-longlogs.md):
+#   B1  → linhas 28-44  (tools MCP não registradas, sem aviso honesto)
+#   B2  → linhas 55-58  (/ui muda config, mas não reconstrói renderer)
+#   B3  → linhas 30-34  (spinner sem elapsed, sem tokens)
+#   B4  → linhas 32-38  ([2K e fragmentos do Live intercalados)
+#   B5  → linhas 12-16  (reasoning_content vaza no Live visível)
+#   B6  → linhas 32-37  (escape codes ANSI quando log é capturado)
+#   B7  → (latente — não disparado aqui)
+#   B8  → linhas 40-44  (nenhum warning de "MCP referenced but not configured")
+#   B9  → (latente — não disparado aqui)
+#   B10 → linhas 47-54  (3 turnos seguidos com "plano:" sem tool call)
+#
+# Sumário do cenário:
+# - Workspace: /home/bill/Codes/mcp-servers-percival/femtobot
+# - Comando: femtobot agent --ui compat
+# - tools.mcp_servers vazio (percival-osm NÃO configurado)
+# - Usuário pede 8 testes de resiliência (E1-E8) sobre percival-osm
+# - Femto responde em 3 turnos sem chamar nenhuma ferramenta
+
+── Femtobot ──
+  Welcome back Bill!
+
+ ███████╗ ███████╗ ███╗   ███╗ ████████╗  ██████╗  ██████╗   ██████╗  ████████╗
+[ASCII art omitted for fixture size]
+
+  MiniMax-M3  ·  workspace
+
+── Tips for getting started ──
+  • Run /init to create a FEMTO.md file with instructions for Femto
+  • Try /welcome to redisplay this card mid-session
+  • Toggle verbose transcript with Ctrl+O
+
+─ Extended through July 19 ─
+  Try Femtobot parity UI on/off with `femtobot agent --ui compat` or `/ui`.
+
+❯  nova mensagem▌⠋ Resolving dependencies... An executable named `fastmcp` is not provided by package `percival-osm`.
+The following executables are available:
+- percival-osm-mcp
+
+[B5 inicia] ✻ The user wants me to test resilience of "percival-osm" MCP server by executing 8 specific test cases (E1-E8). Let me first understand the environment and find the MCP server.
+
+Let me start by exploring the workspace to find the percival-osm MCP server and understand how to interact with it.
+
+[B5 continua] According to the AGENTS.md, there's an `mcp-router` skill that helps decide when to delegate to MCP servers. But the user is asking me to directly test the MCP server, so I need to find and use its tools.
+
+Let me look at the workspace structure first.V[B4][B6]
+  ou começar mapeando o ambiente: achar o servidor MCP percival-osm[B4]
+
+[B3][B4] [2K[32m\?[0m ?[2mFemtobot is deliberating...[0m
+[B4] [2K[32m▰▰▰▱▱▱▱?[0m ?[2mFemtobot is negotiating nuance...[0m
+[B4] [2K[32m▰▰▰▱▱▱▱?[0m ?[2mFemtobot is crunching tokens...[0m
+[B4] [2K[32m.. ?[0m ?[2mFemtobot is percolating...[0m
+[B4] [2K[32m...?[0m   I [2K[32m...?[0m ?[2mFemtobot is contemplating...[0m
+
+[B1][B8]   I don't have access to the percival-osm MCP server from this workspace. The runtime guard blocks me from stepping outside .femtobot/workspace, and there's no MCP server configured or available to call.
+
+[B1]    Let me check what's actually available:
+[B4] [2K[32m...?[0m   O [2K[32m...?[0m ?[2mFemtobot is crunching tokens...[0m
+[B1]    O workspace do femtobot está em /home/bill/Codes/mcp-servers-percival/.femtobot/workspace, mas o código do percival-osm não está dentro dele. Preciso ver onde estão os MCP servers e como rodá-los.
+[B4] [2K[32m⠋?[0m ?[2mFemtobot is stacking semaphores...[0m
+[B4] [2K[32m⠇?[0m ?[2mFemtobot is synthesizing...[0m
+[B4] [2K[32m▰▰▰▰▰▰▰?[0m ?[2mFemtobot is sweeping stack traces...[0m
+[B4] [2K[32m▰▰▰▰▰▱▱?[0m ?[2mFemtobot is steeping semantics...[0m
+[B4] [2K[32m⣷?[0m ?[2mFemtobot is percolating...[0m
+[B4] [2K[32m⣻?[0m ?[2mFemtobot is tightening bolts...[0m
+[B4] [2K[32m-?[0m ?[  Antes [2K[32m|?[0m ?[2mFemtobot is steeping semantics...[0m
+
+[B10]   Antes de tentar executar qualquer item, preciso te alinhar sobre um ponto importante.
+
+  Tenho que ser honesto: este workspace do Femtobot contém só arquivos de configuração do agente. Não há aqui:
+
+  • O código-fonte do percival-osm (servidor MCP FastMCP).
+  • Um cliente MCP configurado para falar com ele.
+  • Nenhum dos 8 endpoints que você listou expostos via ferramentas deste agente.
+
+  Para executar E1–E8, eu precisaria de uma das seguintes opções:
+  1 Você executar os testes você mesmo e me colar o output
+  2 Adicionar o percival-osm como MCP server neste workspace
+  3 Você rodar o servidor MCP em modo stdio
+  4 Eu emular os 8 testes chamando diretamente a API do Nominatim
+
+  Qual caminho prefere?
+
+✻ Cooked for 0s  ·  esc to interrupt
+──────────────────────────────────────
+
+[B2] ❯  /ui off
+  [Femtobot não reconstrói o renderer]
+
+❯  nova mensagem▌
+
+[B1][B8] ❯  /mcp status
+  [Sem listagem honesta de configured/connected/missing]
+
+❯  nova mensagem▌
+──────────────────────────────────────
+▌ manual mode on

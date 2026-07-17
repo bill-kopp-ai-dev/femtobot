@@ -603,6 +603,16 @@ class AgentLoop:
         ``agents.defaults.notifyMcpStartupFailures`` (default False)
         to preserve the pre-Phase-6 behavior (log only).
 
+        PR 1.2 (longlogs remediation): in addition to the configured-
+        but-unconnected check, this method also scans the workspace
+        ``AGENTS.md``/``USER.md``/``SOUL.md`` for ``mcp_<server>_*``
+        tool references and persists the list of servers that are
+        referenced but not configured into every session's metadata
+        under ``mcp_missing``. When the new
+        ``tools.mcp.warn_on_missing_references`` flag is True (default),
+        it emits a user-facing warning at startup so the agent no
+        longer pretends to have tools it cannot reach.
+
         Refs: FEMTOBOT_MCP_IMPROVEMENT_PLAN.md Fase 6.
         """
         await agent_context.connect_mcp(self, self.tools)
@@ -610,14 +620,58 @@ class AgentLoop:
         configured = set(self._mcp_servers or {})
         connected = set(self._mcp_stacks or {})
         missing = configured - connected
-        if not missing:
+
+        # PR 1.2: scan workspace docs for ``mcp_<server>_*`` references
+        # and persist the unresolved server names into session metadata.
+        # This is what ``/mcp status`` reads back to the user (PR 1.1).
+        try:
+            from femtobot.agent.context import collect_mcp_missing_references
+
+            referenced_missing = collect_mcp_missing_references(
+                workspace=self.workspace,
+                configured_servers=configured | connected,
+            )
+        except Exception:
+            referenced_missing = []
+
+        warn_flag = True
+        try:
+            warn_flag = bool(self.tools_config.mcp.warn_on_missing_references)
+        except Exception:
+            warn_flag = True
+
+        # Persist the list into the startup session so ``/mcp status``
+        # can render it without re-scanning the workspace. Other
+        # sessions created later will inherit the same metadata via
+        # ``session.metadata.get_or_create``.
+        if referenced_missing:
+            try:
+                startup_session = self.sessions.get_or_create("cli:startup")
+                startup_session.metadata["mcp_missing"] = sorted(
+                    referenced_missing
+                )
+                self.sessions.save(startup_session)
+            except Exception:
+                logger.debug(
+                    "Could not persist mcp_missing into session metadata",
+                    exc_info=True,
+                )
+
+        if not missing and not referenced_missing:
             return
 
-        logger.warning(
-            "MCP servers configured but not connected at startup: {}. "
-            "Use `/mcp reload` to retry, or check the server logs.",
-            sorted(missing),
-        )
+        if missing:
+            logger.warning(
+                "MCP servers configured but not connected at startup: {}. "
+                "Use `/mcp reload` to retry, or check the server logs.",
+                sorted(missing),
+            )
+        if referenced_missing:
+            logger.warning(
+                "MCP servers referenced in workspace docs but not configured: {}. "
+                "Add them to config.json `tools.mcp_servers` and run `/mcp reload`.",
+                sorted(referenced_missing),
+            )
 
         # Opt-in user-facing warning (default: log only).
         # Audit (H1 of the v0.0.9 fourth-pass review): the
@@ -626,26 +680,46 @@ class AgentLoop:
         # was never assigned.  Now that ``__init__`` initializes
         # the attribute, we can read the flag directly.
         notify = bool(
-            self.agents_config.defaults.notify_mcp_startup_failures
+            getattr(
+                self.agents_config.defaults, "notify_mcp_startup_failures", False
+            )
         )
-        if not notify:
+        # ``tools.mcp.warn_on_missing_references`` is a separate, opt-out
+        # flag that defaults to True (PR 0.1). It gates the
+        # referenced-but-not-configured warning independently from the
+        # legacy configured-but-disconnected warning.
+        referenced_notify = warn_flag
+
+        if not notify and not (referenced_missing and referenced_notify):
             return
 
-        try:
-            await self.bus.publish_outbound(
-                OutboundMessage(
-                    channel="cli",
-                    chat_id="startup",
-                    content=(
-                        f"⚠ MCP servers unavailable: {sorted(missing)}. "
-                        "Their tools will not be available this session. "
-                        "Run `/mcp reload` to retry."
-                    ),
-                    metadata={"render_as": "text"},
-                )
+        messages: list[str] = []
+        if missing and notify:
+            messages.append(
+                f"⚠ MCP servers unavailable: {sorted(missing)}. "
+                "Their tools will not be available this session. "
+                "Run `/mcp reload` to retry."
             )
-        except Exception:
-            logger.debug("Could not publish startup MCP warning", exc_info=True)
+        if referenced_missing and referenced_notify:
+            messages.append(
+                f"⚠ MCP servers referenced in workspace docs but not configured: "
+                f"{sorted(referenced_missing)}. "
+                "Add them to `tools.mcp_servers` in `.femtobot/config.json` "
+                "and run `/mcp reload`."
+            )
+
+        for content in messages:
+            try:
+                await self.bus.publish_outbound(
+                    OutboundMessage(
+                        channel="cli",
+                        chat_id="startup",
+                        content=content,
+                        metadata={"render_as": "text"},
+                    )
+                )
+            except Exception:
+                logger.debug("Could not publish startup MCP warning", exc_info=True)
 
     def _set_tool_context(
         self,
@@ -769,6 +843,12 @@ class AgentLoop:
             runtime_state=self,
             inbound_message=msg,
             include_memory_recent_history=include_memory_recent_history,
+            # PR 5.2 (longlogs remediation): surface the actual tools
+            # available this session so the agent never says "I have
+            # no tools" when exec/read_file/grep are clearly reachable.
+            tools_config=self.tools_config,
+            connected_servers=set(self._mcp_stacks or {}),
+            configured_servers=set(self._mcp_servers or {}),
         )
 
     async def _dispatch_command_inline(
@@ -859,6 +939,30 @@ class AgentLoop:
         hook: AgentHook = loop_hook
         if not ephemeral and self._extra_hooks:
             hook = CompositeHook([loop_hook] + self._extra_hooks)
+        # PR 5.3 (longlogs remediation): opt-in ``ToolUseGuardHook``.
+        # When ``agents.defaults.tool_use_guard.enabled`` is True, the
+        # hook injects a one-shot nudge when the agent answers with a
+        # plan / options instead of executing the user's request.
+        tool_use_guard_enabled = bool(
+            getattr(
+                getattr(self.agents_config, "defaults", None),
+                "tool_use_guard",
+                None,
+            )
+            and getattr(
+                self.agents_config.defaults.tool_use_guard,
+                "enabled",
+                False,
+            )
+        )
+        if tool_use_guard_enabled:
+            from femtobot.agent.tool_use_guard import ToolUseGuardHook
+
+            guard = ToolUseGuardHook()
+            if isinstance(hook, CompositeHook):
+                hook._hooks.append(guard)  # noqa: SLF001
+            else:
+                hook = CompositeHook([hook, guard])
 
         async def _checkpoint(payload: dict[str, Any]) -> None:
             if session is None:
@@ -1335,6 +1439,9 @@ class AgentLoop:
             workspace=workspace_scope.project_path,
             runtime_state=self,
             inbound_message=msg,
+            tools_config=self.tools_config,
+            connected_servers=set(self._mcp_stacks or {}),
+            configured_servers=set(self._mcp_servers or {}),
         )
         t_wall = time.time()
         final_content, _, all_msgs, stop_reason, _ = await self._run_agent_loop(

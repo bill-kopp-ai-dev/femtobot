@@ -53,6 +53,14 @@ class ThinkingSpinner:
     uses a randomly-picked verb (e.g. "Femtobot is cogitating...") instead
     of the literal "thinking". Pass ``verb`` to force a specific one, or
     ``spinner_style`` to pick a non-default Rich spinner.
+
+    PR 2.2 (longlogs remediation): when ``elapsed_renderable`` is
+    supplied, the spinner drives that renderable (a ``SpinnerWithElapsed``
+    from ``cli.parity_widgets``) inside a Rich ``Live`` so the elapsed
+    time and token counter refresh every frame instead of being a
+    static "Femtobot is cogitating..." line. Defaults remain unchanged
+    so the legacy ``ui_parity=off`` path keeps its byte-identical
+    behaviour.
     """
 
     def __init__(
@@ -63,6 +71,7 @@ class ThinkingSpinner:
         spinner_style: str | None = None,
         verbs_enabled: bool = True,
         seed: int | None = None,
+        elapsed_renderable: RenderableType | None = None,
     ):
         c = console or _make_console()
         self._console = c
@@ -72,7 +81,23 @@ class ThinkingSpinner:
         text = self._render_text()
         spinner_name = resolve_spinner(spinner_style, seed=seed)
         self._spinner_name = spinner_name
-        self._spinner = c.status(text, spinner=spinner_name)
+        self._elapsed_renderable = elapsed_renderable
+        # When ``elapsed_renderable`` is supplied, host it in a Live so
+        # Rich drives the per-frame refresh of the elapsed text — this
+        # is what the dead-code KNOWN GAP comment in parity_stream.py
+        # was asking for. Otherwise keep using ``console.status`` so the
+        # default path stays identical.
+        if elapsed_renderable is not None:
+            self._live = Live(
+                elapsed_renderable,
+                console=c,
+                refresh_per_second=8,
+                transient=True,
+            )
+            self._spinner = None
+        else:
+            self._live = None
+            self._spinner = c.status(text, spinner=spinner_name)
         self._active = False
 
     def _render_text(self) -> str:
@@ -91,13 +116,19 @@ class ThinkingSpinner:
         return self._spinner_name
 
     def __enter__(self):
-        self._spinner.start()
+        if self._live is not None:
+            self._live.start()
+        else:
+            self._spinner.start()
         self._active = True
         return self
 
     def __exit__(self, *exc):
         self._active = False
-        self._spinner.stop()
+        if self._live is not None:
+            self._live.stop()
+        else:
+            self._spinner.stop()
         _clear_current_line(self._console)
         return False
 
@@ -107,13 +138,18 @@ class ThinkingSpinner:
 
         @contextmanager
         def _ctx():
-            if self._spinner and self._active:
+            if self._live is not None and self._active:
+                self._live.stop()
+                _clear_current_line(self._console)
+            elif self._spinner and self._active:
                 self._spinner.stop()
                 _clear_current_line(self._console)
             try:
                 yield
             finally:
-                if self._spinner and self._active:
+                if self._live is not None and self._active:
+                    self._live.start()
+                elif self._spinner and self._active:
                     self._spinner.start()
 
         return _ctx()

@@ -1434,12 +1434,48 @@ async def cmd_mcp(ctx: CommandContext) -> OutboundMessage | None:
         ]
         if missing:
             lines.append(f"  missing:    {', '.join(missing)}")
+        # PR 1.1 (longlogs remediation): surface references found in the
+        # workspace docs that are not configured. Helps users diagnose
+        # the "agent says it has the tool but doesn't" case.
+        try:
+            session = loop.sessions.get_or_create(ctx.key)
+            referenced = session.metadata.get("mcp_missing") or []
+        except Exception:
+            referenced = []
+        if referenced:
+            lines.append(
+                "  referenced but not configured: "
+                + ", ".join(sorted(referenced))
+                + "\n  hint: add them to config.json `tools.mcp_servers`, "
+                "then run `/mcp reload`."
+            )
         try:
             total_tools = len(getattr(loop, "tools", None).tool_names)
         except Exception:
             total_tools = "?"
         lines.append(f"  total tools registered: {total_tools}")
         return _reply("\n".join(lines))
+
+    # ``/mcp path <server>`` — show effective transport / command / url.
+    if sub == "path":
+        server = tokens[1] if len(tokens) > 1 else None
+        if not server:
+            return _reply("Usage: /mcp path <server>")
+        cfg = (getattr(loop, "_mcp_servers", {}) or {}).get(server)
+        if cfg is None:
+            return _reply(f"Server '{server}' is not configured.")
+        cmd = getattr(cfg, "command", None) or "-"
+        url = getattr(cfg, "url", None) or "-"
+        transport = getattr(cfg, "type", None) or "stdio"
+        cwd = getattr(cfg, "cwd", None) or "-"
+        return _reply(
+            "MCP server path:\n"
+            f"  name:      {server}\n"
+            f"  transport: {transport}\n"
+            f"  command:   {cmd}\n"
+            f"  url:       {url}\n"
+            f"  cwd:       {cwd}"
+        )
 
     # ``/mcp reload`` — hot-reload MCP servers from config.
     if sub == "reload":
@@ -1491,7 +1527,8 @@ async def cmd_mcp(ctx: CommandContext) -> OutboundMessage | None:
 
     # Unknown subcommand.
     return _reply(
-        f"Unknown /mcp subcommand: {sub!r}. Use: status|reload|tools <server>|restart <server>"
+        f"Unknown /mcp subcommand: {sub!r}. "
+        "Use: status|reload|tools <server>|restart <server>|path <server>"
     )
 
 
@@ -1785,6 +1822,10 @@ async def cmd_ui(ctx: CommandContext) -> OutboundMessage:
         )
     else:
         extra = ""
+    # PR 3.1 (longlogs remediation): ask the CLI consumer to hot-swap
+    # the renderer so the new profile is visible on the very next
+    # turn, instead of lying to the user that the change took effect.
+    metadata["_rebuild_renderer"] = True
     return OutboundMessage(
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,

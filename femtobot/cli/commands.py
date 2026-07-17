@@ -1394,6 +1394,37 @@ def agent(
         global _ACTIVE_RENDERER
         _ACTIVE_RENDERER = renderer
 
+        def _swap_renderer() -> None:
+            """Hot-swap the active renderer (PR 3.1 of the longlogs plan).
+
+            Closes the current renderer and builds a fresh one from the
+            latest ``config`` (mutated by ``/ui``). The
+            ``_ACTIVE_RENDERER`` global is the source of truth read by
+            the input loop and ``_init_prompt_session``, so updating it
+            is enough to make the next ``print_input_bar`` /
+            ``input_prompt_markup`` use the new profile.
+            """
+            nonlocal renderer
+            try:
+                if hasattr(renderer, "close") and asyncio.iscoroutinefunction(
+                    renderer.close
+                ):
+                    # Best-effort: schedule close on the running loop.
+                    asyncio.create_task(renderer.close())  # noqa: RUF006
+                elif hasattr(renderer, "_stop_spinner"):
+                    renderer._stop_spinner()  # noqa: SLF001
+            except Exception:
+                logger.debug("Could not close previous renderer", exc_info=True)
+            new_renderer = build_renderer(
+                config,
+                bot_name=config.agents.defaults.bot_name,
+                bot_icon=config.agents.defaults.bot_icon,
+                spacing_renderer=_make_spacing_renderer(config),
+                render_markdown=markdown,
+            )
+            renderer = new_renderer
+            globals()["_ACTIVE_RENDERER"] = new_renderer
+
         async def run_interactive():
             bus_task = asyncio.create_task(agent_loop.run())
             turn_done = asyncio.Event()
@@ -1479,6 +1510,20 @@ def agent(
                             reasoning_buffer,
                         ):
                             continue
+
+                        # PR 3.1 (longlogs remediation): when a slash
+                        # command such as ``/ui`` requests a hot-swap of
+                        # the renderer, do it before the body is
+                        # rendered so the user sees the new profile's
+                        # framing instead of the stale one.
+                        if msg.metadata.get("_rebuild_renderer"):
+                            try:
+                                _swap_renderer()
+                            except Exception:
+                                logger.debug(
+                                    "Renderer swap failed; continuing with stale renderer",
+                                    exc_info=True,
+                                )
 
                         # Non-streamed turn: render the body once and
                         # signal turn completion. ``turn_response`` is

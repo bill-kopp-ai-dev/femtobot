@@ -587,6 +587,17 @@ class UserConfig(Base):
     the CLI replaces this with a safe fallback at render time."""
 
 
+class ToolUseGuardConfig(Base):
+    """Opt-in safety net for the "asked-to-execute, answered-with-plan" pattern.
+
+    Added in PR 5.3 of the ``longlogs.txt`` remediation plan. Defaults
+    to disabled to preserve the existing behaviour of every Femtobot
+    configuration that does not opt in.
+    """
+
+    enabled: bool = False
+
+
 class AgentDefaults(Base):
     """Default agent configuration."""
 
@@ -642,6 +653,7 @@ class AgentDefaults(Base):
     include_mcp_context: bool = (
         False  # When True, read AGENTS.md/MEMORY.md headers from MCPs (Fase 8)
     )
+    tool_use_guard: ToolUseGuardConfig = Field(default_factory=ToolUseGuardConfig)
     cli: CliConfig = Field(default_factory=CliConfig)  # Camada 1 CLI behavior
     long_task: LongTaskConfig = Field(default_factory=LongTaskConfig)
     user: UserConfig = Field(
@@ -792,6 +804,26 @@ def _lazy_default(module_path: str, class_name: str) -> Any:
     return getattr(module, class_name)()
 
 
+class McpConfig(Base):
+    """Behavior knobs for MCP server discovery and warnings.
+
+    Added as part of the ``longlogs.txt`` remediation plan (PR 0.1).
+    Defaults are intentionally backward-compatible:
+
+    - ``warn_on_missing_references`` is ``True``: when an MCP server is
+      mentioned in ``AGENTS.md``/``USER.md``/``SOUL.md`` (or in the
+      ``mcp-router`` skill triggers) but is not configured in
+      ``tools.mcp_servers``, the agent emits an honest warning at
+      startup instead of silently pretending it has the tools.
+    - ``auto_resolve_path_warnings`` is ``True``: reuses the legacy
+      ``agents.defaults.notify_mcp_startup_failures`` flag so existing
+      configs keep their current behavior (CLI / API parity preserved).
+    """
+
+    warn_on_missing_references: bool = True
+    auto_resolve_path_warnings: bool = True
+
+
 class ToolsConfig(Base):
     """Tools configuration.
 
@@ -820,6 +852,7 @@ class ToolsConfig(Base):
     ssrf_whitelist: list[str] = Field(
         default_factory=list
     )  # CIDR ranges to exempt from SSRF blocking (e.g. ["100.64.0.0/10"] for Tailscale)
+    mcp: McpConfig = Field(default_factory=McpConfig)
 
 
 class Config(BaseSettings):

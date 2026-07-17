@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import shutil
 import weakref
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +14,54 @@ from loguru import logger
 
 from femtobot.agent.hook import AgentHook, SDKCaptureHook
 from femtobot.agent.loop import AgentLoop
+
+
+def _warn_missing_mcp_executables(config: Any) -> None:
+    """Log a warning when an MCP server's executable is not on PATH.
+
+    Added in PR 6.1 of the longlogs remediation plan. The check is
+    best-effort: it inspects ``config.tools.mcp_servers`` and only
+    fires for stdio servers (URL-based ones are out of scope). The
+    goal is to surface the "fastmcp vs percival-osm-mcp" typo at
+    SDK init time so users do not have to wait for the agent loop's
+    startup log to figure out why their MCP server is not connecting.
+
+    Never raises — the SDK remains usable even when no MCP server
+    can connect.
+    """
+    mcp_cfg = getattr(getattr(config, "tools", None), "mcp_servers", None) or {}
+    for name, server in mcp_cfg.items():
+        transport = getattr(server, "type", None) or "stdio"
+        if transport != "stdio":
+            continue
+        command = getattr(server, "command", None)
+        if not command:
+            continue
+        # If the command is an absolute path, check it exists; otherwise
+        # only check PATH lookup.
+        cmd_path = Path(command)
+        if cmd_path.is_absolute():
+            if not cmd_path.exists():
+                logger.warning(
+                    "MCP server '{name}' configured with command '{cmd}' "
+                    "but the file does not exist. "
+                    "Update tools.mcp_servers.{name}.command in config.json.",
+                    name=name,
+                    cmd=command,
+                )
+            continue
+        # Bare executable name: rely on shutil.which.
+        if shutil.which(command) is None and not any(
+            os.path.isdir(p) for p in os.environ.get("PATH", "").split(os.pathsep)
+        ):
+            logger.warning(
+                "MCP server '{name}' configured with command '{cmd}' "
+                "but the executable is not on PATH. "
+                "Install the server (e.g. ``pip install percival-osm``) "
+                "or update tools.mcp_servers.{name}.command in config.json.",
+                name=name,
+                cmd=command,
+            )
 
 
 @dataclass(slots=True)
@@ -90,6 +140,13 @@ class Femtobot:
         config: Config = resolve_config_env_vars(load_config(resolved))
         if workspace is not None:
             config.agents.defaults.workspace = str(Path(workspace).expanduser().resolve())
+
+        # PR 6.1 (longlogs remediation): warn (do not raise) when an
+        # MCP server is configured but its executable is not on PATH.
+        # This makes the "fastmcp vs percival-osm-mcp" typo visible at
+        # SDK init time instead of burying the failure in the agent
+        # loop's startup log.
+        _warn_missing_mcp_executables(config)
 
         loop = AgentLoop.from_config(
             config,
