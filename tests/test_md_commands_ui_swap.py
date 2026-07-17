@@ -76,7 +76,28 @@ def test_cmd_ui_full_sets_rebuild_flag_and_warns():
     out = _run(cmd_module.cmd_ui(_ctx("full")))
     assert out is not None
     assert out.metadata.get("_rebuild_renderer") is True
-    assert "full" in out.content.lower()
+    # In test environments Textual is typically not installed, so the
+    # PR 3.2 fallback path is taken. We assert that one of the two
+    # legitimate messages was emitted.
+    lowered = out.content.lower()
+    assert "switched ui_parity" in lowered or "fallback" in lowered or "falling back" in lowered
+
+
+def test_cmd_ui_full_falls_back_when_textual_missing(monkeypatch):
+    """PR 3.2: when Textual is not installed, ``/ui full`` degrades to
+    ``off`` and tells the user instead of crashing the next turn.
+    """
+    import femtobot.cli.textual_app as ta
+
+    monkeypatch.setattr(ta, "_TEXTUAL_AVAILABLE", False, raising=False)
+    loop = _FakeLoop()
+    out = _run(cmd_module.cmd_ui(_ctx("full")))
+    assert out is not None
+    # The config must be downgraded to ``off``.
+    assert loop._config.agents.defaults.cli.ui_parity.profile == "off"
+    assert out.metadata.get("_rebuild_renderer") is True
+    assert out.metadata.get("_ui_fallback") == "full->off"
+    assert "fallback" in out.content.lower() or "falling back" in out.content.lower()
 
 
 def test_cmd_ui_unknown_profile_does_not_set_rebuild_flag():

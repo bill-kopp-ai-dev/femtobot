@@ -169,6 +169,8 @@ markers = [
     "durability: durability / concurrency regression tests (Lote B in REFACTOR_PLAN.md).",
     "architecture: architecture / plugin tests (Lote C in REFACTOR_PLAN.md).",
     "providers: provider / proxy tests (Lote D in REFACTOR_PLAN.md).",
+    "e2e: end-to-end smoke tests that may hit a real provider (run nightly).",
+    "audit: AGENTS.md / SOUL.md static contradiction audit (PR 5.1).",
 ]
 filterwarnings = [
     "error::RuntimeWarning",

@@ -1815,13 +1815,49 @@ async def cmd_ui(ctx: CommandContext) -> OutboundMessage:
         )
 
     ui_cfg.profile = requested
+    extra = ""
+    # PR 3.2 (longlogs remediation): when ``full`` is requested but
+    # Textual is not installed (preview builds, minimal CI envs), fall
+    # back to ``off`` and tell the user. Without this guard ``/ui full``
+    # crashes the renderer swap on the very next turn, dropping the
+    # user back to the legacy REPL with no explanation.
     if requested == "full":
-        extra = (
-            "\n\nNote: `full` (Textual TUI) is not available in the v0.1.0-ui.0 "
-            "preview. It will fall back to `off` until the RC release."
+        try:
+            from femtobot.cli.textual_app import _TEXTUAL_AVAILABLE
+
+            textual_ok = bool(_TEXTUAL_AVAILABLE)
+        except Exception:
+            textual_ok = False
+        if not textual_ok:
+            ui_cfg.profile = "off"
+            extra = (
+                "\n\nNote: `full` (Textual TUI) is not available in this "
+                "build. Falling back to `off`. Install textual "
+                "(``pip install textual``) or use ``/ui compat`` to get "
+                "the Claude-Code-style parity renderer."
+            )
+            # We still want the rebuild flag so the user actually sees
+            # the off profile (in case the previous renderer was already
+            # partial / from a previous /ui full attempt).
+            metadata["_rebuild_renderer"] = True
+            metadata["_ui_fallback"] = "full->off"
+            return OutboundMessage(
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                content=(
+                    f"`full` profile unavailable; loaded `off` instead.{extra}"
+                ),
+                metadata=metadata,
+            )
+        # Textual IS available — proceed with full rebuild.
+        metadata["_rebuild_renderer"] = True
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=f"Switched ui_parity to 'full' for this session.",
+            metadata=metadata,
         )
-    else:
-        extra = ""
+
     # PR 3.1 (longlogs remediation): ask the CLI consumer to hot-swap
     # the renderer so the new profile is visible on the very next
     # turn, instead of lying to the user that the change took effect.
@@ -1830,7 +1866,7 @@ async def cmd_ui(ctx: CommandContext) -> OutboundMessage:
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,
         content=(
-            f"Switched ui_parity to {requested!r} for this session.{extra}"
+            f"Switched ui_parity to {requested!r} for this session."
         ),
         metadata=metadata,
     )
@@ -1975,3 +2011,26 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.prefix("/ui ", cmd_ui)
     router.exact("/welcome", cmd_welcome)
     router.exact("/release-notes", cmd_release_notes)
+    # PR 7.2 (longlogs remediation): `/doctor` runs a quick triage of
+    # the workspace (config + MCP visibility + spinner path + B4 race).
+    router.exact("/doctor", cmd_doctor)
+
+
+async def cmd_doctor(ctx: CommandContext) -> OutboundMessage:
+    """Run the doctor scorecard (PR 7.2 of the longlogs plan).
+
+    Surfaces the four highest-value workspace health checks at a
+    glance: config imports, MCP server visibility, spinner path,
+    and the B4 Live-race catch-net. Returns a markdown table the
+    CLI renders as a code block.
+    """
+    from femtobot.cli.doctor import render_report, run_doctor
+
+    workspace = getattr(ctx.loop, "workspace", None)
+    report = run_doctor(workspace=workspace)
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content=render_report(report),
+        metadata={"render_as": "markdown"},
+    )

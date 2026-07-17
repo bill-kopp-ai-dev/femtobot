@@ -1241,12 +1241,11 @@ def agent(
     except ValueError as exc:
         console.print(f"[red]Error: {exc}[/red]")
         raise typer.Exit(1) from exc
+    # PR 6.2 (longlogs remediation): the restart notice is consumed
+    # here (so the env vars are cleared for the rest of the session)
+    # but the actual print is deferred until after ``_ACTIVE_RENDERER``
+    # is built, so the parity header / welcome card render first.
     restart_notice = consume_restart_notice_from_env()
-    if restart_notice and should_show_cli_restart_notice(restart_notice, session_id):
-        _print_agent_response(
-            format_restart_completed_message(restart_notice.started_at_raw),
-            render_markdown=False,
-        )
 
     # Shared reference for progress callbacks
     _thinking: ThinkingSpinner | None = None
@@ -1393,6 +1392,18 @@ def agent(
         )
         global _ACTIVE_RENDERER
         _ACTIVE_RENDERER = renderer
+
+        # PR 6.2 (longlogs remediation): print the restart notice AFTER
+        # the renderer is constructed, so the parity header / welcome
+        # card have a chance to render first and the notice slots in
+        # below them. The previous order printed the notice before
+        # ``_ACTIVE_RENDERER`` existed, causing a duplicate bare
+        # header in the legacy profile.
+        if restart_notice:
+            _print_agent_response(
+                format_restart_completed_message(restart_notice.started_at_raw),
+                render_markdown=False,
+            )
 
         def _swap_renderer() -> None:
             """Hot-swap the active renderer (PR 3.1 of the longlogs plan).

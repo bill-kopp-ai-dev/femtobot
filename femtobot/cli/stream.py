@@ -32,6 +32,42 @@ def _clear_current_line(console: Console) -> None:
     file.flush()
 
 
+def _clear_live_block(console: Console, *, height: int = 1) -> None:
+    """Erase an entire ``Live`` block before printing persistent output.
+
+    PR 2.1 (longlogs remediation). The legacy ``_clear_current_line``
+    only erases one line — when the ``Live`` spans multiple rows
+    (status, hint, footer), the call leaves the leftover lines on
+    screen and the next chunk of content interleaves with them
+    (visible as fragments of the previous turn appearing as if they
+    were part of the current turn).
+
+    Behaviour:
+
+    - When stdout is a TTY: writes ``\\x1b[2J`` (erase entire screen)
+      followed by ``\\x1b[H`` (home cursor). Rich's own ``Live`` with
+      ``transient=True`` already redraws nothing afterwards, so we
+      get a clean screen without flickering.
+    - When stdout is not a TTY: writes ``height`` newlines so the
+      captured transcript still groups the cleared block as its own
+      paragraph (the captured log no longer interleaves fragments).
+
+    ``height`` is the number of rows the ``Live`` was occupying.
+    Callers pass the current ``Live.render_height`` when known;
+    defaults to 1 for safety.
+    """
+    file = console.file
+    isatty = getattr(file, "isatty", lambda: False)
+    if isatty():
+        file.write("\x1b[2J\x1b[H")
+    else:
+        # Non-TTY: do not emit escape sequences (they would leak as
+        # literal bytes in ``docker exec -i`` / piped consumers — see
+        # ``_make_console`` and #3265). Use newlines instead.
+        file.write("\n" * max(1, height))
+    file.flush()
+
+
 def _make_console() -> Console:
     """Create a Console that emits plain text when stdout is not a TTY.
 
@@ -129,7 +165,10 @@ class ThinkingSpinner:
             self._live.stop()
         else:
             self._spinner.stop()
-        _clear_current_line(self._console)
+        # PR 2.1 (longlogs remediation): clear the whole Live block,
+        # not just one line, so the captured transcript does not leak
+        # leftover fragments when stdout is not a TTY.
+        _clear_live_block(self._console, height=1)
         return False
 
     def pause(self):
@@ -140,7 +179,7 @@ class ThinkingSpinner:
         def _ctx():
             if self._live is not None and self._active:
                 self._live.stop()
-                _clear_current_line(self._console)
+                _clear_live_block(self._console, height=1)
             elif self._spinner and self._active:
                 self._spinner.stop()
                 _clear_current_line(self._console)

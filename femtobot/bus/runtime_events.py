@@ -72,12 +72,49 @@ class RuntimeModelChanged:
     model_preset: str | None
 
 
+@dataclass(frozen=True)
+class ReasoningCompleted:
+    """Reasoning stream finished for a turn (PR 4.3 of the longlogs plan).
+
+    Emitted after ``hook.emit_reasoning_end`` so subscribers can render
+    a ``thought for Xs`` footer or aggregate metrics without parsing
+    the reasoning stream themselves.
+    """
+
+    context: RuntimeEventContext
+    duration_s: float | None = None
+    token_estimate: int | None = None
+
+
+@dataclass(frozen=True)
+class RuntimeMetric:
+    """Generic runtime metric emitted by the longlogs remediation hooks.
+
+    PR 7.1 introduces a small set of well-known ``name`` values:
+
+    - ``tool_use_guard_triggered`` — ``ToolUseGuardHook`` injected a nudge.
+    - ``mcp_missing_warning_emitted`` — ``_connect_mcp`` warned about a
+      referenced-but-not-configured server.
+    - ``live_race_detected`` — ``_clear_live_block`` saw a multi-row
+      block on a non-TTY consumer (B4 catch-net).
+
+    ``payload`` is intentionally open-ended so future metrics can
+    attach structured data without churning the event schema.
+    """
+
+    context: RuntimeEventContext
+    name: str
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
 RuntimeEvent = (
     SessionTurnStarted
     | TurnRunStatusChanged
     | TurnCompleted
     | GoalStateChanged
     | RuntimeModelChanged
+    | ReasoningCompleted
+    | RuntimeMetric
 )
 RuntimeEventType = (
     type[SessionTurnStarted]
@@ -85,6 +122,8 @@ RuntimeEventType = (
     | type[TurnCompleted]
     | type[GoalStateChanged]
     | type[RuntimeModelChanged]
+    | type[ReasoningCompleted]
+    | type[RuntimeMetric]
 )
 RuntimeEventHandler = Callable[[Any], Awaitable[None] | None]
 _HandlerEntry = tuple[RuntimeEventType | None, RuntimeEventHandler]
@@ -233,6 +272,65 @@ class RuntimeEventPublisher:
 
     def runtime_model_changed(self, model: str, model_preset: str | None) -> None:
         self.bus.publish_nowait(RuntimeModelChanged(model=model, model_preset=model_preset))
+
+    async def reasoning_completed(
+        self,
+        *,
+        channel: str,
+        chat_id: str,
+        session_key: str,
+        metadata: dict[str, Any] | None,
+        duration_s: float | None = None,
+        token_estimate: int | None = None,
+    ) -> None:
+        """PR 4.3 (longlogs remediation): emit ``ReasoningCompleted``.
+
+        Called by the runner after ``hook.emit_reasoning_end`` so the
+        CLI's ``SpinnerWithElapsed`` (PR 2.2) can read ``duration_s``
+        for the ``thought for Xs`` footer.
+        """
+        await self.bus.publish(
+            ReasoningCompleted(
+                context=self._context(
+                    channel=channel,
+                    chat_id=chat_id,
+                    session_key=session_key,
+                    metadata=metadata,
+                ),
+                duration_s=duration_s,
+                token_estimate=token_estimate,
+            )
+        )
+
+    async def emit_metric(
+        self,
+        name: str,
+        *,
+        channel: str = "cli",
+        chat_id: str = "direct",
+        session_key: str = "cli:direct",
+        metadata: dict[str, Any] | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        """PR 7.1 (longlogs remediation): publish a runtime metric.
+
+        Subscribers (Prometheus exporters, the ``femtobot doctor``
+        scorecard) can ``bus.subscribe(handler, event_type=RuntimeMetric)``
+        and filter on ``event.name`` to roll up the longlogs
+        remediation counters.
+        """
+        await self.bus.publish(
+            RuntimeMetric(
+                context=self._context(
+                    channel=channel,
+                    chat_id=chat_id,
+                    session_key=session_key,
+                    metadata=metadata,
+                ),
+                name=name,
+                payload=dict(payload or {}),
+            )
+        )
 
 
 def ensure_runtime_event_publisher(owner: Any) -> RuntimeEventPublisher:
