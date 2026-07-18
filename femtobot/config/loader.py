@@ -321,6 +321,49 @@ def validate_config(
     return True, f"Config OK ({mode})"
 
 
+def _known_config_paths() -> set[tuple[str, ...]]:
+    """Return the set of valid ``FEMTOBOT_*`` env-var paths for the active Config.
+
+    Walk ``Config.model_fields`` recursively and collect the path tuples
+    (lowercased) that ``BaseSettings`` would accept via
+    ``env_prefix="FEMTOBOT_"`` + ``env_nested_delimiter="__"``. The set is
+    built lazily and cached for the lifetime of the process.
+
+    Why this exists: ``FEMTOBOT_*`` is overloaded — it carries both
+    ``Config`` fields (e.g. ``FEMTOBOT_PROVIDERS__MINIMAX__API_KEY``) and
+    feature flags read directly via ``os.environ.get`` (e.g.
+    ``FEMTOBOT_LOGFIRE``, ``FEMTOBOT_LOGFIRE_HTTPX``). Without filtering,
+    ``_merge_env_overrides`` happily injects the flag as a synthetic field,
+    which the ``Config`` ``extra="forbid"`` policy then rejects — masking
+    the real config with a "Using default configuration" fallback.
+    """
+    cache_key = "_known_config_paths_cache"
+    cached = globals().get(cache_key)
+    if cached is not None:
+        return cached
+
+    paths: set[tuple[str, ...]] = set()
+    stack: list[tuple[BaseModel, tuple[str, ...]]] = [(Config, ())]
+    while stack:
+        model, prefix = stack.pop()
+        for name, field in model.model_fields.items():
+            current = prefix + (name,)
+            paths.add(current)
+            # Descend into nested BaseModel fields. Skip container-like
+            # fields (dict / list) and scalars — they are leaves.
+            annotation = field.annotation
+            if annotation is None:
+                continue
+            try:
+                nested_type = annotation.__args__[0] if hasattr(annotation, "__args__") else annotation
+            except (AttributeError, IndexError):
+                nested_type = annotation
+            if isinstance(nested_type, type) and issubclass(nested_type, BaseModel):
+                stack.append((nested_type, current))
+    globals()[cache_key] = paths
+    return paths
+
+
 def _merge_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
     """Return ``data`` with ``FEMTOBOT_*`` env vars patched in for null leaves.
 
@@ -339,6 +382,11 @@ def _merge_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
           model field names (``API_KEY`` -> ``api_key``).
         * Empty string env values are skipped (a bare ``KEY=`` line would
           otherwise clobber a configured non-null value).
+        * Env vars whose path does not correspond to a known ``Config``
+          field are silently skipped (logged at debug). This protects the
+          shared ``FEMTOBOT_*`` namespace from feature flags like
+          ``FEMTOBOT_LOGFIRE`` that are read directly via ``os.environ.get``
+          and must not be coerced into synthetic ``Config`` fields.
 
     This is the seam that lets the ``.env`` feed secrets into ``Config``
     even though the on-disk ``config.json`` deliberately keeps
@@ -348,6 +396,7 @@ def _merge_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
         return data
 
     prefix = "FEMTOBOT_"
+    known_paths = _known_config_paths()
     for env_name, env_value in os.environ.items():
         if not env_name.startswith(prefix):
             continue
@@ -361,6 +410,18 @@ def _merge_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
         # `to_camel` alias generator produces `apiKey` while the env var
         # carries `API_KEY`; both must reach the same field.
         path = [path[0].lower(), *(p.lower() for p in path[1:])]
+        # Skip feature flags and other namespace-shared vars that aren't
+        # actual Config fields. Without this guard, ``FEMTOBOT_LOGFIRE=1``
+        # would be coerced into ``data["logfire"] = "1"`` and the
+        # ``extra="forbid"`` policy on Config would reject the entire
+        # load, silently falling back to the hardcoded defaults.
+        if tuple(path) not in known_paths:
+            logger.debug(
+                "Skipping FEMTOBOT_* env var {} (not a Config field); "
+                "read it via os.environ.get if you need it.",
+                env_name,
+            )
+            continue
         _set_if_blank(data, path, env_value)
     return data
 
