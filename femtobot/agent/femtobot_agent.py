@@ -66,11 +66,16 @@ def _resolve_provider_name(config: "Config") -> str:
 def _build_model(config: "Config") -> Model:
     """Resolve the configured provider into a PydanticAI Model.
 
-    Phase 1 supports the four native types. The OpenAI-compat bucket
-    is routed through ``OpenAIModel`` with a custom ``base_url``;
-    this collapses Zhipu / DashScope / DeepSeek / Groq / etc. into a
-    single code path. Phase 5 introduces a separate
-    ``OpenAICompatModel`` wrapper if dedicated features surface.
+    Phase 5 (current) supports the four native types
+    (openai / anthropic / bedrock / gemini) plus a unified
+    OpenAI-compat bucket that covers the 24 regional providers
+    (Zhipu, DashScope, DeepSeek, Groq, etc.) by routing them
+    through ``OpenAIModel`` with a custom ``base_url``.
+
+    Missing optional SDKs (anthropic / boto3 / google-genai) surface
+    as a clean ``RuntimeError`` pointing at the right ``uv add``
+    command — we do NOT silently fall back to OpenAI because that
+    would mask auth problems.
     """
     from pydantic_ai.models.openai import OpenAIModel
     from pydantic_ai.providers.openai import OpenAIProvider
@@ -82,12 +87,8 @@ def _build_model(config: "Config") -> Model:
 
     model_name = config.agents.defaults.model
 
-    # Native OpenAI (or anything we treat as OpenAI-compat for Phase 1).
-    if name in _NATIVE_PROVIDERS - {"anthropic", "bedrock", "gemini"} or name not in {
-        "anthropic",
-        "bedrock",
-        "gemini",
-    }:
+    # Native OpenAI (or anything we treat as OpenAI-compat).
+    if name not in {"anthropic", "bedrock", "gemini"}:
         provider_kwargs: dict[str, Any] = {}
         if getattr(provider_cfg, "api_key", None):
             provider_kwargs["api_key"] = provider_cfg.api_key
@@ -98,13 +99,55 @@ def _build_model(config: "Config") -> Model:
             provider=OpenAIProvider(**provider_kwargs) if provider_kwargs else None,
         )
 
-    # The remaining three native types arrive in Phase 5. Raising
-    # here with a clear message lets users temporarily route through
-    # ``provider = "openai"`` + ``api_base`` without losing data.
+    # Native Anthropic. Requires the optional ``anthropic`` SDK.
+    if name == "anthropic":
+        try:
+            from pydantic_ai.models.anthropic import AnthropicModel
+        except ImportError as exc:
+            raise RuntimeError(
+                "Provider 'anthropic' requires the anthropic SDK. "
+                "Install with: uv add 'pydantic-ai-slim[anthropic]'"
+            ) from exc
+        provider_kwargs = {}
+        if getattr(provider_cfg, "api_key", None):
+            provider_kwargs["api_key"] = provider_cfg.api_key
+        return AnthropicModel(model_name, **provider_kwargs)
+
+    # Native Bedrock. Requires boto3.
+    if name == "bedrock":
+        try:
+            from pydantic_ai.models.bedrock import BedrockConverseModel
+        except ImportError as exc:
+            raise RuntimeError(
+                "Provider 'bedrock' requires boto3. "
+                "Install with: uv add 'femtobot[bedrock]'"
+            ) from exc
+        return BedrockConverseModel(model_name)
+
+    # Native Gemini. Requires the optional google-genai SDK.
+    # PydanticAI 1.31 renamed GeminiModel → GoogleModel; fall back
+    # to the deprecated alias if the new name is unavailable.
+    if name == "gemini":
+        try:
+            from pydantic_ai.models.google import GoogleModel
+            return GoogleModel(model_name)
+        except ImportError:
+            try:
+                from pydantic_ai.models.gemini import GeminiModel  # type: ignore[no-redef]
+
+                return GeminiModel(model_name)
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Provider 'gemini' requires the google-genai SDK. "
+                    "Install with: uv add 'pydantic-ai-slim[gemini]'"
+                ) from exc
+
+    # Fallback guard for future additions to _NATIVE_PROVIDERS that
+    # are not yet wired.
     raise NotImplementedError(
         f"Provider type {name!r} is not yet wired into the PydanticAI adapter. "
-        "Open the model in Phase 5 or set agents.defaults.provider to 'openai' "
-        "with the upstream API base as a temporary workaround."
+        "Set agents.defaults.provider to 'openai' with the upstream API base "
+        "as a temporary workaround."
     )
 
 

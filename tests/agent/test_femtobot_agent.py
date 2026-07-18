@@ -240,3 +240,113 @@ def test_combined_toolset_returns_migrated_tools() -> None:
     tools = combined_toolset()
     names = [t.name for t in tools]
     assert "femtobot_timer" in names
+
+
+# ---------------------------------------------------------------------------
+# Provider dispatch (Phase 5)
+# ---------------------------------------------------------------------------
+
+
+def test_build_model_openai_with_provider_kwargs() -> None:
+    """OpenAI provider picks up api_key and api_base from config."""
+    from pydantic_ai.models.openai import OpenAIModel
+
+    from femtobot.agent.femtobot_agent import _build_model
+
+    cfg = _make_config()
+    cfg.agents.defaults.provider = "openai"
+    cfg.agents.defaults.model = "gpt-4o-mini"
+    cfg.providers.openai.api_key = "sk-test"
+    cfg.providers.openai.api_base = "https://api.example.com/v1"
+
+    model = _build_model(cfg)
+    assert isinstance(model, OpenAIModel)
+
+
+def test_build_model_openai_compat_uses_base_url() -> None:
+    """Regional OpenAI-compat providers (e.g. dashscope) get the custom base_url."""
+    from pydantic_ai.models.openai import OpenAIModel
+
+    from femtobot.agent.femtobot_agent import _build_model
+
+    cfg = _make_config()
+    cfg.agents.defaults.provider = "dashscope"
+    cfg.agents.defaults.model = "qwen-max"
+    cfg.providers.dashscope.api_key = "sk-test"
+    cfg.providers.dashscope.api_base = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+    model = _build_model(cfg)
+    assert isinstance(model, OpenAIModel)
+
+
+def test_build_model_anthropic_without_sdk_raises_helpful_error() -> None:
+    """When anthropic SDK is not installed, we get a clean RuntimeError."""
+    from femtobot.agent.femtobot_agent import _build_model
+
+    cfg = _make_config()
+    cfg.agents.defaults.provider = "anthropic"
+    cfg.agents.defaults.model = "claude-3-5-sonnet"
+    cfg.providers.anthropic.api_key = "sk-ant-test"
+
+    # The anthropic SDK may or may not be installed in this environment.
+    # Either path is acceptable: success returns an AnthropicModel,
+    # failure raises RuntimeError with an actionable message.
+    try:
+        model = _build_model(cfg)
+        from pydantic_ai.models.anthropic import AnthropicModel
+
+        assert isinstance(model, AnthropicModel)
+    except RuntimeError as exc:
+        assert "anthropic" in str(exc).lower()
+
+
+def test_build_model_bedrock_without_sdk_raises_helpful_error() -> None:
+    """When boto3 is not installed, we get a clean RuntimeError."""
+    from femtobot.agent.femtobot_agent import _build_model
+
+    cfg = _make_config()
+    cfg.agents.defaults.provider = "bedrock"
+    cfg.agents.defaults.model = "anthropic.claude-3-5-sonnet"
+    cfg.providers.bedrock.api_key = "aws-test"
+
+    try:
+        model = _build_model(cfg)
+        from pydantic_ai.models.bedrock import BedrockConverseModel
+
+        assert isinstance(model, BedrockConverseModel)
+    except RuntimeError as exc:
+        assert "boto3" in str(exc).lower() or "bedrock" in str(exc).lower()
+
+
+def test_build_model_gemini_without_sdk_raises_helpful_error() -> None:
+    """When google-genai is not installed, we get a clean RuntimeError."""
+    from femtobot.agent.femtobot_agent import _build_model
+
+    cfg = _make_config()
+    cfg.agents.defaults.provider = "gemini"
+    cfg.agents.defaults.model = "gemini-1.5-pro"
+    cfg.providers.gemini.api_key = "gemini-test"
+
+    try:
+        model = _build_model(cfg)
+        # Accept either the new GoogleModel or the deprecated GeminiModel alias.
+        try:
+            from pydantic_ai.models.google import GoogleModel
+
+            assert isinstance(model, GoogleModel)
+        except ImportError:
+            from pydantic_ai.models.gemini import GeminiModel  # type: ignore[no-redef]
+
+            assert isinstance(model, GeminiModel)
+    except RuntimeError as exc:
+        assert "gemini" in str(exc).lower() or "google" in str(exc).lower()
+
+
+def test_build_model_unknown_provider_raises_value_error() -> None:
+    """An unknown provider name raises a clear ValueError."""
+    from femtobot.agent.femtobot_agent import _build_model
+
+    cfg = _make_config()
+    cfg.agents.defaults.provider = "definitely_not_a_provider"
+    with pytest.raises(ValueError, match="Unknown provider"):
+        _build_model(cfg)
