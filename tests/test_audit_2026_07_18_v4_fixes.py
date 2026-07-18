@@ -42,11 +42,17 @@ def _classify(raw: str, router: CommandRouter) -> str:
     Returns one of: ``"unknown"`` (raw was a slash command but no handler
     matched), ``"matched-shortcut"`` (a handler was registered and would
     be invoked), or ``"plain"`` (raw does not start with ``/``).
+
+    Audit 2026-07-18 v5: priority commands (e.g. /restart, /stop) now
+    also count as matched-shortcut so the offline ``-m`` path does not
+    treat them as unknown.
     """
     if not raw.startswith("/"):
         return "plain"
     raw_norm = raw.lower()
     if raw_norm in router._exact:
+        return "matched-shortcut"
+    if raw_norm in router._priority:
         return "matched-shortcut"
     if any(raw_norm.startswith(pfx) for pfx, _ in router._prefix):
         return "matched-shortcut"
@@ -96,6 +102,14 @@ def test_classify_known_command_with_no_match_args(router: CommandRouter) -> Non
     """
     assert _classify("/mcp tools percival-osm", router) == "matched-shortcut"
     assert _classify("/mcp tools", router) == "matched-shortcut"
+
+
+def test_classify_priority_command(router: CommandRouter) -> None:
+    """Priority commands (e.g. /restart, /stop) must also classify as
+    matched-shortcut so the offline ``-m`` path does not treat them
+    as unknown."""
+    assert _classify("/restart", router) == "matched-shortcut"
+    assert _classify("/stop", router) == "matched-shortcut"
 
 
 def test_reply_unknown_command_message_shape() -> None:

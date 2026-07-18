@@ -89,9 +89,16 @@ async def run_btw(
             ),
         })
 
-        # Call the provider directly with tools=None (no tool execution for /btw).
-        gen = getattr(provider, "generate", None)
-        if gen is None:
+        # Audit 2026-07-18 v5: use the canonical chat() entry point
+        # (``provider.chat_with_retry``) instead of the non-existent
+        # ``provider.generate``. The previous code silently failed the
+        # ``getattr(provider, "generate", None)`` lookup and returned
+        # ``None``, which surfaced to the user as the unhelpful "Could
+        # not process the question. Is the model connected?" notice —
+        # the model was actually connected, the wiring was just wrong.
+        chat_with_retry = getattr(provider, "chat_with_retry", None)
+        chat = getattr(provider, "chat", None)
+        if chat_with_retry is None and chat is None:
             return None
 
         async def _stream_cb(delta: str) -> None:
@@ -101,19 +108,26 @@ async def run_btw(
                 except Exception:
                     pass
 
-        result = await gen(
-            messages=messages,
-            tools=None,
-            on_stream=_stream_cb,
-        )
+        if chat_with_retry is not None:
+            response = await chat_with_retry(
+                messages=messages,
+                tools=None,
+            )
+        else:  # pragma: no cover - defensive
+            response = await chat(
+                messages=messages,
+                tools=None,
+            )
 
-        content = ""
-        if isinstance(result, dict):
-            content = result.get("content", "")
-        elif isinstance(result, str):
-            content = result
-        else:
-            content = str(result) if result else ""
+        # ``LLMResponse`` exposes the text on ``content``. Older test
+        # fixtures and accidental ``dict`` returns are tolerated and
+        # coerced to ``str`` so the rest of the pipeline can rely on a
+        # string.
+        content = getattr(response, "content", None)
+        if content is None and isinstance(response, dict):  # pragma: no cover
+            content = response.get("content", "")
+        if not isinstance(content, str):
+            content = ""
 
         elapsed = time.monotonic() - t0
         return OutboundMessage(
@@ -127,10 +141,19 @@ async def run_btw(
             },
         )
 
-    except Exception:
+    except Exception as exc:
+        elapsed = time.monotonic() - t0
+        logger.exception("btw side-question failed")
         return OutboundMessage(
             channel=channel,
             chat_id=chat_id,
-            content="[btw] Failed to answer the question.",
-            metadata={"render_as": "text", "_btw": True},
+            content=(
+                f"[btw] Failed to answer the question ({type(exc).__name__}: "
+                f"{exc})."
+            ),
+            metadata={
+                "render_as": "text",
+                "_btw": True,
+                "_btw_elapsed_s": round(elapsed, 2),
+            },
         )

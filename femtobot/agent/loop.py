@@ -1732,11 +1732,20 @@ class AgentLoop:
         # shortcut" (e.g. /goal, /btw) which mutates ``cmd_ctx.msg`` and
         # expects the rest of the state machine to process it as a normal
         # turn. We must not classify that as "unknown command".
+        #
+        # Audit 2026-07-18 v5: also include the priority tier (e.g.
+        # ``/restart``, ``/stop``) so the offline ``process_direct`` path
+        # (used by ``femtobot agent -m``) still recognises priority
+        # commands. The interactive ``run()`` path dispatches priority
+        # commands upstream, but the state machine here needs to handle
+        # them too in case they slip through (e.g. tests, future
+        # integrations).
         raw_norm = raw.lower()
         matched_shortcut = (
             raw.startswith("/")
             and (
                 raw_norm in self.commands._exact
+                or raw_norm in self.commands._priority
                 or any(
                     raw_norm.startswith(pfx)
                     for pfx, _ in self.commands._prefix
@@ -1744,6 +1753,11 @@ class AgentLoop:
             )
         )
         result = await self.commands.dispatch(cmd_ctx)
+        # Priority commands (e.g. /restart) live in a separate tier and
+        # are not reached by ``dispatch`` — try them explicitly so the
+        # ``-m`` / offline path still honours them.
+        if result is None and raw_norm in self.commands._priority:
+            result = await self.commands.dispatch_priority(cmd_ctx)
         if result is not None:
             ctx.outbound = result
             # Shortcut commands skip BUILD and SAVE, so we must persist the
