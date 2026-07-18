@@ -1525,11 +1525,34 @@ def agent(
                         # the source of truth for the REPL loop below;
                         # we never append to it on the streamed path so
                         # we cannot accidentally double-render.
-                        if msg.content:
-                            turn_response.append(
-                                (msg.content, dict(msg.metadata or {}))
+                        # Audit 2026-07-18: when no turn is active
+                        # (``turn_done.is_set()`` and the bus message is
+                        # unsolicited — e.g. the background completion
+                        # notice from ``/dream``), buffer the body and
+                        # render it immediately. Without this branch
+                        # the REPL would either drop the message on the
+                        # next ``turn_response.clear()`` or print it
+                        # later as if it were the user's reply, breaking
+                        # the conversation flow.
+                        if not turn_done.is_set():
+                            # Turn in progress: defer to the REPL loop.
+                            if msg.content:
+                                turn_response.append(
+                                    (msg.content, dict(msg.metadata or {}))
+                                )
+                            turn_done.set()
+                        elif msg.content and not msg.metadata.get("_progress"):
+                            # No active turn: this is a background
+                            # notification (e.g. /dream completion,
+                            # /mcp status, runtime warnings). Render it
+                            # inline without disturbing the prompt.
+                            if renderer:
+                                await renderer.close()
+                            _print_agent_response(
+                                msg.content,
+                                render_markdown=markdown,
+                                metadata=msg.metadata or None,
                             )
-                        turn_done.set()
 
                     except asyncio.TimeoutError:
                         continue

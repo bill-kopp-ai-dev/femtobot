@@ -38,18 +38,35 @@ def _check_config() -> dict[str, str]:
     return {"status": "OK", "detail": "Config schema imports cleanly."}
 
 
-def _check_mcp_servers(workspace: Path | None) -> dict[str, str]:
-    try:
-        from femtobot.config.loader import load_config, resolve_config_env_vars
-        from femtobot.config.schema import Config
-    except Exception as exc:
-        return {"status": "FAIL", "detail": f"Config loader unavailable: {exc}"}
-    try:
-        cfg: Config = resolve_config_env_vars(load_config(None))
-    except Exception as exc:
-        # Missing / unreadable config is treated as a WARN, not a FAIL
-        # — many workspaces rely on defaults only.
-        return {"status": "WARN", "detail": f"Config could not be loaded: {exc}"}
+def _check_mcp_servers(
+    workspace: Path | None,
+    config: Any = None,
+) -> dict[str, str]:
+    """Report MCP servers referenced in workspace docs but not configured.
+
+    ``config`` is an optional pre-loaded :class:`femtobot.config.schema.Config`.
+    When provided, the check uses its ``tools.mcp_servers`` map directly and
+    never touches the on-disk config — this is the seam tests use to assert
+    the check works against an arbitrary workspace/config combination.
+
+    When ``config`` is ``None`` we fall back to ``load_config(None)`` so the
+    CLI consumer keeps its previous "look at the active instance config"
+    behaviour.
+    """
+    if config is not None:
+        cfg = config
+    else:
+        try:
+            from femtobot.config.loader import load_config, resolve_config_env_vars
+            from femtobot.config.schema import Config  # noqa: F401
+        except Exception as exc:
+            return {"status": "FAIL", "detail": f"Config loader unavailable: {exc}"}
+        try:
+            cfg = resolve_config_env_vars(load_config(None))
+        except Exception as exc:
+            # Missing / unreadable config is treated as a WARN, not a FAIL
+            # — many workspaces rely on defaults only.
+            return {"status": "WARN", "detail": f"Config could not be loaded: {exc}"}
     missing = collect_mcp_missing_references(
         workspace=workspace,
         configured_servers=set(getattr(cfg.tools, "mcp_servers", {}) or {}),
@@ -110,12 +127,26 @@ CHECKS = (
 )
 
 
-def run_doctor(workspace: Path | None = None) -> dict[str, Any]:
-    """Run every check and return a scorecard dict."""
+def run_doctor(
+    workspace: Path | None = None,
+    *,
+    config: Any = None,
+) -> dict[str, Any]:
+    """Run every check and return a scorecard dict.
+
+    ``config`` is forwarded to the ``mcp_servers`` check. When omitted
+    (the CLI default) the check loads the active instance config so
+    production users get the real picture; tests can pass a
+    pre-constructed :class:`Config` to keep the check independent of
+    whatever config happens to be on disk in the test environment.
+    """
     report: dict[str, Any] = {"workspace": str(workspace) if workspace else None, "checks": {}}
     for name, fn in CHECKS:
         try:
-            report["checks"][name] = fn(workspace) if name == "mcp_servers" else fn()
+            if name == "mcp_servers":
+                report["checks"][name] = fn(workspace, config)
+            else:
+                report["checks"][name] = fn()
         except Exception as exc:  # pragma: no cover — defensive
             report["checks"][name] = {"status": "FAIL", "detail": str(exc)}
     overall = "OK"

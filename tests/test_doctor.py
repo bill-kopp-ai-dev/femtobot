@@ -33,7 +33,12 @@ def test_run_doctor_detects_unreferenced_mcp(tmp_path):
         "Use `mcp_percival-osm_geocode` to resolve addresses.\n",
         encoding="utf-8",
     )
-    report = run_doctor(workspace=tmp_path)
+    # Pass an explicit empty config so the check does not see the real
+    # ``.femtobot/config.json`` (which has ``percival-osm`` configured) and
+    # incorrectly report OK. This is the seam that lets the test stay
+    # deterministic regardless of the developer's local instance state.
+    empty_config = SimpleNamespace(tools=SimpleNamespace(mcp_servers={}))
+    report = run_doctor(workspace=tmp_path, config=empty_config)
     mcp = report["checks"]["mcp_servers"]
     assert mcp["status"] == "WARN"
     assert "percival-osm" in mcp["detail"]
