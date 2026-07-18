@@ -1056,7 +1056,7 @@ server = [
 
 [[package]]
 name = "femtobot"
-version = "0.1.0a0+ui0"
+version = "0.1.0a0+ui1"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },

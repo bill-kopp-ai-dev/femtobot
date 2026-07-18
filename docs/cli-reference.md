@@ -52,6 +52,29 @@ Always run this after editing `config.json` — if Pydantic validation failed
 at load time, `status` will show the silent fallback to defaults and you'll
 know your overrides were dropped.
 
+> **New in 0.1.0-ui.1.** `--folder-path` is validated up-front and the
+> command exits 2 if the directory does not exist or has no `.femtobot`
+> inside. Previously, a bogus `--folder-path` was silently ignored and
+> `status` reported the *active* instance instead.
+
+---
+
+## `femtobot tools`
+
+Inspect the registered toolset without spinning up the full agent loop.
+
+```bash
+femtobot tools list                          # all builtin tools
+femtobot tools list --capability read-only   # filtered by capability
+femtobot tools list --show-capabilities      # include the capability list
+```
+
+> **New in 0.1.0-ui.1.** The list now reflects every builtin tool
+> (17 by default). Previously only 5 tools appeared because the loader
+> silently dropped the rest; the fix builds a real `ToolContext` (with
+> `MessageBus`, `workspace`, `Config.tools`) and passes it to
+> `tool_cls.create`.
+
 ---
 
 ## `femtobot agent`
@@ -166,7 +189,7 @@ rendering profiles:
 |------------|-----------------------------------|--------|---------------------------------------------|
 | `off`      | Legacy `StreamRenderer` (v0.0.x)  | ✅     | Default. No aesthetic changes.              |
 | `compat`   | Rich `Live` + parity widgets      | auto   | Header, welcome, tool cards, footer, **input pill bar**, prompt.|
-| `full`     | Textual full TUI                  | ❌     | Arrives in the RC release `v0.1.0-ui.1`.    |
+| `full`     | Textual full TUI                  | ❌     | Arrives in the RC release `v0.1.0-ui.2`.    |
 
 Under `compat`, the prompt row is framed by an **input pill bar**: a
 thin accent rule above and below the prompt, a bold `❯` glyph in the

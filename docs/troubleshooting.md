@@ -345,6 +345,134 @@ If none of the above matches your issue:
 
 ---
 
+## Issues fixed in 0.1.0-ui.1 (2026-07-18)
+
+The following behaviours were reported during end-to-end REPL/serve
+smoke-testing with the local `MiniMax-M3` provider and the
+`percival-osm` MCP server. They were all fixed in `0.1.0-ui.1` —
+upgrade to that version (or later) if you hit any of them.
+
+### `/goal <task>` returns "Unknown command"
+
+**Fixed in.** `0.1.0-ui.1` (audit 2026-07-18 v4).
+
+**Symptom.** Typing `/goal Crie um arquivo` in the REPL or via
+`femtobot agent -m "/goal ..."` produced the message
+"Unknown command: /goal" instead of executing the long-task.
+
+**Cause.** `/goal` is a context-rewriting shortcut — its handler
+mutates the inbound message and returns `None`, so the rest of the
+state machine processes the turn as a normal model call. The
+unknown-command fallback was triggered by the `None` return value
+instead of recognising the match.
+
+**Fix.** `AgentLoop._state_command` now consults the router's
+exact+prefix+priority tables to distinguish a matched shortcut that
+rewrote `ctx.msg` from an actually-unknown command.
+
+### `/btw <question>` returns "Could not process the question"
+
+**Fixed in.** `0.1.0-ui.1` (audit 2026-07-18 v5).
+
+**Symptom.** The `/btw` reply was a generic "Could not process the
+question. Is the model connected?" notice even though the model was
+connected and answering regular turns just fine.
+
+**Cause.** `femtobot.cli.btw.run_btw` called a non-existent
+`provider.generate` method. Every registered provider exposes
+`chat_with_retry` (and sometimes `chat`), so the `getattr` lookup
+silently failed.
+
+**Fix.** Re-routed through `provider.chat_with_retry` (with `chat` as
+fallback), extracts text via `response.content`, surfaces the
+exception type + message on the error path.
+
+### `/mcp tools <server-with-hyphen>` shows no tools
+
+**Fixed in.** `0.1.0-ui.1` (audit 2026-07-18 v3).
+
+**Symptom.** `/mcp status` listed 33 tools from `percival-osm`, but
+`/mcp tools percival-osm` reported "No tools registered from
+'percival-osm'". Same problem for any MCP server whose name contains
+a hyphen.
+
+**Cause.** The `/mcp tools <server>` prefix lookup replaced `-` with
+`_`, but the tool registry preserves hyphens, so the prefix never
+matched.
+
+**Fix.** `/mcp tools` now matches both the verbatim server name and
+the underscore-flattened form, and surfaces the configured server
+list in the empty reply so the user can self-correct.
+
+### `/restart` (and other priority commands) trigger "Unknown command" via `-m`
+
+**Fixed in.** `0.1.0-ui.1` (audit 2026-07-18 v5).
+
+**Symptom.** `femtobot agent -m /restart` printed "Unknown command:
+/restart" instead of restarting the process. The interactive `femtobot
+agent` REPL worked correctly.
+
+**Cause.** The offline `process_direct` path used by `-m` only runs
+through `dispatch()` (exact+prefix). Priority commands like `/restart`
+and `/stop` live in the priority tier and are normally dispatched
+upstream by the interactive `run()` loop.
+
+**Fix.** `_state_command` now falls through to `dispatch_priority`
+when `dispatch` returns `None`, and the unknown-command classifier
+counts priority matches as "known".
+
+### Slash commands the router didn't recognise fell through to the LLM
+
+**Fixed in.** `0.1.0-ui.1` (audit 2026-07-18 v4).
+
+**Symptom.** Typing `/foo`, `/tools`, `/asdf` etc. caused the LLM to
+invent an answer ("here are the tools I have…") instead of telling
+the user the command didn't exist.
+
+**Cause.** `result is None` from `dispatch()` was treated as "send to
+the LLM", which the model handled by hallucinating plausible
+responses.
+
+**Fix.** When the input starts with `/` and the router did not match,
+a new helper `AgentLoop._reply_unknown_command` now returns a clear
+"Unknown command" reply listing the first 20 registered slash
+commands, plus a hint to use `/help` for the full palette.
+
+### `femtobot status --folder-path /tmp/bogus` is silently ignored
+
+**Fixed in.** `0.1.0-ui.1` (audit 2026-07-18 v6).
+
+**Symptom.** Passing an explicitly-bad path to `--folder-path`
+returned a status block anyway, showing the *active* instance instead
+of complaining.
+
+**Cause.** `config.loader.discover_instance_dir` walks
+`[start, start.parent, cwd/.femtobot]`, so an explicitly-bad path
+was treated as "no instance, look harder".
+
+**Fix.** `status` now validates `--folder-path` up-front and exits 2
+with a clear error when the path does not exist or contains no
+`.femtobot` inside.
+
+### `femtobot tools list` shows only 5 of 17 tools
+
+**Fixed in.** `0.1.0-ui.1` (audit 2026-07-18 v6).
+
+**Symptom.** `femtobot tools list` showed only `apply_patch`,
+`edit_file`, `read_file`, `write_file`, `find_files` (or similar) and
+`femtobot tools list --capability read-only` showed nothing.
+
+**Cause.** `tools_list` called `tool_cls.create(None)` and silently
+swallowed `TypeError` for every tool that needs a `ToolContext`
+(`bus`, `sessions`, `provider_snapshot_loader`, …).
+
+**Fix.** `tools_list` now builds a real `ToolContext` (with
+`MessageBus`, `workspace`, the loaded `Config.tools`) and passes it
+to `tool_cls.create`. The list now shows all 17 builtin tools and
+`--capability read-only` returns 7.
+
+---
+
 ## See also
 
 - [quick-start.md](./quick-start.md)

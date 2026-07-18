@@ -7,6 +7,100 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > Pre-1.0 (i.e., all current versions) treats breaking changes as minor bumps
 > and minor changes as patches. The first 1.0 release will lock the API.
 
+## [0.1.0-ui.1] — 2026-07-18
+
+> Patch release — second round of end-to-end REPL/serve smoke-testing
+> on top of `0.1.0-ui.0`. Closes **11 bugs** (A-K) surfaced during
+> interactive testing with the local `MiniMax-M3` provider and the
+> `percival-osm` MCP server. No behavioural change for users running
+> with default config; all fixes are scoped to previously-broken paths.
+
+### Fixed
+
+#### Slash-command dispatch (`AgentLoop._state_command`)
+
+- **`/goal <task>` now works** in the offline `process_direct` path
+  (was masked as "Unknown command" because the context-rewriting
+  shortcut returns `None`). `_state_command` now consults the router's
+  exact+prefix+priority tables to distinguish "matched shortcut that
+  rewrote ctx.msg" from "actually unknown command". Regression:
+  `tests/test_audit_2026_07_18_v4_fixes.py::test_classify_priority_command`.
+- **Unknown slash commands** (`/foo`, `/tools`, …) now surface a
+  friendly "Unknown command" reply listing the registered palette
+  instead of silently falling through to the LLM (which would happily
+  invent an answer like "here are the tools I have…").
+  New helper: `AgentLoop._reply_unknown_command`. Regression:
+  `tests/test_cmd_unknown_command.py`.
+- **`/restart` (and other priority commands)** in `femtobot agent -m`
+  no longer trigger "Unknown command: /restart" — the offline path now
+  also falls through to `dispatch_priority` when `dispatch` returns
+  `None`. Regression: `tests/test_audit_2026_07_18_v4_fixes.py`.
+
+#### `/btw` side-question (`femtobot.cli.btw`)
+
+- **`/btw <question>`** was silently failing because `run_btw` called
+  a non-existent `provider.generate`. Rewired to the canonical
+  `provider.chat_with_retry` (with `chat` as fallback), extracts text
+  via `response.content`, and surfaces the exception type + message
+  on the error path so the user can self-diagnose. `_btw_elapsed_s`
+  is now stamped on both success and error replies. Tests in
+  `tests/cli/test_btw.py` and `tests/test_audit_2026_07_18_v5_fixes.py`.
+
+#### `/mcp` subcommands (`femtobot.command.builtin.cmd_mcp`)
+
+- **`/mcp tools percival-osm`** (any server with a hyphen in its
+  name) now lists the registered tools correctly. The previous
+  prefix lookup flattened `-` to `_` while the tool registry
+  preserves hyphens, so the prefix never matched. Fix: try both
+  verbatim and underscore-flattened prefixes, and surface the
+  configured server list in the empty reply. Regression:
+  `tests/test_cmd_mcp.py`.
+
+#### CLI surface (`femtobot.cli.commands`)
+
+- **`femtobot status --folder-path /tmp/nope`** now exits 2 with a
+  clear error instead of silently falling back to the nearest
+  `.femtobot` on disk. Root cause: `discover_instance_dir` walks
+  `[start, start.parent, cwd/.femtobot]`, so an explicitly-bad path
+  was treated as "look harder". Fix validates the path up-front.
+  Regression: `tests/test_audit_2026_07_18_v6_fixes.py`.
+- **`femtobot tools list`** now lists all 17 builtin tools (was 5).
+  The old code called `tool_cls.create(None)` and silently swallowed
+  `TypeError` for every tool that needs a `ToolContext` (MCP-backed,
+  config-dependent). Fix builds a real `ToolContext` with
+  `MessageBus`, `workspace`, and the loaded `Config.tools`.
+  `--capability read-only` now returns 7 (was 0). Regression:
+  `tests/test_audit_2026_07_18_v6_fixes.py`.
+
+### Verified (no fixes required)
+
+- **`femtobot serve`** — `POST /v1/chat/completions` (sync + SSE
+  stream), `GET /v1/models`, error path (HTTP 400 on malformed
+  body). Per-session context isolation verified end-to-end with
+  `session_id` keys `sessionA` / `sessionB`.
+- **`exec` tool** — exit codes and stderr correctly surfaced for
+  missing paths, permission denied, `command not found` (exit 127),
+  and successful runs.
+- **`/goal` auto-completion** — when the model autonomously calls
+  `complete_goal` before the user types `/goal complete`, the
+  follow-up command correctly reports "No active goal".
+
+### Test suite
+
+- **1403/1403 tests pass** (1398 → 1403). Six new test files
+  pin the fixes down:
+  `test_audit_2026_07_18_v3_fixes.py`, `…_v4_fixes.py`,
+  `…_v5_fixes.py`, `…_v6_fixes.py`, `test_cmd_unknown_command.py`,
+  plus updates to `test_cmd_mcp.py` and `tests/cli/test_btw.py`.
+
+### Upgrade notes
+
+- Drop-in replacement for `0.1.0-ui.0`. No config migration needed.
+- Users on `0.1.0a0` (pre-UI-parity) get the parity-layer fixes on
+  top of the CLI fixes; the `ui_parity=off` default keeps behaviour
+  identical to `0.1.0-ui.0` for those not opting into the new
+  parity profiles.
+
 ## [Unreleased]
 
 ### Femtobot 1.0 — PydanticAI migration (Phases 0-9)
