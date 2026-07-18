@@ -69,8 +69,11 @@ def test_femtobot_output_rejects_whitespace_only_message() -> None:
 
 def test_femtobot_output_rejects_internal_file_references() -> None:
     for forbidden in ("AGENTS.md", "SOUL.md", "HEARTBEAT.md", "AWARENESS.md"):
+        # Path-like references (preceded by '/' or './') are blocked.
         with pytest.raises(ValidationError):
-            FemtobotOutput(final_message=f"see {forbidden}")
+            FemtobotOutput(final_message=f"see ./workspace/{forbidden}")
+        with pytest.raises(ValidationError):
+            FemtobotOutput(final_message=f"see /home/user/.femtobot/{forbidden}")
 
 
 def test_femtobot_output_accepts_normal_message() -> None:

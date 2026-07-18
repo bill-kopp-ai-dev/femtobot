@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from loguru import logger
+
 if TYPE_CHECKING:
     from femtobot.config.schema import Config
 
@@ -42,7 +44,14 @@ def _available_toolsets() -> list[Any]:
             import importlib
 
             mod = importlib.import_module(module_path)
-        except Exception:
+        except Exception as exc:
+            # Bug fix (re-audit 2026-07-18): log the failure rather
+            # than swallowing it silently — otherwise a regression
+            # in any toolset shows up as "tool mysteriously missing"
+            # with zero diagnostic.
+            logger.warning(
+                "Failed to import toolset candidate {}: {}", module_path, exc
+            )
             continue
         func = getattr(mod, attr, None)
         if func is None:
@@ -64,8 +73,16 @@ def combined_toolset(config: "Config | None" = None) -> list[Any]:
     for toolset_fn in _available_toolsets():
         try:
             tools.extend(toolset_fn())
-        except Exception:
-            # A failing toolset must not block the rest of the agent.
+        except Exception as exc:
+            # Bug fix (re-audit 2026-07-18): log per-toolset failures
+            # instead of silently skipping. A failing toolset must not
+            # block the rest of the agent, but the regression should
+            # be visible in the operator's logs.
+            logger.warning(
+                "Toolset {} failed to build: {}",
+                getattr(toolset_fn, "__module__", toolset_fn),
+                exc,
+            )
             continue
     return tools
 

@@ -881,8 +881,7 @@ class AgentLoop:
                 pass
             except Exception:
                 # Log unexpected failures so cancellation doesn't swallow
-                # real bugs (audit 2026-07-18). The ``noqa`` keeps ruff
-                # happy for the otherwise-suppress-free flow.
+                # real bugs (audit 2026-07-18).
                 logger.exception(
                     "Task {} for key {} raised during cancellation cleanup",
                     t,

@@ -35,8 +35,13 @@ if TYPE_CHECKING:
 
 
 # Providers we know how to dispatch to PydanticAI native Model classes.
-# Anything not in this map is treated as OpenAI-compat (custom field).
+# Anything not in this set is treated as OpenAI-compat (custom field
+# with a base_url). Keeping this in a single source of truth makes it
+# easy to add a new native provider (e.g. "mistral") without missing
+# any dispatch sites.
 _NATIVE_PROVIDERS: frozenset[str] = frozenset({"openai", "anthropic", "bedrock", "gemini"})
+# The subset that has its own PydanticAI Model class (not OpenAI-compat).
+_NON_OPENAI_NATIVE: frozenset[str] = _NATIVE_PROVIDERS - {"openai"}
 
 
 def _resolve_provider_name(config: "Config") -> str:
@@ -83,20 +88,43 @@ def _build_model(config: "Config") -> Model:
     name = _resolve_provider_name(config)
     provider_cfg = getattr(config.providers, name, None)
     if provider_cfg is None:
-        raise ValueError(f"Unknown provider {name!r} in agents.defaults.provider")
+        # Bug fix (re-audit 2026-07-18): the previous message omitted
+        # the list of valid provider names, making typos hard to
+        # debug. Include the canonical list so users can spot the
+        # mistake immediately.
+        known = sorted(config.providers.__class__.model_fields.keys())
+        raise ValueError(
+            f"Unknown provider {name!r} in agents.defaults.provider. "
+            f"Available providers: {', '.join(known)}. "
+            f"Either add providers.{name} to config.json or fix the typo."
+        )
 
     model_name = config.agents.defaults.model
 
     # Native OpenAI (or anything we treat as OpenAI-compat).
-    if name not in {"anthropic", "bedrock", "gemini"}:
+    if name not in _NON_OPENAI_NATIVE:
         provider_kwargs: dict[str, Any] = {}
         if getattr(provider_cfg, "api_key", None):
             provider_kwargs["api_key"] = provider_cfg.api_key
         if getattr(provider_cfg, "api_base", None):
             provider_kwargs["base_url"] = provider_cfg.api_base
+        # Bug fix (re-audit 2026-07-18): when neither api_key nor
+        # api_base is set, ``OpenAIProvider()`` would be constructed
+        # without credentials and the downstream OpenAI SDK would
+        # raise a generic ``openai.OpenAIError`` ("The api_key
+        # client option must be set..."). Surface an actionable
+        # message instead, pointing at the right env vars.
+        if not provider_kwargs:
+            raise RuntimeError(
+                f"Provider {name!r} has no api_key or api_base configured. "
+                f"Set providers.{name}.api_key in config.json, or "
+                f"export FEMTOBOT_PROVIDERS__{name.upper()}__API_KEY "
+                "(or FEMTOBOT_PROVIDERS__CUSTOM__API_BASE for a "
+                "self-hosted endpoint)."
+            )
         return OpenAIModel(
             model_name,
-            provider=OpenAIProvider(**provider_kwargs) if provider_kwargs else None,
+            provider=OpenAIProvider(**provider_kwargs),
         )
 
     # Native Anthropic. Requires the optional ``anthropic`` SDK.
@@ -151,6 +179,17 @@ def _build_model(config: "Config") -> Model:
     )
 
 
+# Minimal identity prompt used as a fallback when ContextBuilder is
+# unavailable or returns no system message (e.g. brand-new workspace
+# with no AGENTS.md/SOUL.md yet). Keeps the agent from running with
+# zero identity.
+_MINIMAL_FEMTOBOT_PROMPT = (
+    "You are Femtobot, a minimalist CLI AI agent built on PydanticAI. "
+    "You help the user with shell commands, file editing, web research, "
+    "and tool use. Be concise and direct."
+)
+
+
 def build_system_prompt(config: "Config", workspace: Path) -> str:
     """Compose the system prompt from AGENTS.md + skills + memory.
 
@@ -159,12 +198,17 @@ def build_system_prompt(config: "Config", workspace: Path) -> str:
     ``system_prompt`` rather than inserted as the first model
     message.
 
-    Note: ContextBuilder expects a bus ``InboundMessage`` to size
-    template snippets. We synthesize a minimal system-channel one
-    to avoid pulling in the loop machinery.
+    Bug fix (re-audit 2026-07-18): the previous code returned the
+    empty string when ContextBuilder had no system message (brand-new
+    workspace, missing AGENTS.md, etc.), which left the agent running
+    with no identity at all. We now fall back to a minimal identity
+    prompt so the agent still has *some* baseline.
     """
-    from femtobot.agent.context import ContextBuilder
-    from femtobot.bus.events import InboundMessage
+    try:
+        from femtobot.agent.context import ContextBuilder
+        from femtobot.bus.events import InboundMessage
+    except Exception:
+        return _MINIMAL_FEMTOBOT_PROMPT
 
     builder = ContextBuilder(config, workspace)
     inbound = InboundMessage(
@@ -173,12 +217,17 @@ def build_system_prompt(config: "Config", workspace: Path) -> str:
         chat_id="direct",
         content="",
     )
-    messages = builder.build_messages(inbound, include_history=False)
+    try:
+        messages = builder.build_messages(inbound, include_history=False)
+    except Exception:
+        return _MINIMAL_FEMTOBOT_PROMPT
     for msg in messages:
         if msg.get("role") == "system":
             content = msg.get("content", "")
-            return content if isinstance(content, str) else str(content)
-    return ""
+            if isinstance(content, str) and content.strip():
+                return content
+            return str(content) if content else _MINIMAL_FEMTOBOT_PROMPT
+    return _MINIMAL_FEMTOBOT_PROMPT
 
 
 class FemtobotAgent:
@@ -258,6 +307,11 @@ class FemtobotAgent:
         Uses ``Agent.run_stream()`` — the standard PydanticAI
         streaming entrypoint. The CLI's render_streamed() consumes
         this iterator (Phase 2).
+
+        Note: ``async def`` + ``yield`` produces an async generator
+        object directly (not a coroutine). Consumers should write
+        ``async for chunk in agent.run_stream(...)`` without an
+        explicit ``await``.
         """
         async with self.agent.run_stream(message, deps=deps) as streamed:
             async for chunk in streamed.stream_text(delta=True):

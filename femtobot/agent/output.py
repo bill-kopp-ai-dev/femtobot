@@ -11,7 +11,23 @@ to be used by the AgentLoop until Phase 4.
 """
 from __future__ import annotations
 
+import re
+
 from pydantic import BaseModel, Field, field_validator
+
+# Bug fix (re-audit 2026-07-18): the previous substring match for
+# ``AGENTS.md`` blocked legitimate messages like "Your personalized
+# notes live in AGENTS.md" or "femtobot uses AGENTS.md for identity".
+# The regex below only flags *path-like* references: the token must
+# be preceded by ``/``, ``./``, or ``../`` (typical of path
+# components). Plain prose mentions — where the filename is preceded
+# by a space or sits at the start of a sentence — are accepted.
+# Path-prefix alternatives (alternation must be inside the group).
+_INTERNAL_FILE_LEAK_RE = re.compile(
+    r"(?:/|\./|\.\./|\.femtobot/)"
+    r"(?:agents|soul|heartbeat|awareness)\.md\b",
+    re.IGNORECASE,
+)
 
 
 class FemtobotOutput(BaseModel):
@@ -43,14 +59,22 @@ class FemtobotOutput(BaseModel):
     @field_validator("final_message")
     @classmethod
     def no_internal_leakage(cls, v: str) -> str:
-        """Reject messages that reference internal file names."""
-        forbidden = ("HEARTBEAT.md", "AWARENESS.md", "AGENTS.md", "SOUL.md")
-        for token in forbidden:
-            if token in v:
-                raise ValueError(
-                    f"final_message references internal file {token!r}. "
-                    "Strip internal references before delivering to the user."
-                )
+        """Reject messages that leak internal file paths.
+
+        Bug fix (re-audit 2026-07-18): the original substring check
+        matched ``"AGENTS.md"`` inside plain prose, blocking any
+        legitimate mention of these files (e.g. "edit AGENTS.md to
+        customize your identity"). The new regex only flags
+        *path-like* references where the filename is preceded by ``/``
+        or ``./``, which is what an actual leak from a tool result
+        looks like.
+        """
+        match = _INTERNAL_FILE_LEAK_RE.search(v)
+        if match is not None:
+            raise ValueError(
+                f"final_message leaks internal file path containing {match.group(0)!r}. "
+                "Strip the path reference before delivering to the user."
+            )
         return v
 
 

@@ -136,19 +136,33 @@ def _is_localhost(conn) -> bool:
     and accept loopback IPv4 (127.0.0.0/8) + IPv6 (::1) plus the
     IPv4-mapped IPv6 form (``::ffff:127.0.0.1``). Anything else
     returns False.
+
+    Bug fix (re-audit 2026-07-18): the previous ``startswith("127.")``
+    check accepted arbitrary strings starting with that prefix (e.g.
+    ``127.0.0.1.attacker.com``). We now use ``ipaddress.is_loopback``
+    which validates that the value is an actual IP.
     """
+    import ipaddress
+
     if conn is None:
         return False
     addr = getattr(conn, "remote_address", None)
     if not addr:
         return False
     host = addr[0] if isinstance(addr, tuple) else str(addr)
-    if not isinstance(host, str):
+    if not isinstance(host, str) or not host:
         return False
     # Normalize IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1) → IPv4.
     if host.startswith("::ffff:"):
         host = host[len("::ffff:") :]
-    return host in ("127.0.0.1", "::1", "localhost") or host.startswith("127.")
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        # ``localhost`` (and similar hostname strings) won't parse as
+        # an IP. Accept the literal ``localhost`` defensively — in
+        # practice remote_address is always an IP, so this branch is
+        # rarely hit.
+        return host == "localhost"
 
 
 def normalize_cli_app_mentions(x):
