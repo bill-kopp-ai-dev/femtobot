@@ -152,15 +152,42 @@ class FemtobotAgent:
         workspace: Path,
         *,
         tools: list[Tool] | None = None,
+        use_combined_toolset: bool = False,
     ) -> None:
         self._config = config
         self._workspace = workspace
-        self._tools = tools or []
+        # If ``use_combined_toolset=True``, ignore the explicit ``tools``
+        # argument and pull every migrated toolset via
+        # ``femtobot.agent.toolsets.combined_toolset``. The default is
+        # ``False`` so existing callers that pass ``tools=...`` keep
+        # working unchanged.
+        if use_combined_toolset:
+            from femtobot.agent.toolsets._combined import combined_toolset
+
+            self._tools = combined_toolset(config)
+        else:
+            self._tools = tools or []
         # Generic ``Agent[DepsT, OutputT]`` is parameterized with our
         # ``FemtobotDeps``/``FemtobotOutput`` types; the annotation is
         # intentionally ``Any`` to keep the class body import-light
         # (PydanticAI's generic eagerly resolves the params otherwise).
         self._agent: Any = None
+
+    @classmethod
+    def from_config(
+        cls,
+        config: "Config",
+        workspace: Path,
+        *,
+        tools: list[Tool] | None = None,
+    ) -> "FemtobotAgent":
+        """Build a FemtobotAgent from the active config.
+
+        Equivalent to ``cls(config, workspace, tools=...)`` but makes
+        the call site explicit and matches the signature planned for
+        Phase 4 (which adds session_manager).
+        """
+        return cls(config=config, workspace=workspace, tools=tools)
 
     @property
     def agent(self) -> Any:

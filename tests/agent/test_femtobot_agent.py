@@ -204,3 +204,39 @@ def test_femtobot_agent_with_tools() -> None:
     agent = FemtobotAgent(cfg, Path("/tmp"), tools=toolset())
     assert len(agent._tools) == 1
     assert agent._tools[0].name == "femtobot_timer"
+
+
+# ---------------------------------------------------------------------------
+# FemtobotAgent.from_config / combined_toolset (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+def test_femtobot_agent_from_config_classmethod() -> None:
+    """``from_config`` is the canonical Phase 4 constructor shape."""
+    from femtobot.agent.femtobot_agent import FemtobotAgent
+
+    cfg = _make_config()
+    agent = FemtobotAgent.from_config(cfg, Path("/tmp"), tools=toolset())
+    assert agent._config is cfg
+    assert agent._workspace == Path("/tmp")
+    assert len(agent._tools) == 1
+
+
+def test_femtobot_agent_use_combined_toolset() -> None:
+    """``use_combined_toolset=True`` pulls every migrated toolset."""
+    from femtobot.agent.femtobot_agent import FemtobotAgent
+
+    cfg = _make_config()
+    agent = FemtobotAgent(cfg, Path("/tmp"), use_combined_toolset=True)
+    # femtobot_timer is the only migrated toolset so far.
+    assert len(agent._tools) >= 1
+    assert any(t.name == "femtobot_timer" for t in agent._tools)
+
+
+def test_combined_toolset_returns_migrated_tools() -> None:
+    """``combined_toolset`` aggregates every toolset module under toolsets/."""
+    from femtobot.agent.toolsets._combined import combined_toolset
+
+    tools = combined_toolset()
+    names = [t.name for t in tools]
+    assert "femtobot_timer" in names
