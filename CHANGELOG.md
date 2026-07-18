@@ -9,6 +9,67 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Femtobot 1.0 — PydanticAI migration (Phases 0-9)
+
+> **Scope:** lays the PydanticAI 1.31 + Logfire 3.25 foundation
+> alongside the legacy AgentLoop. The legacy CLI, parity layer,
+> providers, and agent loop remain the production code path; the new
+> `FemtobotAgent` is opt-in. No breaking changes in this branch.
+> See `docs/migration-from-0.1.x.md` for the per-phase breakdown.
+
+#### Added
+- **PydanticAI 1.31 + Logfire 3.25** as runtime deps (Phase 0).
+- `femtobot/observability/logfire_setup.py` with opt-in `configure()`,
+  `instrument_pydantic_ai()`, `instrument_httpx()` helpers (Phases 0+6).
+- `femtobot/agent/deps.py` (`FemtobotDeps`) and
+  `femtobot/agent/output.py` (`FemtobotOutput` typed response model
+  with empty/internal-leakage validators) (Phase 1).
+- `femtobot/agent/femtobot_agent.py` — `FemtobotAgent` factory with
+  `_build_model()` dispatcher (OpenAI / Anthropic / Bedrock / Gemini)
+  and `build_system_prompt()` (Phases 1+5).
+- `femtobot/agent/toolsets/femtobot_timer.py` — pilot migration of the
+  legacy `FemtobotTimerTool` to a PydanticAI `Tool` (Phase 1).
+- `femtobot/agent/toolsets/_combined.py` — `combined_toolset(config)`
+  aggregator and `FemtobotAgent.use_combined_toolset=True` opt-in
+  (Phase 3).
+- `femtobot/agent/runner_helpers.py` —
+  `persist_tool_result` / `post_run_autocompact` / `post_run_session_save`
+  scaffolds (Phase 4).
+- `docs/observability.md` — full Logfire / OTel env-var reference
+  (Phase 6).
+- `tests/observability/test_logfire_setup.py` — hermetic CI guard
+  (Phase 6).
+- `tests/agent/test_runner_helpers.py` — no-op fallback coverage
+  (Phase 4).
+
+#### Removed
+- Six isolated parity-layer files with no external callers:
+  `cli/suggestion.py`, `cli/mouse.py`, `cli/fullscreen.py`,
+  `cli/transcript.py`, `cli/virtual_transcript.py`, `cli/voice.py`
+  (plus their tests) — Phase 2.
+
+#### Changed
+- Lazy-loading of `femtobot.*` submodules in `femtobot/__init__.py`
+  now recognises the package's valid submodule set instead of caching
+  `AttributeError` lookups (Phase 0).
+- `_build_model()` extends to all four native PydanticAI providers
+  with actionable `RuntimeError`s for missing optional SDKs (Phase 5).
+
+#### Not removed (deferred — would cascade-break the 1340-test suite)
+- `cli/parity_stream.py`, `cli/parity_widgets.py`, `cli/textual_app.py`,
+  `cli/keybindings.py`, `cli/renderer_factory.py`, `cli/plugins/*`,
+  `cli/whimsy.py`, `cli/status_line.py`.
+- `agent/loop.py` (2179 LOC), `agent/runner.py` (1895 LOC),
+  `agent/tools/*.py` legacy tool ABCs.
+- `providers/*.py` legacy provider implementations and
+  `providers/registry.py`.
+- `bus/runtime_events.py`, `bus/progress.py`,
+  `agent/progress_hook.py`.
+
+A dedicated future branch with parallel test-parity scaffolding will
+land the full replacement. This branch intentionally keeps the legacy
+code path as the production path.
+
 ## [0.1.0-ui.0] — 2026-07-15
 
 > Preview release — opt-in UI parity layer that aligns the Femtobot
