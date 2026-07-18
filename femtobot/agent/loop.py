@@ -1727,6 +1727,22 @@ class AgentLoop:
         cmd_ctx = CommandContext(
             msg=ctx.msg, session=ctx.session, key=ctx.session_key, raw=raw, loop=self
         )
+        # Detect the case where a slash command was *matched* by the router
+        # but the handler returned None — that means a "context-rewriting
+        # shortcut" (e.g. /goal, /btw) which mutates ``cmd_ctx.msg`` and
+        # expects the rest of the state machine to process it as a normal
+        # turn. We must not classify that as "unknown command".
+        raw_norm = raw.lower()
+        matched_shortcut = (
+            raw.startswith("/")
+            and (
+                raw_norm in self.commands._exact
+                or any(
+                    raw_norm.startswith(pfx)
+                    for pfx, _ in self.commands._prefix
+                )
+            )
+        )
         result = await self.commands.dispatch(cmd_ctx)
         if result is not None:
             ctx.outbound = result
@@ -1743,6 +1759,28 @@ class AgentLoop:
                 self.sessions.save(ctx.session)
                 self._clear_pending_user_turn(ctx.session)
             return "shortcut"
+        # Audit 2026-07-18 v3: slash command the router did not recognise.
+        # Without this branch the input would fall through to the LLM
+        # builder, which would happily invent an answer for ``/tools``,
+        # ``/foo``, etc. — confusing the user. Surface a clear "unknown
+        # command" notice listing the available slash commands instead.
+        if raw.startswith("/") and not matched_shortcut:
+            ctx.outbound = self._reply_unknown_command(
+                ctx.msg.channel, ctx.msg.chat_id, raw
+            )
+            ctx.user_persisted_early = self._persist_user_message_early(
+                ctx.msg, ctx.session, _command=True
+            )
+            ctx.session.add_message("assistant", ctx.outbound.content, _command=True)
+            self.sessions.save(ctx.session)
+            self._clear_pending_user_turn(ctx.session)
+            return "shortcut"
+        # Matched shortcut that rewrote ctx.msg and returned None — let
+        # the state machine continue as a normal turn.
+        if matched_shortcut:
+            # Sync the rewritten message back into ctx so BUILD sees the
+            # updated content.
+            ctx.msg = cmd_ctx.msg
         return "dispatch"
 
     async def _state_build(self, ctx: TurnContext) -> str:
@@ -2008,6 +2046,46 @@ class AgentLoop:
 
     def _clear_pending_user_turn(self, session: Session) -> None:
         session.metadata.pop(self._PENDING_USER_TURN_KEY, None)
+
+    @staticmethod
+    def _reply_unknown_command(
+        channel: str, chat_id: str, raw: str
+    ) -> OutboundMessage:
+        """Build a friendly 'unknown slash command' notice.
+
+        Triggered when the user types something starting with ``/`` that
+        the command router did not match. The previous behaviour was to
+        silently fall through to the LLM builder, which would happily
+        invent an answer (e.g. for ``/tools``). Now we surface a clear
+        list of the available slash commands so the user can self-correct.
+        """
+        from femtobot.command.builtin import BUILTIN_COMMAND_SPECS
+
+        # Keep the first token of the command so the user can spot a
+        # typo at a glance.
+        head = raw.split(maxsplit=1)[0] if raw else "(empty)"
+        # Cap the listing to the first 20 commands to avoid an
+        # overwhelming reply; full palette is still discoverable via
+        # ``/help``.
+        spec_lines = []
+        for spec in BUILTIN_COMMAND_SPECS[:20]:
+            hint = f" {spec.arg_hint}" if spec.arg_hint else ""
+            spec_lines.append(f"  • `{spec.command}{hint}` — {spec.title}")
+        more = (
+            ""
+            if len(BUILTIN_COMMAND_SPECS) <= 20
+            else f"\n  …and {len(BUILTIN_COMMAND_SPECS) - 20} more (use `/help`)"
+        )
+        content = (
+            f"Unknown command: `{head}`.\n\n"
+            f"Available commands:\n" + "\n".join(spec_lines) + more
+        )
+        return OutboundMessage(
+            channel=channel,
+            chat_id=chat_id,
+            content=content,
+            metadata={"_unknown_command": head},
+        )
 
     def _clear_runtime_checkpoint(self, session: Session) -> None:
         if self._RUNTIME_CHECKPOINT_KEY in session.metadata:

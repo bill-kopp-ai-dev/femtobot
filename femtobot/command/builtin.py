@@ -1495,16 +1495,29 @@ async def cmd_mcp(ctx: CommandContext) -> OutboundMessage | None:
         server = tokens[1] if len(tokens) > 1 else None
         if not server:
             return _reply("Usage: /mcp tools <server>")
-        prefix = f"mcp_{server.replace('-', '_')}_"
+        # ``_sanitize_name`` (femtobot.agent.tools.mcp) preserves hyphens
+        # in the server name; tools come back as ``mcp_percival-osm_*``
+        # (with the hyphen intact). Match the configured server name
+        # verbatim and also fall back to the underscore-flattened form
+        # so the slash command stays robust to future tweaks of
+        # ``_sanitize_name``.
         registry = getattr(loop, "tools", None)
         try:
-            tools = sorted(
-                n for n in registry.tool_names if n.startswith(prefix)
-            )
+            all_names = list(registry.tool_names)
         except Exception:
-            tools = []
+            all_names = []
+        prefix_variants = {
+            f"mcp_{server}_",
+            f"mcp_{server.replace('-', '_')}_",
+        }
+        tools = sorted(
+            n for n in all_names if any(n.startswith(p) for p in prefix_variants)
+        )
         if not tools:
-            return _reply(f"No tools registered from '{server}'.")
+            return _reply(
+                f"No tools registered from '{server}'. "
+                f"Configured servers: {sorted(loop._mcp_servers or {})}"
+            )
         return _reply(
             f"Tools from '{server}':\n  " + "\n  ".join(tools)
         )

@@ -173,24 +173,66 @@ async def test_cmd_mcp_reload_reports_failed_servers() -> None:
 
 @pytest.mark.asyncio
 async def test_cmd_mcp_tools_lists_prefix_filtered() -> None:
-    """``/mcp tools <server>`` lists only tools matching that server prefix."""
+    """``/mcp tools <server>`` lists only tools matching that server prefix.
+
+    Audit 2026-07-18 v3: ``_sanitize_name`` (femtobot.agent.tools.mcp)
+    preserves hyphens in the server name, so tool prefixes come back as
+    ``mcp_percival-osm_*`` (with hyphen). The slash command must match
+    the server name verbatim — flattening ``-`` to ``_`` used to make
+    real tools (e.g. ``mcp_percival-osm_*``) invisible to the lookup.
+    """
     loop = _make_loop(
         tool_names=[
             "read_file",
-            "mcp_agy_mcp_server_agy_run_task",
-            "mcp_agy_mcp_server_agy_health",
+            # Audit 2026-07-18 v3 fixture: tools with a hyphenated server
+            # name. These were the ones the previous lookup missed.
+            "mcp_percival-osm_osm_geocode",
+            "mcp_percival-osm_osm_get_version",
             "mcp_claude_code_cli_mcp_claude_run_task",
         ]
     )
-    ctx = _make_ctx(loop, args="tools agy-mcp-server")
+    ctx = _make_ctx(loop, args="tools percival-osm")
 
+    out = await cmd_mcp(ctx)
+    content = _content(out)
+    assert "Tools from 'percival-osm':" in content
+    assert "mcp_percival-osm_osm_geocode" in content
+    assert "mcp_percival-osm_osm_get_version" in content
+    assert "mcp_claude_code_cli_mcp_claude_run_task" not in content
+    assert "read_file" not in content
+
+
+@pytest.mark.asyncio
+async def test_cmd_mcp_tools_matches_underscore_form_too() -> None:
+    """Defensive: if a future ``_sanitize_name`` change flattens hyphens
+    back to underscores, the slash command still resolves the server.
+    """
+    loop = _make_loop(
+        tool_names=[
+            "mcp_agy_mcp_server_agy_run_task",
+            "mcp_agy_mcp_server_agy_health",
+        ]
+    )
+    ctx = _make_ctx(loop, args="tools agy-mcp-server")
     out = await cmd_mcp(ctx)
     content = _content(out)
     assert "Tools from 'agy-mcp-server':" in content
     assert "mcp_agy_mcp_server_agy_run_task" in content
-    assert "mcp_agy_mcp_server_agy_health" in content
-    assert "mcp_claude_code_cli_mcp_claude_run_task" not in content
-    assert "read_file" not in content
+
+
+@pytest.mark.asyncio
+async def test_cmd_mcp_tools_lists_zero_with_diagnostic_when_unknown() -> None:
+    """When the server is unknown, the reply hints at the configured set."""
+    loop = _make_loop(
+        configured={"percival-osm": object()},
+        tool_names=["mcp_percival-osm_osm_geocode"],
+    )
+    ctx = _make_ctx(loop, args="tools no-such-server")
+    out = await cmd_mcp(ctx)
+    content = _content(out)
+    assert "No tools registered from 'no-such-server'" in content
+    assert "Configured servers" in content
+    assert "percival-osm" in content
 
 
 @pytest.mark.asyncio
