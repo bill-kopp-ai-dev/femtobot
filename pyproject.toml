@@ -87,6 +87,10 @@ dependencies = [
 
     # CLI enhancements (Camada 2)
     "watchdog>=5.0.0",  # hot-reload of keybindings.json
+
+    # Femtobot 1.0: PydanticAI agent framework + Logfire observability
+    "pydantic-ai>=1.0,<2.0",
+    "logfire>=3.14.1,<4.0.0",
 ]
 
 [project.urls]
