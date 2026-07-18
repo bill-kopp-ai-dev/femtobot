@@ -18,6 +18,7 @@ import logfire
 
 _CONFIGURED = False
 _INSTRUMENTED = False
+_HTTPX_INSTRUMENTED = False
 
 SendMode = Literal["yes", "no", "if-token-present"]
 
@@ -73,6 +74,22 @@ def instrument_pydantic_ai() -> None:
     _INSTRUMENTED = True
 
 
+def instrument_httpx() -> None:
+    """Instrument httpx HTTP traffic. Opt-in via ``FEMTOBOT_LOGFIRE_HTTPX=1``.
+
+    Captures every outgoing HTTP request (including the model provider
+    traffic that PydanticAI sends through httpx). Off by default
+    because the volume of spans is high.
+    """
+    global _HTTPX_INSTRUMENTED
+    if _HTTPX_INSTRUMENTED:
+        return
+    if os.environ.get("FEMTOBOT_LOGFIRE_HTTPX") not in ("1", "true", "yes", "on"):
+        return
+    logfire.instrument_httpx(capture_all=True)
+    _HTTPX_INSTRUMENTED = True
+
+
 def configure_if_enabled() -> None:
     """Configure Logfire only if FEMTOBOT_LOGFIRE=1 or token is present."""
     configure()
@@ -82,4 +99,5 @@ __all__ = [
     "configure",
     "configure_if_enabled",
     "instrument_pydantic_ai",
+    "instrument_httpx",
 ]
