@@ -1685,6 +1685,28 @@ def status(
     from femtobot.config.loader import get_config_path, load_config, resolve_runtime_location
     from femtobot.config.paths import get_workspace_path
 
+    # Audit 2026-07-18 v6: reject explicitly-bad --folder-path values
+    # instead of silently falling back to the nearest ``.femtobot`` we
+    # can find on the filesystem. ``discover_instance_dir`` falls back
+    # to ``Path.cwd() / .femtobot`` when the requested folder does not
+    # exist, which made ``femtobot status --folder-path /tmp/bogus``
+    # happily report the active instance instead of complaining.
+    if folder_path:
+        fp = Path(folder_path)
+        if not fp.is_dir():
+            typer.echo(
+                f"--folder-path {folder_path!r} does not exist or is not a "
+                f"directory.",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        if not (fp / ".femtobot").is_dir():
+            typer.echo(
+                f"--folder-path {folder_path!r} contains no .femtobot instance.",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+
     resolve_runtime_location(
         config_path=None,
         folder_path=Path(folder_path) if folder_path else None,
@@ -1823,29 +1845,48 @@ def tools_list(
     that capability are listed.  With ``--show-capabilities``, each
     tool's ``get_capabilities()`` output is appended after the name.
     """
+    from femtobot.agent.tools.context import ToolContext
+    from femtobot.agent.tools.loader import ToolLoader
     from femtobot.agent.tools.registry import ToolRegistry
-    from femtobot.config.loader import resolve_runtime_location
+    from femtobot.bus.queue import MessageBus
+    from femtobot.config.loader import load_config, resolve_runtime_location
+    from femtobot.config.paths import get_workspace_path
 
     resolve_runtime_location(
         config_path=None,
         folder_path=Path(folder_path) if folder_path else None,
     )
-    # C2: build a minimal in-memory registry and call ``by_capability``
-    # so the filter logic is exercised end-to-end.  The list won't
-    # match a running loop's exact set of MCP tools, but the
-    # filtering is what the CLI needs to validate.
-    from femtobot.agent.tools.loader import ToolLoader
-
+    # Audit 2026-07-18 v6: build a ToolContext (not a bare Config) so
+    # ``tool_cls.create`` has the ``bus``, ``sessions``,
+    # ``provider_snapshot_loader`` etc. it expects. The previous code
+    # passed either ``None`` or ``Config`` to ``create`` and let the
+    # ``except (TypeError, …)`` swallow the failure for almost every
+    # tool — the user saw only the 5 tools that happen to accept a
+    # null config.
+    config = load_config()
+    workspace = get_workspace_path(
+        config.agents.defaults.workspace if hasattr(config, "agents") else None
+    )
+    bus = MessageBus()
+    ctx = ToolContext(
+        config=config.tools,
+        workspace=str(workspace),
+        bus=bus,
+        sessions=None,
+        file_state_store=None,
+        provider_snapshot_loader=None,
+        timezone="UTC",
+        workspace_sandbox=None,
+        runtime_events=None,
+    )
     registry = ToolRegistry()
     loader = ToolLoader()
     tool_classes = loader.discover()
     for tool_cls in tool_classes:
-        # ``create(None)`` fails when a tool needs a real config (e.g.
-        # MCP-backed tools).  We narrow the catch to the failure modes
-        # that ``create`` actually documents so a typo or import error
-        # in a builtin surfaces instead of being silently swallowed.
+        # Narrow catch so a typo or import error in a builtin surfaces
+        # instead of being silently swallowed.
         try:
-            tool = tool_cls.create(None)  # type: ignore[arg-type]
+            tool = tool_cls.create(ctx)
             registry.register(tool)
         except (TypeError, ValueError, RuntimeError, AttributeError):  # pragma: no cover - defensive
             continue
