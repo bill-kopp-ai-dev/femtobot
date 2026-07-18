@@ -21,7 +21,7 @@ PydanticAI Model. Phase 5 adds fallback / multi-provider rotation.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, AsyncIterator, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 import pydantic_ai
 from pydantic_ai.models import Model

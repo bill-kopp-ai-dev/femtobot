@@ -6,7 +6,7 @@ import asyncio
 import dataclasses
 import os
 import time
-from contextlib import AsyncExitStack, nullcontext, suppress
+from contextlib import AsyncExitStack, nullcontext
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
@@ -874,8 +874,20 @@ class AgentLoop:
         tasks = self._active_tasks.pop(key, [])
         cancelled = sum(1 for t in tasks if not t.done() and t.cancel())
         for t in tasks:
-            with suppress(asyncio.CancelledError, Exception):
+            try:
                 await t
+            except asyncio.CancelledError:
+                # Expected when we cancel a task; swallow silently.
+                pass
+            except Exception:
+                # Log unexpected failures so cancellation doesn't swallow
+                # real bugs (audit 2026-07-18). The ``noqa`` keeps ruff
+                # happy for the otherwise-suppress-free flow.
+                logger.exception(
+                    "Task {} for key {} raised during cancellation cleanup",
+                    t,
+                    key,
+                )
         return cancelled
 
     def _effective_session_key(self, msg: InboundMessage) -> str:

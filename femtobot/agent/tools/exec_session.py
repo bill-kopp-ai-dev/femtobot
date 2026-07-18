@@ -162,6 +162,15 @@ class _ExecSession:
         self.process.kill()
         with suppress(asyncio.TimeoutError):
             await asyncio.wait_for(self.process.wait(), timeout=5.0)
+        # Bug fix (audit 2026-07-18): explicitly cancel the reader
+        # tasks so they don't outlive the process when stdout is
+        # slow to close. Without this, a wedged pipe can leave the
+        # tasks pending past the session's lifetime.
+        for task in (self._stdout_task, self._stderr_task):
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await task
 
 
 class ExecSessionManager:

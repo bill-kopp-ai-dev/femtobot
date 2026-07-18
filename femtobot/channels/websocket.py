@@ -127,8 +127,28 @@ def _query_first(query, key):
     return query.get(key, [None])[0]
 
 
-def _is_localhost(conn):
-    return True
+def _is_localhost(conn) -> bool:
+    """Return True if ``conn`` originates from a loopback address.
+
+    Bug fix (audit 2026-07-18): the previous stub returned True for
+    every connection, which silently granted Full Access controls to
+    remote clients. We now inspect the websocket's ``remote_address``
+    and accept loopback IPv4 (127.0.0.0/8) + IPv6 (::1) plus the
+    IPv4-mapped IPv6 form (``::ffff:127.0.0.1``). Anything else
+    returns False.
+    """
+    if conn is None:
+        return False
+    addr = getattr(conn, "remote_address", None)
+    if not addr:
+        return False
+    host = addr[0] if isinstance(addr, tuple) else str(addr)
+    if not isinstance(host, str):
+        return False
+    # Normalize IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1) → IPv4.
+    if host.startswith("::ffff:"):
+        host = host[len("::ffff:") :]
+    return host in ("127.0.0.1", "::1", "localhost") or host.startswith("127.")
 
 
 def normalize_cli_app_mentions(x):

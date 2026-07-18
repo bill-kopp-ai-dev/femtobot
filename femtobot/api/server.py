@@ -187,10 +187,18 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
     # browser tab) leaked a Lock object.  We use a
     # ``WeakValueDictionary`` and a small factory so the lock is
     # strongly referenced only while the request is in flight.
-    session_lock = session_locks.get(session_key)
-    if session_lock is None:
-        session_lock = asyncio.Lock()
-        session_locks[session_key] = session_lock
+    # Bug fix (audit 2026-07-18): a naive get/check/set had a TOCTOU
+    # race — two concurrent requests for the same fresh session_id
+    # could each create their own Lock, and the WVD would discard
+    # one as soon as the request finished. We serialize creation on
+    # a single application-wide init lock so each session_id maps
+    # to exactly one Lock for its entire lifetime.
+    init_lock: asyncio.Lock = request.app["session_locks_init"]
+    async with init_lock:
+        session_lock = session_locks.get(session_key)
+        if session_lock is None:
+            session_lock = asyncio.Lock()
+            session_locks[session_key] = session_lock
     # Strong ref for the duration of this request so the WVD doesn't
     # GC the Lock between ``get`` and ``acquire``.
     _keep_alive = session_lock
@@ -374,6 +382,10 @@ def create_app(
     # handler holds a strong ref to the Lock for the duration of
     # the request to keep the WVD from GC'ing it mid-acquire.
     app["session_locks"] = weakref.WeakValueDictionary()
+    # Init lock: serializes the get/check/set in handle_chat_completions
+    # so concurrent requests for the same fresh session_id don't race
+    # to create two Locks (audit 2026-07-18).
+    app["session_locks_init"] = asyncio.Lock()
 
     # OpenAI-compatible endpoints
     app.router.add_post("/v1/chat/completions", handle_chat_completions)

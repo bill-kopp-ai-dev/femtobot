@@ -111,9 +111,18 @@ class AutoCompact:
         now = datetime.now()
         for info in self.sessions.list_sessions():
             key = info.get("key", "")
-            if not key or self._is_internal_session(key) or key in self._archiving:
+            if not key or self._is_internal_session(key):
                 continue
             if key in active_session_keys:
+                continue
+            # Bug fix (audit 2026-07-18): the previous
+            # ``key in self._archiving`` + ``self._archiving.add(key)``
+            # pair was a TOCTOU race — two ticks could each pass the
+            # membership check before either add, scheduling the
+            # archive twice. ``set.add`` returns True only when the
+            # element was actually inserted, so we use it as the
+            # single atomic guard.
+            if not self._archiving.add(key):
                 continue
             if self._is_expired(
                 info.get("updated_at"), now
@@ -123,8 +132,11 @@ class AutoCompact:
                 # something new to compact past the recent suffix,
                 # not just when the session was touched by an
                 # internal tick.
-                self._archiving.add(key)
                 schedule_background(self._archive(key))
+            else:
+                # Nothing to compact right now — drop the marker so
+                # the next tick can retry.
+                self._archiving.discard(key)
 
     async def _archive(self, key: str) -> None:
         if self._is_internal_session(key):

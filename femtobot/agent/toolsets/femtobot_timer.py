@@ -53,10 +53,18 @@ def _impl(query: str, deps: "FemtobotDeps") -> str:
     if q == "user_local":
         return now_user.isoformat()
     if q == "calendar":
-        dst = now_user.utcoffset() is not None and now_user.dst() is not None
+        # Bug fix (audit 2026-07-18): ``dst()`` returning non-None only
+        # tells us the tz *has* DST rules, not whether DST is currently
+        # active. The actual signal is ``dst() != timedelta(0)`` for
+        # the current instant (which is 0 outside DST and a positive
+        # delta during DST for Northern-Hemisphere zones, and vice
+        # versa for Southern). For "no DST in effect" zones the
+        # timedelta is exactly zero.
+        dst_delta = now_user.dst()
+        dst_active = dst_delta is not None and dst_delta.total_seconds() != 0
         base = (
             f"Timezone: {tz_name}\n"
-            f"DST active: {dst}\n"
+            f"DST active: {dst_active}\n"
             f"User-local: {now_user.isoformat()}\n"
             f"UTC: {now_utc.isoformat()}\n"
             f"Week: {now_user.isocalendar().week}\n"

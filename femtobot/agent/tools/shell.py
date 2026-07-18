@@ -311,8 +311,13 @@ class ExecTool(Tool):
         the LLM cannot request unbounded execution. The config-level default
         (self.timeout) may exceed that cap, and 0 disables the limit entirely
         for trusted long-running tasks (#3595).
+
+        Bug fix (audit 2026-07-18): the previous ``if timeout:`` check
+        treated ``timeout=0`` (explicit "disable limit") as falsy and
+        silently fell through to the config default. The fix uses an
+        explicit ``is not None`` check, so ``0`` is honored as "no limit".
         """
-        if timeout:
+        if timeout is not None:
             return min(timeout, SHELL_MAX_TIMEOUT_S)
         if self.timeout and self.timeout > 0:
             return self.timeout

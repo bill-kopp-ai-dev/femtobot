@@ -144,8 +144,17 @@ def check_command_safety(
     allow_patterns: list[str] | None = None,
     deny_patterns: list[str] | None = None,
     restrict_to_workspace: bool = False,
+    loopback_enabled: bool = True,
 ) -> tuple[bool, str]:
-    """Best-effort safety guard for potentially destructive commands."""
+    """Best-effort safety guard for potentially destructive commands.
+
+    Args:
+        loopback_enabled: Whether loopback URLs (127.0.0.1, localhost,
+            ::1) are allowed in this turn. Defaults to True to preserve
+            historical behavior; WebUI Full Access turns set this to
+            True while restricted turns set False via
+            ``current_scope_allows_loopback``.
+    """
     cmd = command.strip()
     lower = cmd.lower()
 
@@ -167,7 +176,7 @@ def check_command_safety(
 
     if contains_internal_url(
         cmd,
-        allow_loopback=current_scope_allows_loopback(enabled=False),
+        allow_loopback=current_scope_allows_loopback(enabled=loopback_enabled),
     ):
         # The runner turns this marker into a non-retryable security hint.
         return False, "Error: Command blocked by safety guard (internal/private URL detected)"
