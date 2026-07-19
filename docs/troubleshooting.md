@@ -473,6 +473,92 @@ to `tool_cls.create`. The list now shows all 17 builtin tools and
 
 ---
 
+## Issues fixed in 0.1.0-ui.2 (2026-07-19)
+
+The following visual / structural bugs were reported during an
+interactive `femtobot agent --ui compat` session against the
+`percival-osm` MCP server (recorded in `longlogs.txt`,
+2026-07-19 09:29). They were all fixed in `0.1.0-ui.2` — upgrade
+to that version (or later) if you hit any of them.
+
+### MCP server logs appear interleaved with the user input
+
+**Fixed in.** `0.1.0-ui.2` (issue #1, B2).
+
+**Symptom.** While typing in the REPL, lines like
+`INFO mcp.server.lowlevel.server: Processing request of type
+CallToolRequest` appeared on the same screen as the user's input,
+making it impossible to read either stream. Also visible as
+literal escape codes (`[?25l`, `[2K`) leaking into the agent's
+response.
+
+**Cause.** `mcp.client.stdio.stdio_client` defaults `errlog` to
+`sys.stderr`, so every stdio-launched MCP subprocess (e.g.
+`percival-osm`) inherited the femtobot's stderr. When the user
+runs the CLI with `2>&1` (e.g. inside `tmux`, `script`, or a
+captured session) the two streams become indistinguishable.
+
+**Fix.** New helper `_resolve_mcp_errlog(server_name)` in
+`femtobot.agent.tools.mcp` opens an append-mode, line-buffered
+log file at `<instance_dir>/logs/mcp-<server>.log` (via
+`femtobot.config.paths.get_logs_dir()`) and passes it as
+`errlog=` to `stdio_client`. The handle is registered with
+the server's `AsyncExitStack` so it is closed on disconnect.
+Falls back to `subprocess.DEVNULL` if the log dir cannot be
+created — never to `sys.stderr`.
+
+**Where to find the logs.**
+```bash
+tail -f "$(femtobot config get --instance-dir)/logs/mcp-<server>.log"
+```
+
+### `[ 👤 You ]` header appears on top of leftover spinner frames
+
+**Fixed in.** `0.1.0-ui.2` (issue #1, B1 / B6 / B7).
+
+**Symptom.** The user-turn header and the first character typed by
+the user were rendered on top of leftover `console.status` spinner
+frames from the previous turn (the lines started with
+`?[2K?[32m▰▰▰▰▱▱▱?[0m ?[2mFemtobot is cogitating…?[0m`).
+Visible in any turn where the previous turn's renderer did not
+shut down cleanly — e.g. mid-tool-call cancellation, runner
+exception, or an interrupted `on_end`.
+
+**Cause.** `_read_interactive_input_async` was calling
+`renderer.print_input_gap()` / `renderer.print_user_box()` /
+`renderer.print_input_bar()` without first force-stopping the
+leftover spinner/Live from the previous turn. The legacy
+`stop_for_input()` was called further up the loop, but the
+timing window between REPL iterations was enough for stale
+frames to survive.
+
+**Fix.** Call `renderer.stop_for_input()` immediately before
+the input-gap / user-box / input-bar sequence. This is a strict
+no-op when the renderer is already idle.
+
+### Startup MCP warning races the first user keystroke
+
+**Fixed in.** `0.1.0-ui.2` (issue #1, B8).
+
+**Symptom.** The first reply to a user turn contained text like
+`⚠ MCP servers referenced but not configured: ['percival-osm']`
+*inside* the user prompt area, because the REPL had already
+blocked on `prompt_async` before `_connect_mcp` finished
+publishing its `OutboundMessage`.
+
+**Cause.** `agent_loop.run()` and the `_consume_outbound` task
+were started in parallel, and the `_consume_outbound` task
+allowed non-streamed background messages to be rendered only
+inside the REPL loop — so any message published before the
+first iteration was effectively buffered indefinitely.
+
+**Fix.** `run_interactive` now drains up to 8 `cli:startup`
+messages from the bus in a tight 0.15s-per-message loop
+*before* entering the REPL. Non-startup messages are passed
+through to the normal consumer.
+
+---
+
 ## See also
 
 - [quick-start.md](./quick-start.md)

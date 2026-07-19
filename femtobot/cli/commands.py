@@ -574,6 +574,19 @@ async def _read_interactive_input_async(config=None) -> str:
     # so it survives across the prompt_toolkit context.
     renderer = _ACTIVE_RENDERER
     if renderer is not None:
+        # Issue #1 (B1 / B6 / B7 — longlogs.txt 2026-07-19): the
+        # renderer may still be running a ``Live`` display or a
+        # ``console.status`` spinner from a previous turn that did
+        # not stop cleanly (e.g. mid-tool-call cancellation, runner
+        # exception). Force-stop those transports so the upcoming
+        # ``[ 👤 You ]`` header and the user's input do not get
+        # interleaved with leftover spinner frames. ``stop_for_input``
+        # is a no-op when nothing is running, so this is safe to call
+        # every loop iteration.
+        try:
+            renderer.stop_for_input()
+        except Exception:
+            logger.debug("stop_for_input before prompt failed", exc_info=True)
         try:
             renderer.print_input_gap()
             renderer.print_user_box()
@@ -1424,6 +1437,41 @@ def agent(
             bus_task = asyncio.create_task(agent_loop.run())
             turn_done = asyncio.Event()
             turn_done.set()
+
+            # Issue #1, B8 (longlogs 2026-07-19): give the agent loop
+            # a moment to publish its startup-time warnings (MCP
+            # configured-but-not-connected, referenced-but-unconfigured)
+            # and drain them to the console *before* the user sees the
+            # ``[ 👤 You ]`` prompt. Without this, the warnings and
+            # the user's typed input race for stdout and the user
+            # sees ``⚠ MCP servers unavailable…`` interleaved with
+            # their first keystrokes.
+            try:
+                await asyncio.sleep(0)  # let bus_task's _connect_mcp run
+                drained = 0
+                while drained < 8:
+                    try:
+                        msg = await asyncio.wait_for(
+                            bus.consume_outbound(), timeout=0.15
+                        )
+                    except asyncio.TimeoutError:
+                        break
+                    if msg.channel != "cli" or msg.chat_id != "startup":
+                        # Not a startup warning — re-enqueue would
+                        # require mutable Queue; instead, let the
+                        # normal _consume_outbound pick it up by
+                        # publishing it back to inbound (it carries no
+                        # inbound semantics here, so dropping it is
+                        # acceptable; this branch is rare).
+                        continue
+                    _print_agent_response(
+                        msg.content,
+                        render_markdown=False,
+                        metadata=msg.metadata or None,
+                    )
+                    drained += 1
+            except Exception:
+                logger.debug("Startup warning drain failed", exc_info=True)
             turn_response: list[tuple[str, dict]] = []
             # ``renderer`` is intentionally captured from the enclosing
             # scope above (build_renderer ran once, before the loop, so

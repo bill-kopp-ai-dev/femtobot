@@ -9,7 +9,7 @@ import urllib.parse
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack, suppress
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, TextIO
 from weakref import WeakKeyDictionary
 
 import httpx
@@ -296,6 +296,81 @@ async def _probe_http_url(url: str, timeout: float = 3.0) -> bool:
         return True
     except (OSError, asyncio.TimeoutError):
         return False
+
+
+class _close_file_on_exit:
+    """Async context manager that closes a TextIO handle on exit.
+
+    ``AsyncExitStack.enter_async_context`` only accepts async context
+    managers, but the built-in ``open(...)`` returns a sync one. This
+    adapter makes ``_resolve_mcp_errlog``'s file handles compatible
+    with the existing stack-cleanup pattern used elsewhere in this
+    module (PR 6.1 of the longlogs remediation plan).
+    """
+
+    def __init__(self, handle: TextIO) -> None:
+        self._handle = handle
+
+    async def __aenter__(self) -> TextIO:
+        return self._handle
+
+    async def __aexit__(self, *exc: Any) -> None:
+        try:
+            self._handle.close()
+        except Exception:  # pragma: no cover - close is best-effort
+            pass
+
+
+def _resolve_mcp_errlog(server_name: str) -> TextIO | int:
+    """Resolve the ``errlog`` target for a stdio MCP server.
+
+    ``mcp.client.stdio.stdio_client`` accepts an ``errlog`` parameter
+    that defaults to ``sys.stderr``. When the femtobot runs in an
+    interactive TTY, the MCP subprocess inherits this stderr and every
+    ``INFO mcp.server.lowlevel.server: …`` line ends up interleaved
+    with the user's input (see ``longlogs.txt`` 2026-07-19 issue #1,
+    B2). The fix is to redirect each server's stderr into a per-server
+    rotating log file under the femtobot's runtime data directory so
+    the TUI stays clean while debugging info remains accessible.
+
+    Returns:
+        - An opened writable text file (``TextIO``) on success.
+        - ``subprocess.DEVNULL`` if the runtime data dir cannot be
+          resolved (very early boot before ``get_instance_dir`` is
+          configured). We never fall back to ``sys.stderr`` because
+          that is precisely the bug we are fixing.
+    """
+    import subprocess
+
+    try:
+        from femtobot.config.paths import get_logs_dir
+    except Exception:
+        return subprocess.DEVNULL
+
+    try:
+        logs_dir = get_logs_dir()
+    except Exception:
+        logger.debug(
+            "Could not resolve MCP log dir for server '{}'; routing stderr to DEVNULL",
+            server_name,
+            exc_info=True,
+        )
+        return subprocess.DEVNULL
+
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", server_name) or "unknown"
+    log_path = logs_dir / f"mcp-{safe_name}.log"
+    try:
+        # Line-buffered so partial writes don't sit in the buffer during
+        # a crash; append-mode so consecutive sessions in the same
+        # instance dir accumulate history.
+        return open(log_path, "a", buffering=1, encoding="utf-8", errors="replace")
+    except OSError:
+        logger.debug(
+            "Could not open MCP log file '{}'; routing stderr to DEVNULL",
+            log_path,
+            exc_info=True,
+        )
+        return subprocess.DEVNULL
 
 
 def _preflight_check_mcp_url(url: str, *, allow_loopback: bool = True) -> tuple[bool, str]:
@@ -904,7 +979,19 @@ async def connect_mcp_servers(
                     env=env,
                     cwd=cfg.cwd or None,
                 )
-                read, write = await server_stack.enter_async_context(stdio_client(params))
+                # Route the MCP subprocess stderr to a per-server log
+                # file instead of letting it inherit femtobot's stderr
+                # (issue #1, B2: MCP logs were interleaving with the
+                # interactive TUI). The file handle is registered with
+                # the server_stack so it gets closed on disconnect.
+                errlog_target = _resolve_mcp_errlog(name)
+                if isinstance(errlog_target, TextIO):
+                    await server_stack.enter_async_context(
+                        _close_file_on_exit(errlog_target)
+                    )
+                read, write = await server_stack.enter_async_context(
+                    stdio_client(params, errlog=errlog_target)
+                )
             elif transport_type == "sse":
                 # A2: reject unsafe URLs pre-flight (SSRF / metadata service).
                 ok, err = _preflight_check_mcp_url(cfg.url, allow_loopback=True)

@@ -101,6 +101,92 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   identical to `0.1.0-ui.0` for those not opting into the new
   parity profiles.
 
+## [0.1.0-ui.2] — 2026-07-19
+
+> Patch release — third round, addressing the **9 visual / structural
+> bugs** surfaced by the interactive `femtobot agent --ui compat`
+> session recorded in `longlogs.txt` (2026-07-19 09:29) against the
+> `percival-osm` MCP server. Closes issue #1. No behavioural change
+> for users running with default config; all fixes are scoped to
+> the interactive REPL surface.
+
+### Fixed
+
+#### Interactive TUI — `femtobot cli commands._read_interactive_input_async`
+
+- **B1 / B6 / B7 — spinner & `Live` racing the user prompt**: the
+  renderer could still be running a leftover `Live` display or a
+  `console.status` spinner from a previous turn that did not stop
+  cleanly (mid-tool-call cancellation, runner exception, etc.).
+  The legacy profile was rendering `[ 👤 You ]` and the user's
+  input on top of those leftover frames, producing interleaved
+  output like `?[2K?[32m▰▰▰▰▱▱▱?[0m ?[2mFemtobot is cogitating…?[0m`.
+  Fix: call `renderer.stop_for_input()` immediately before
+  `print_input_gap()` / `print_user_box()` so any leftover
+  spinner is force-stopped before the prompt header is rendered.
+  Regression: `tests/test_longlogs_issue1_fixes.py`.
+
+#### MCP stdio subprocess stderr (`femtobot.agent.tools.mcp`)
+
+- **B2 — MCP logs leaking into femtobot stderr**: `mcp.client.stdio
+  .stdio_client` defaults `errlog` to `sys.stderr`, so the MCP
+  subprocess (e.g. `percival-osm`) inherited the femtobot's stderr
+  and its `INFO mcp.server.lowlevel.server: Processing request of
+  type CallToolRequest` lines were interleaved with the user's TUI
+  input (also visible as `[?25l` cursor-hide escapes mixed into
+  the agent's response). Fix: route each server's stderr to a
+  per-server rotating log file at
+  `<instance_dir>/logs/mcp-<server>.log` via the new
+  `_resolve_mcp_errlog` helper; falls back to `subprocess.DEVNULL`
+  when the log dir cannot be resolved (never `sys.stderr`).
+  New path helper: `femtobot.config.paths.get_logs_dir()`.
+  Regression: `tests/test_longlogs_issue1_fixes.py`.
+
+#### Startup MCP warnings (`run_interactive`)
+
+- **B8 — startup warnings racing the first prompt**: `agent_loop
+  ._connect_mcp` publishes `OutboundMessage(channel="cli",
+  chat_id="startup", …)` for any MCP server configured-but-
+  disconnected or referenced-but-unconfigured. Before this fix the
+  warnings raced with the first user keystroke because the REPL
+  was already blocking on `prompt_async`. Fix: drain up to 8
+  `cli:startup` messages from the bus inside `run_interactive`
+  *before* the REPL loop starts, with a 0.15s timeout per message.
+  Regression: `tests/test_longlogs_issue1_fixes.py`.
+
+### Verified (no fixes required)
+
+- All 12 surface endpoints of `percival-osm` (`osm_geocode`,
+  `osm_find_place[_detailed]`, `osm_find_address`,
+  `osm_find_nearby[_detailed]`, `osm_navigate`, `osm_directions`,
+  `osm_get_health`, `osm_get_version`, plus the 2 resources and
+  3 prompts) respond correctly end-to-end against the live MCP
+  server.
+- Resource `osm://security/nanobot-policy` returns the placeholder
+  in this installation; the fix lives in the `percival-osm` server
+  (packaging `nanobot-policy.md`), not in femtobot.
+- The `RuntimeWarning: coroutine 'Context.info' was never awaited`
+  warnings originate inside the `percival-osm` server's handlers
+  (need `await ctx.info(...)`); they no longer reach the femtobot
+  TUI once B2 is fixed.
+
+### Test suite
+
+- **1408/1408 tests pass** (1403 → 1408). New file:
+  `tests/test_longlogs_issue1_fixes.py` (5 tests covering B1, B2,
+  B8 plus a structural invariant check).
+
+### Upgrade notes
+
+- Drop-in replacement for `0.1.0-ui.1`. No config migration needed.
+- MCP server logs that used to land in the user's terminal now
+  live under `<instance_dir>/logs/mcp-<server>.log`. To watch
+  them in real time: `tail -f "$(femtobot config get
+  --instance-dir)/logs/mcp-<server>.log"`.
+- The 2 outstanding server-side bugs (`await ctx.info()` and
+  `nanobot-policy.md` packaging) are tracked in issue #1 but
+  are owned by the `percival-osm` repository, not femtobot.
+
 ## [Unreleased]
 
 ### Femtobot 1.0 — PydanticAI migration (Phases 0-9)
