@@ -51,44 +51,6 @@ from rich.text import Text  # noqa: E402
 
 from femtobot import __logo__, __version__  # noqa: E402
 from femtobot.agent.loop import AgentLoop  # noqa: E402
-# Phase 4 cleanup — build_renderer (parity factory) removed; we now
-# construct the mirror's ``StreamRenderer`` directly.
-from femtobot.cli.stream import StreamRenderer as build_renderer  # type: ignore[assignment,misc]  # noqa: E402
-
-
-def _build_simple_renderer(config_obj, *, render_markdown: bool = True):
-    """Phase 4 replacement for ``build_renderer``.
-
-    Returns a plain :class:`StreamRenderer` (the nanobot mirror),
-    ignoring the deleted parity theme / role-renderer wiring. The
-    signature matches what `commands.py` call-sites pass in so the
-    transition is local.
-    """
-    bot_name = getattr(
-        getattr(config_obj.agents.defaults, "bot_name", None),
-        "default",
-        "Femtobot",
-    )
-    bot_icon = getattr(
-        getattr(config_obj.agents.defaults, "bot_icon", None),
-        "default",
-        "\U0001f408",  # 🐈
-    )
-    # Best-effort: try config defaults, else fall back to literal name.
-    try:
-        bot_name = config_obj.agents.defaults.bot_name
-    except Exception:
-        bot_name = "Femtobot"
-    try:
-        bot_icon = config_obj.agents.defaults.bot_icon
-    except Exception:
-        bot_icon = "\U0001f408"
-    return StreamRenderer(
-        render_markdown=render_markdown,
-        show_spinner=True,
-        bot_name=bot_name,
-        bot_icon=bot_icon,
-    )
 from femtobot.cli.stream import StreamRenderer, ThinkingSpinner  # noqa: E402
 from femtobot.config.paths import get_workspace_path  # noqa: E402
 from femtobot.config.schema import Config  # noqa: E402
@@ -98,6 +60,27 @@ from femtobot.utils.restart import (  # noqa: E402
     format_restart_completed_message,
     should_show_cli_restart_notice,
 )
+
+
+def _build_simple_renderer(config_obj, *, render_markdown: bool = True):
+    """Build a StreamRenderer for the active agent loop.
+
+    Phase 4 cleanup — the parity ``build_renderer`` factory was
+    removed. We construct the mirror's ``StreamRenderer`` directly,
+    reading ``bot_name`` and ``bot_icon`` from the resolved
+    ``Config`` (with safe fallbacks if the user's config does not
+    define them). This keeps the call-sites in this module unchanged
+    from the parity days.
+    """
+    defaults = getattr(config_obj.agents, "defaults", None) if config_obj else None
+    bot_name = getattr(defaults, "bot_name", None) or "Femtobot"
+    bot_icon = getattr(defaults, "bot_icon", None) or "\U0001f408"
+    return StreamRenderer(
+        render_markdown=render_markdown,
+        show_spinner=True,
+        bot_name=bot_name,
+        bot_icon=bot_icon,
+    )
 
 
 def _sanitize_surrogates(text: str) -> str:
@@ -276,68 +259,17 @@ def _init_prompt_session() -> None:
     _PROMPT_SESSION = PromptSession(**session_kwargs)
 
 
-def _make_spacing_renderer(config_obj: object) -> object | None:
-    """Build a TurnSpacingRenderer from the active Femtobot config.
-
-    Camada 5 — wires the role-header / user-box / margin / input-gap
-    helpers into the StreamRenderer. Returns ``None`` if the
-    ``TurnSpacingRenderer`` cannot be built (defensive: legacy fallback).
-    """
-    try:
-        from femtobot.cli.role_renderer import TurnSpacingRenderer
-    except Exception:
-        return None
-    try:
-        accent = "#d77757"  # default accent (terracotta-claude)
-        try:
-            theme_name = getattr(
-                getattr(
-                    getattr(config_obj, "agents", None), "defaults", None
-                ),
-                "cli",
-                None,
-            ).theme
-        except Exception:
-            theme_name = "terracotta-claude"
-        try:
-            from femtobot.cli.theme import get_theme
-
-            theme = get_theme(theme_name)
-            accent = theme.primary
-        except Exception:
-            pass
-        return TurnSpacingRenderer.from_config(config_obj, accent_color=accent)
-    except Exception:
-        return None
-
-
 def _build_prompt_session_features() -> tuple[str, object | None]:
-    """Return ``(multiline_mode, completer)`` honoring the active config."""
-    multiline_mode = "backslash"
-    completer: object | None = None
-    try:
-        from prompt_toolkit.completion import merge_completers
+    """Return ``(multiline_mode, completer)`` honoring the active config.
 
-        from femtobot.cli.completer import SlashCompleter
-        from femtobot.cli.file_mention import FileMentionCompleter
-        from femtobot.config.loader import get_active_config
-
-        cfg = get_active_config()
-        cli_cfg = cfg.agents.defaults.cli
-        multiline_mode = cli_cfg.multiline
-        completers: list = []
-        if cli_cfg.completer_enabled:
-            completers.append(
-                SlashCompleter(max_results=cli_cfg.completer_max_results)
-            )
-        if cli_cfg.file_mention_enabled:
-            completers.append(FileMentionCompleter())
-        if completers:
-            completer = merge_completers(completers)
-    except Exception:
-        # Config not loaded yet (e.g. during tests) — keep features off.
-        return multiline_mode, None
-    return multiline_mode, completer
+    Phase 4 cleanup — the parity completers (``SlashCompleter``,
+    ``FileMentionCompleter``) and the slash+file-mention config
+    flags lived in the deleted parity modules. We keep this
+    helper so the surrounding code structure is preserved, but the
+    returned completer is now always ``None`` and the multiline
+    mode defaults to ``"backslash"`` (the nanobot default).
+    """
+    return "backslash", None
 
 
 def _wants_multiline_text(text: str) -> bool:
@@ -625,27 +557,28 @@ async def _read_interactive_input_async(config=None) -> str:
             renderer.stop_for_input()
         except Exception:
             logger.debug("stop_for_input before prompt failed", exc_info=True)
-        try:
-            renderer.print_input_gap()
-            renderer.print_user_box()
-            # Plan §3 D9 — Claude-Code-style accent rule printed just
-            # above the prompt row. ``print_input_bar`` is a no-op under
-            # the legacy ``StreamRenderer`` profile, so this is a strict
-            # superset of the pre-bar behaviour.
-            renderer.print_input_bar()
-        except Exception:
-            pass
+        # Phase 4 cleanup — the parity-only renderers exposed
+        # ``print_input_gap``/``print_user_box``/``print_input_bar``
+        # helpers to draw a Claude-style accent row above the input
+        # box. The mirror's ``StreamRenderer`` does not implement
+        # them; we call via ``getattr`` so missing-attribute is a
+        # silent no-op (the legacy profile had no row at all).
+        for parity_method in ("print_input_gap", "print_user_box", "print_input_bar"):
+            parity_fn = getattr(renderer, parity_method, None)
+            if parity_fn is not None:
+                try:
+                    parity_fn()
+                except Exception:
+                    pass
     # Camada 5 — apply lateral margin to the prompt so it lines up with
     # the agent reply (which already receives padding via the Markdown
     # renderer). Without this the prompt sits flush against the
     # terminal's left edge while the agent's reply stays indented.
     margin_spaces = ""
-    spacing_obj = None
-    if renderer is not None and getattr(renderer, "_spacing", None) is not None:
-        spacing_obj = renderer._spacing
-    elif config is not None:
-        spacing_obj = _make_spacing_renderer(config)
-    if spacing_obj is not None:
+    spacing_obj = (
+        getattr(renderer, "_spacing", None) if renderer is not None else None
+    )
+    if spacing_obj is not None and hasattr(spacing_obj, "margin_x"):
         margin_spaces = " " * spacing_obj.margin_x
     # The legacy profile keeps the original "You:" markup byte-identical;
     # the parity profile returns the Claude-style prompt row and toolbar:
@@ -1350,18 +1283,13 @@ def agent(
 
         _init_prompt_session()
         _model, _preset_tag = _model_display(config)
-        # Resolve the active parity profile (auto-fallback handled in the
-        # factory). The legacy "Interactive mode" banner uses the legacy
-        # ``__logo__`` ASCII wordmark and is suppressed when the parity
-        # layer is going to print its own ``HeaderBar`` + Welcome card
-        # on first turn — otherwise we end up with two competing
-        # first-screen headers and the welcome card never settles.
-        from femtobot.cli.renderer_factory import _resolve_profile as _resolve_parity_profile
-
-        if _resolve_parity_profile(config) == "off":
-            console.print(
-                f"{__logo__} Interactive mode [bold blue]({_model})[/bold blue]{_preset_tag} — type [bold]exit[/bold] or [bold]Ctrl+C[/bold] to quit\n"
-            )
+        # Phase 4 cleanup — the parity "Interactive mode" banner
+        # (``HeaderBar`` + Welcome card) was the parity layer's
+        # first-screen. The mirror does not draw a parity banner,
+        # so we always print the legacy ASCII-banner header.
+        console.print(
+            f"{__logo__} Interactive mode [bold blue]({_model})[/bold blue]{_preset_tag} — type [bold]exit[/bold] or [bold]Ctrl+C[/bold] to quit\n"
+        )
 
         if ":" in session_id:
             cli_channel, cli_chat_id = session_id.split(":", 1)
@@ -1408,11 +1336,12 @@ def agent(
         if hasattr(signal, "SIGPIPE"):
             signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
-        # Build the renderer ONCE before the REPL loop so the parity
-        # layer's first-screen header / welcome card settle and don't
-        # re-print on every turn. The renderer is reused across turns;
-        # only its transport (Live / spinner) gets reset between turns
-        # (see ``renderer.stop_for_input()`` and ``renderer.on_end()``).
+        # Build the renderer ONCE before the REPL loop. The
+        # mirror's ``StreamRenderer`` does not carry parity-only
+        # state (no HeaderBar, no WelcomeCard) so reuse across
+        # turns is safe — the spinner / Live display gets reset
+        # between turns via ``renderer.stop_for_input()`` and
+        # ``renderer.on_end()``.
         renderer = _build_simple_renderer(
             config,
             render_markdown=markdown,
@@ -1791,13 +1720,19 @@ def agent(
                         # Ns" footer AFTER the agent's reply, never
                         # before. The parity layer keeps the elapsed
                         # timer alive across the buffered response so the
-                        # footer still reflects the real duration of the
-                        # turn. Legacy profile is a no-op.
+                        # Phase 4 cleanup — the ``Cooked for Ns``
+                        # footer lived in the parity layer. The
+                        # mirror's ``StreamRenderer`` does not
+                        # expose ``print_cooked_footer``; we call it
+                        # via ``getattr`` so missing-attribute is a
+                        # silent no-op rather than an exception.
                         if renderer is not None:
-                            try:
-                                renderer.print_cooked_footer()
-                            except Exception:
-                                pass
+                            cooked_fn = getattr(renderer, "print_cooked_footer", None)
+                            if cooked_fn is not None:
+                                try:
+                                    cooked_fn()
+                                except Exception:
+                                    pass
                     except KeyboardInterrupt:
                         _restore_terminal()
                         console.print("\nGoodbye!")
@@ -1928,9 +1863,7 @@ if __name__ == "__main__":
 # ``sessions_app`` so existing callers / scripts that reference it
 # keep working (the stub prints a helpful pointer to ``femtobot
 # agent`` which now owns the session lifecycle).
-import typer as _typer  # noqa: E402
-
-sessions_app = _typer.Typer(help="Sessions are managed via `femtobot agent`. Use the in-session /clear to start a new session.")
+sessions_app = typer.Typer(help="Sessions are managed via `femtobot agent`. Use the in-session /clear to start a new session.")
 
 
 @sessions_app.callback(invoke_without_command=True)

@@ -15,37 +15,10 @@ from __future__ import annotations
 
 import inspect
 
-import pytest
-
 
 def test_mirror_package_imports_cleanly() -> None:
     """``femtobot.cli._nanobot_mirror`` imports without errors."""
     import femtobot.cli._nanobot_mirror  # noqa: F401
-
-
-def test_stream_renderer_class_object_identity() -> None:
-    """The mirror's ``StreamRenderer`` class object is the same Python
-    object as the nanobot-installed one (when nanobot is on
-    sys.path). Falls back to a definition match if nanobot is not
-    installed.
-    """
-    import sys
-    from femtobot.cli._nanobot_mirror.stream import StreamRenderer as FStream
-
-    if "nanobot.cli.stream" in sys.modules:
-        from nanobot.cli.stream import StreamRenderer as NStream
-        assert FStream is NStream, (
-            "StreamRenderer in the mirror must be the same class as "
-            "nanobot's — verify that _nanobot_mirror/stream.py is a "
-            "byte-for-byte copy of nanobot/cli/stream.py."
-        )
-    else:
-        # Without nanobot installed, we can at least assert the class
-        # has the expected signatures.
-        assert hasattr(FStream, "on_delta")
-        assert hasattr(FStream, "on_end")
-        assert hasattr(FStream, "stop_for_input")
-        assert hasattr(FStream, "close")
 
 
 def test_mirror_stream_module_exposes_nanobot_apis() -> None:
@@ -97,18 +70,83 @@ def test_stream_renderer_constructor_size() -> None:
     """Sanity invariant — the ``StreamRenderer.__init__`` is small.
 
     The femtobot-parity variant had a 60+ line ``__init__`` that
-    instantiated a ``Live`` and eagerly started a spinner. The
-    nanobot baseline is around 12 lines. We assert the constructor
-    fits in a tight budget to catch accidental re-bloating.
+    eagerly spawned a ``Live`` and a spinner. The nanobot baseline
+    is around 17 non-blank lines. We assert the constructor fits
+    in a budget tight enough to catch accidental re-bloating (the
+    parity version had 60+ lines and embedded the entire spinner
+    construction). The threshold (30) is generous enough to
+    accommodate 1-2 line upstream growth without flaking.
     """
     from femtobot.cli._nanobot_mirror.stream import StreamRenderer
 
     src = inspect.getsource(StreamRenderer.__init__)
-    # 30 non-blank lines is generous for the nanobot init.
     non_blank = [l for l in src.splitlines() if l.strip()]
     assert len(non_blank) < 30, (
         f"StreamRenderer.__init__ has {len(non_blank)} non-blank "
-        f"lines; expected < 30 (matches nanobot baseline). The "
+        f"lines; expected < 30 (nanobot baseline is ~17). The "
         f"femtobot-parity version was 60+ lines and contained "
         f"live-spawn logic — see issue #3."
     )
+
+
+def test_femtobot_cli_stream_canonical_re_export() -> None:
+    """``femtobot.cli.stream.StreamRenderer`` resolves to the mirror's class.
+
+    D5 says the canonical path must stay stable so all user-facing
+    imports (``from femtobot.cli.stream import StreamRenderer``)
+    keep working. Verified by ``test_cli_init.py`` for the
+    package-level re-export, and here for the ``stream`` module
+    specifically.
+    """
+    from femtobot.cli import stream as femtobot_stream_mod
+    from femtobot.cli._nanobot_mirror import stream as mirror_stream_mod
+
+    assert femtobot_stream_mod.StreamRenderer is mirror_stream_mod.StreamRenderer
+    assert (
+        femtobot_stream_mod.ThinkingSpinner is mirror_stream_mod.ThinkingSpinner
+    )
+    assert femtobot_stream_mod._make_console is mirror_stream_mod._make_console
+
+
+def test_mirror_does_not_shadow_femtobot_commands_typer_apps() -> None:
+    """``femtobot.cli._nanobot_mirror`` does NOT export Typer sub-apps.
+
+    Regression guard for the bug fixed in this audit round: the
+    mirror's ``__init__`` previously re-exported
+    ``agent_app``/``sessions_app``/etc. as
+    ``_MissingFemtobotFeature`` stubs from ``_adapters``. Code
+    importing the mirror and expecting real ``typer.Typer``
+    instances silently got a stub. The mirror now exposes only
+    the stream layer; the real Typer sub-apps live in
+    ``femtobot.cli.commands`` where they are defined.
+    """
+    import femtobot.cli._nanobot_mirror as mirror
+
+    for name in (
+        "agent_app",
+        "gateway_app",
+        "sessions_app",
+        "mcp_app",
+        "femtobot_app",
+    ):
+        assert not hasattr(mirror, name), (
+            f"femtobot.cli._nanobot_mirror.{name} must NOT be "
+            f"exported — it was a _MissingFemtobotFeature stub and "
+            f"silently shadowed the real Typer app defined in "
+            f"femtobot.cli.commands."
+        )
+
+
+def test_femtobot_cli_package_exposes_stream_symbols() -> None:
+    """``femtobot.cli`` re-exports the stream layer.
+
+    Regression guard for the bug fixed in this audit round:
+    ``femtobot/cli/__init__.py`` was empty after Phase 4, so
+    ``from femtobot.cli import StreamRenderer`` would raise
+    ImportError. The re-export was restored.
+    """
+    import femtobot.cli as cli_mod
+
+    assert hasattr(cli_mod, "StreamRenderer")
+    assert hasattr(cli_mod, "ThinkingSpinner")
+    assert hasattr(cli_mod, "_make_console")

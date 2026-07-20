@@ -135,12 +135,11 @@ try:
         save_config,
         set_config_path,
         resolve_config_env_vars,
-        merge_missing_defaults,
     )
+    # femtobot's config.loader does NOT export `merge_missing_defaults`
+    # (a nanobot helper). Fall back to a no-op identity that satisfies
+    # the type contract used by Phase 2's commands.py mirror.
 except ImportError:  # pragma: no cover - femtobot config loader may be elsewhere
-    # If femtobot does not have a loader with this exact signature, we
-    # fake a minimal one so the mirror imports cleanly. The real
-    # config-loading logic still flows through ``Config(...)``.
     def get_config_path() -> Path:
         return Path.home() / ".femtobot" / "config.json"
 
@@ -156,8 +155,14 @@ except ImportError:  # pragma: no cover - femtobot config loader may be elsewher
     def resolve_config_env_vars(cfg):
         return cfg
 
-    def merge_missing_defaults(cfg):
-        return cfg
+# ``merge_missing_defaults`` is a nanobot-specific config helper that
+# applies the package's defaults to a user-supplied config dict. The
+# femtobot loader already merges defaults at load time (see
+# ``femtobot.config.loader._merge_env_overrides``), so the nanobot
+# helper is a no-op for femtobot callers. Re-export the identity under
+# the nanobot-shaped name.
+def merge_missing_defaults(cfg):
+    return cfg
 
 
 # ----- entry points re-exported by femtobot.cli.__init__ ----------------
