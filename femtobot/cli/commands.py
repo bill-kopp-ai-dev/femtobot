@@ -590,14 +590,25 @@ async def _read_interactive_input_async(config=None) -> str:
     #
     # This matches the reference screenshot more closely than printing a
     # free-floating footer after the prompt.
-    prompt_markup = (
-        renderer.input_prompt_markup
-        if renderer is not None
-        else HTML("<b fg='ansiblue'>You:</b> ")
-    )
-    toolbar_markup = (
-        renderer.input_toolbar_markup if renderer is not None else None
-    )
+    # Phase 4 cleanup — the ``input_prompt_markup`` /
+    # ``input_toolbar_markup`` attributes lived on the parity
+    # ``ParityStreamRenderer`` and were never carried over to the
+    # nanobot mirror's ``StreamRenderer``. Reading them via direct
+    # attribute access raises ``AttributeError`` the moment the
+    # user types into the prompt (see issue surfaced during the
+    # 2026-07-20 audit). We use ``getattr`` with ``None`` defaults
+    # so missing-attribute is a silent no-op; the legacy ``You:``
+    # markup and no-toolbar fallback are the post-mirror defaults.
+    if renderer is not None:
+        prompt_markup = getattr(renderer, "input_prompt_markup", None)
+    else:
+        prompt_markup = None
+    if prompt_markup is None:
+        prompt_markup = HTML("<b fg='ansiblue'>You:</b> ")
+    if renderer is not None:
+        toolbar_markup = getattr(renderer, "input_toolbar_markup", None)
+    else:
+        toolbar_markup = None
     if isinstance(prompt_markup, str) and margin_spaces:
         # The parity bottom-rule markup is already self-contained; only
         # inject the margin spacer for the plain legacy markup.
