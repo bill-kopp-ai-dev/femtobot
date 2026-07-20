@@ -840,59 +840,30 @@ def onboard(
         except Exception:
             config = build_default_onboard_config(instance_dir)
 
-    # C5: optional interactive wizard for choosing model + provider
-    # (only when stdin is a TTY and --wizard is set or the user passes
-    # no --folder-path, signaling a first-time setup).
+    # Phase 4 cleanup — the femtobot-local ``onboard_wizard.py``
+    # was removed with the parity layer. The wizard is therefore
+    # not available in 0.1.0-cli.1; users wanting an interactive
+    # first-time setup can either:
     #
-    # Phase 4 cleanup — the femtobot-local onboard_wizard.py was
-    # removed with the parity layer. The wizard is no-op now;
-    # users wanting an interactive first-time setup can use the
-    # nanobot-style ``femtobot config init`` flow (which reads the
-    # same env vars to populate the workspace).
-    def run_onboard_wizard(*_args, **_kwargs):  # type: ignore[no-redef]
-        return None
-
-    # C5 + CLI-parity v0.1.7: the wizard is now strictly opt-in via
-    # --wizard.  The previous auto-trigger (``isatty() and no args``)
-    # caused every plain ``femtobot onboard`` in a terminal to drop
-    # the user into interactive prompts with no warning.  We model
-    # the nanobot behaviour: the wizard is only run when explicitly
-    # requested.  Folder-path validation has already happened by the
-    # time we reach this branch.
-    if not wizard:
-        wizard_result = None
-    elif sys.stdin.isatty():
-        try:
-            wizard_result = run_onboard_wizard(
-                config if "config" in dir() and isinstance(config, object) else None,
-                console=console,
-            )
-        except (KeyboardInterrupt, EOFError):
-            console.print("\n[yellow]![/yellow] Wizard cancelled; continuing with defaults.")
-            wizard_result = None
-    else:
-        # --wizard flag was given, but stdin is not a TTY (CI / pipe).
-        # The wizard would block on input forever; refuse cleanly.
+    #   - edit ``config.json`` directly after ``onboard`` creates
+    #     the instance skeleton, or
+    #   - use the env-var based config loader
+    #     (``MINIMAX_API_KEY``, ``FEMTOBOT_PROVIDER``, etc.).
+    #
+    # To prevent silent regressions (the previous stub returned
+    # ``None`` and the flag was a no-op), ``--wizard`` now exits
+    # with a clear error pointing at the migration notes.
+    if wizard:
         console.print(
-            "[yellow]![/yellow] --wizard requires a TTY; "
-            "non-interactive mode skips it (use env vars to set provider/key)."
+            "[red]error[/red] --wizard is not available in 0.1.0-cli.1.\n"
+            "The femtobot onboard wizard lived in the parity layer and\n"
+            "was removed when the parity UI was deleted. To configure\n"
+            "the instance interactively, run ``femtobot onboard`` and\n"
+            "edit the resulting ``config.json`` directly, or set env\n"
+            "vars (``MINIMAX_API_KEY``, ``FEMTOBOT_PROVIDER``, ...).\n"
+            "See plans/femtobot_nanobot_cli_migration/PLAN_*.md."
         )
-        wizard_result = None
-        if wizard_result is not None:
-            # C5 + CLI-parity v0.1.7: the wizard mutates
-            # ``model_presets`` and ``providers`` on the config
-            # object.  We re-assign here so the rest of ``onboard``
-            # picks up the changes.  We do NOT silently re-load
-            # from disk on validation failure (the previous
-            # ``try / except: pass`` block masked stale-on-disk
-            # config and unobserved pydantic errors).  If the
-            # wizard did not produce a config mutation, we keep
-            # the in-memory ``config`` we already have.
-            config = (
-                wizard_result.config
-                if wizard_result.config is not None
-                else config
-            )
+        raise typer.Exit(code=2)
 
     # Create instance structure
     console.print(f"\n{__logo__} Initializing Femtobot Instance\n")
