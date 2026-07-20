@@ -6,6 +6,7 @@ import select
 import signal
 import sys
 import threading
+import uuid
 from contextlib import nullcontext, suppress
 from pathlib import Path
 from typing import Any
@@ -1437,6 +1438,46 @@ def agent(
             bus_task = asyncio.create_task(agent_loop.run())
             turn_done = asyncio.Event()
             turn_done.set()
+            # Issue #2 (longlogs 2026-07-19, compat profile): each user
+            # turn is tagged with a UUID ``_turn_id`` that propagates
+            # through every OutboundMessage derived from it (stream
+            # deltas, stream_end, the trailing body, progress events).
+            # The consumer (``_consume_outbound``) drops any message
+            # whose ``_turn_id`` does not match the active turn, so a
+            # late-arriving body from the previous turn can never
+            # collide with the new ``[ 👤 You ]`` prompt — the root
+            # cause of the 'body printed under You:' bug observed when
+            # the trailing body raced with the user's next input.
+            # ``None`` means "no turn is active yet" (fresh REPL).
+            active_turn_id: str | None = None
+            # Same drop policy outside turns (e.g. background warnings
+            # such as ``_runtime_control`` notifications) — see
+            # ``_consume_outbound``.
+            def _is_for_current_turn(msg) -> bool:
+                """Return True when ``msg`` belongs to the active turn.
+
+                Background / startup messages (``cli:startup`` channel,
+                ``_progress`` / ``_retry_wait`` flags, ``_runtime_control``
+                metadata) have no ``_turn_id`` and are always admitted
+                so the agent can still surface tool-hint notifications
+                or post-turn MCP warnings without race-loss.
+                """
+                meta = msg.metadata or {}
+                msg_turn = meta.get("_turn_id")
+                if msg_turn is None:
+                    return True
+                # Background notifications (no _turn_id on the
+                # inbound-derived side): let them through under any
+                # turn-state. The only requirement is that ``msg_turn``
+                # is a registered turn in the active session, which
+                # we approximate as "matches the active turn OR no
+                # active turn yet" — micro-race window where the
+                # previous turn's _runtime_control arrives after the
+                # next turn started is acceptable (the message would
+                # print as a notification in the gap, never as a body).
+                if active_turn_id is None:
+                    return True
+                return msg_turn == active_turn_id
 
             # Issue #1, B8 (longlogs 2026-07-19): give the agent loop
             # a moment to publish its startup-time warnings (MCP
@@ -1501,6 +1542,21 @@ def agent(
                     try:
                         msg = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
                         chat_key = f"{msg.channel}:{msg.chat_id}"
+
+                        # Issue #2 (longlogs 2026-07-19): a late-arriving
+                        # body from the previous turn (the trailing
+                        # ``_streamed`` ``OutboundMessage`` that raced
+                        # ahead of the user's next input) used to slip
+                        # through here and render under the new
+                        # ``[ 👤 You ]`` prompt. The turn-token guard
+                        # drops it cleanly. Background notifications
+                        # (no ``_turn_id``) are always admitted.
+                        if not _is_for_current_turn(msg):
+                            logger.debug(
+                                "Dropping stale OutboundMessage: turn_id={!r} != active",
+                                (msg.metadata or {}).get("_turn_id"),
+                            )
+                            continue
 
                         if msg.metadata.get("_stream_delta"):
                             if renderer:
@@ -1644,6 +1700,33 @@ def agent(
                         turn_done.clear()
                         turn_response.clear()
                         reasoning_buffer.clear()
+                        # Issue #2 PR #2 (longlogs 2026-07-19, compat
+                        # profile): swap the underlying StreamRenderer
+                        # so each turn starts with a clean ``_buf`` /
+                        # ``_live`` / ``_ENDED``. The parity layer
+                        # wrapping it (HeaderBar, Welcome card) stays
+                        # stable across turns so its one-shot prints
+                        # do not repeat. Mirrors ``nanobot``'s
+                        # per-turn renderer rebuild.
+                        new_core = StreamRenderer(
+                            render_markdown=markdown,
+                            show_spinner=True,
+                            bot_name=config.agents.defaults.bot_name,
+                            bot_icon=config.agents.defaults.bot_icon,
+                            spacing_renderer=(
+                                renderer._spacing
+                                if hasattr(renderer, "_spacing")
+                                else None
+                            ),
+                        )
+                        if hasattr(renderer, "replace_core"):
+                            try:
+                                renderer.replace_core(new_core)
+                            except Exception:
+                                logger.debug(
+                                    "replace_core failed; continuing with stale core",
+                                    exc_info=True,
+                                )
                         # ``renderer`` is reused from the enclosing scope
                         # (built once before the loop). Resetting the
                         # parity renderer's per-turn transport (Live /
@@ -1653,6 +1736,14 @@ def agent(
                         # Keeping a single instance across turns is what
                         # prevents the Welcome card and HeaderBar from
                         # re-appearing on every prompt.
+                        # Issue #2 (longlogs 2026-07-19): mint a per-turn
+                        # UUID. The agent_loop copies ``msg.metadata``
+                        # into every OutboundMessage it publishes, so the
+                        # stream deltas / ``_stream_end`` / trailing
+                        # ``_streamed`` body all inherit this token and
+                        # the consumer can age them out on the next turn.
+                        new_turn_id = uuid.uuid4().hex
+                        active_turn_id = new_turn_id
 
                         await bus.publish_inbound(
                             InboundMessage(
@@ -1660,7 +1751,10 @@ def agent(
                                 sender_id="user",
                                 chat_id=cli_chat_id,
                                 content=user_input,
-                                metadata={"_wants_stream": True},
+                                metadata={
+                                    "_wants_stream": True,
+                                    "_turn_id": new_turn_id,
+                                },
                             )
                         )
 

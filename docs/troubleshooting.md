@@ -559,6 +559,67 @@ through to the normal consumer.
 
 ---
 
+## Issues fixed in 0.1.0-ui.3 (2026-07-19)
+
+A follow-up interactive `femtobot agent --ui compat` session against
+`percival-osm` (recorded in `longlogs.txt`, 2026-07-19, lines 74-102)
+surfaced a new class of bug — a renderer-stable race that prints body
+content from the previous turn under the next turn's `[ 👤 You ]`
+prompt. Two complementary fixes shipped together in `0.1.0-ui.3`
+(issue #2): PR #1 (per-turn `turn_id` tokens) and PR #2 (per-turn
+`StreamRenderer` rebuild, parity layer kept). Upgrade to `0.1.0-ui.3`
+or later if you hit either of these.
+
+### Body content from the previous turn prints under the next `[ 👤 You ]` prompt
+
+**Fixed in.** `0.1.0-ui.3` (issue #2, PR #1 + PR #2).
+
+**Symptom.** In a `ui_parity=compat` session, the second turn onwards
+shows the assistant's response being printed *underneath* the
+previously-rendered `You:` prompt. The user types their next input
+but the previous response continues to render around it, leaving
+the screen with text from two consecutive turns interleaved. The
+`nanobot` project does not exhibit this bug because it instantiates
+a fresh `StreamRenderer` on every turn.
+
+**Cause.** Two architectural decisions in `femtobot/cli/commands.py`:
+- The renderer is constructed **once** before the REPL loop so the
+  parity `HeaderBar` + `Welcome card` only render once.
+- The `StreamRenderer` instance is then *reused* across turns,
+  keeping the same `_buf`, `_live`, `_ENDED`, and `_pending_streamed_body`
+  state alive between iterations. The same turn's body can be
+  rendered twice (once via stream deltas and once via the
+  `_print_agent_response` fallback path) when the trailing
+  `_streamed=True, _stream_end_pending=True` `OutboundMessage`
+  arrives at the bus out-of-order with `_stream_end`.
+
+**Fix (PR #1 — turn-token).** Each user turn mints a fresh UUID
+`metadata["_turn_id"]`. The REPL's `_consume_outbound` task drops
+any `OutboundMessage` whose `_turn_id` no longer matches the
+active turn, so a late-arriving body from the previous turn is
+silently discarded instead of leaking under the next prompt.
+Background notifications (`cli:startup`, `_progress`,
+`_retry_wait`, `_runtime_control`) carry no `_turn_id` and
+continue to flow through unchanged.
+
+**Fix (PR #2 — per-turn core rebuild).** `ParityStreamRenderer`
+exposes `replace_core(new_core)`, called by the REPL at the start
+of every turn. The compat surface (HeaderBar, Welcome card,
+input-bar markup, theme) stays stable across turns; only the
+underlying `StreamRenderer` (the layer that owns `_buf`, `_live`,
+`_ENDED`) is swapped for a fresh instance. This mirrors the
+`nanobot` reference and removes the entire class of cross-turn
+state leakage by construction.
+
+**How to verify the fix is in your build.**
+```bash
+python -c "import femtobot.cli.commands as c; import inspect; \
+src = inspect.getsource(c); print('PR #1 ok' if 'uuid.uuid4' in src else 'PR #1 missing'); \
+print('PR #2 ok' if 'replace_core' in src else 'PR #2 missing')"
+```
+
+---
+
 ## See also
 
 - [quick-start.md](./quick-start.md)

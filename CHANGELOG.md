@@ -187,6 +187,75 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `nanobot-policy.md` packaging) are tracked in issue #1 but
   are owned by the `percival-osm` repository, not femtobot.
 
+## [0.1.0-ui.3] — 2026-07-19
+
+> Patch release — fourth round, addressing a **renderer-stable race**
+> surfaced by a follow-up interactive `femtobot agent --ui compat`
+> session recorded in `longlogs.txt` (2026-07-19, lines 74-102). Closes
+> issue #2. Two complementary fixes ship together: (PR #1) per-turn
+> `turn_id` tokens age out late-arriving `OutboundMessage`s, and
+> (PR #2) the underlying `StreamRenderer` is rebuilt every turn so
+> per-turn state (`_buf` / `_live` / `_ENDED`) can never bleed across
+> the `[ 👤 You ]` boundary. Mirrors the `nanobot/cli/commands.py`
+> reference where a fresh `StreamRenderer` is instantiated per turn.
+> No behavioural change for users running with default config; all
+> fixes are scoped to the `ui_parity=compat` profile.
+
+### Fixed
+
+#### Interactive TUI — `femtobot.cli.commands.run_interactive`
+
+- **PR #1 — Turn-token guard against late-arriving bodies**: in
+  `ui_parity=compat` mode the renderer was reused across turns (so
+  the parity `HeaderBar` and `Welcome card` only render once). That
+  shared state combined with two concurrent body surfaces (stream
+  deltas vs. `_print_agent_response` fallback) produced a race:
+  the trailing `_streamed=True, _stream_end_pending=True`
+  `OutboundMessage` of turn *N* could deliver *after* the REPL had
+  already printed the `[ 👤 You ]` header of turn *N+1*, leaking
+  previous-turn body content under the user's input row. Fix: every
+  user turn now mints a fresh UUID `metadata["_turn_id"]`; the REPL
+  consumers drop any `OutboundMessage` whose `_turn_id` does not
+  match the active turn. Background notifications (`cli:startup`,
+  `_progress`, `_retry_wait`, `_runtime_control`) carry no
+  `_turn_id` and continue to flow through unchanged.
+  Regression: `tests/test_longlogs_issue2_fixes.py` (3 turn-token
+  tests including the simulated-bus race scenario).
+
+#### Interactive TUI — `femtobot.cli.parity_stream`
+
+- **PR #2 — Per-turn `StreamRenderer` rebuild, parity layer kept**:
+  a new `ParityStreamRenderer.replace_core(new_core)` lets the REPL
+  swap the underlying `StreamRenderer` on every turn while keeping
+  the parity surface (HeaderBar / Welcome card / input-bar markup /
+  theme) stable. This matches `nanobot/cli/commands.py`'s per-turn
+  renderer construction and removes the entire class of state
+  leakage (the `_buf`, `_live`, `_ENDED` triple) that caused B1/B6/B7
+  in issue #1 to recur across turns. New spins of the
+  `ThinkingSpinner` render the `<bot_name> is <verb>…` line
+  immediately after the user submits — matching the original v0.0.x
+  UX. Regression: `tests/test_longlogs_issue2_fixes.py` (4 renderer
+  rebuild tests including the `replace_core` delegation contract).
+
+### Test suite
+
+- **1415/1415 tests pass** (1408 → 1415). New file:
+  `tests/test_longlogs_issue2_fixes.py` (7 tests covering turn-token
+  drop semantics, simulated-bus race, `replace_core` API, per-turn
+  rebuild contract, and a bundle check that both fixes coexist).
+
+### Upgrade notes
+
+- Drop-in replacement for `0.1.0-ui.2`. No config migration needed.
+- The `[ 👤 You ]` prompt now reliably appears **before** any
+  body of the previous turn completes rendering. If your session was
+  relying on the old interleaving as a visual cue (e.g. you checked
+  the on-screen text for "is the response finished?"), use the new
+  `✻ Cooked for Ns` footer as the authoritative "turn done" signal
+  (parity profile) or the spinner clearing in the legacy profile.
+- Operators on `ui_parity=full` (Textual TUI) are unaffected — the
+  rebuild path skips when `replace_core` is missing.
+
 ## [Unreleased]
 
 ### Femtobot 1.0 — PydanticAI migration (Phases 0-9)
