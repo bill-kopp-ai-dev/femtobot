@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -13,130 +12,7 @@ from pydantic_settings import BaseSettings
 if TYPE_CHECKING:
     from femtobot.agent.tools.self import MyToolConfig
     from femtobot.agent.tools.shell import ExecToolConfig
-    from femtobot.agent.tools.time import TimerToolConfig
     from femtobot.agent.tools.web import WebToolsConfig
-
-
-# ---------------------------------------------------------------------------
-# CLI spacing defaults — single source of truth (Camada 4 / Camada 5)
-# ---------------------------------------------------------------------------
-# These constants are the canonical defaults for the per-turn CLI spacing
-# knobs (``margin_x``, ``gap_after_turn``, ``role_header``, etc.). They are
-# re-exported by ``femtobot.cli.role_renderer`` as aliases, so editing this
-# block is the *only* place needed to change the runtime defaults — no more
-# "I changed a constant and the CLI didn't budge" surprises.
-#
-# Override at runtime (highest priority first):
-#   1. ``/style set margin_x=6 gap_after_turn=2`` (REPL, session-only)
-#   2. env var — e.g. ``FEMTOBOT_AGENTS__DEFAULTS__CLI__MARGIN_X=6``
-#   3. .env file co-located with the active instance
-#   4. the schema defaults declared below
-#
-# Knob semantics (visual impact on the CLI REPL):
-#
-# :data:`CLI_DEFAULT_GAP_AFTER_TURN`
-#     Blank lines printed *after* each completed agent turn. Gives the
-#     terminal room to breathe between replies so the next ``You:``
-#     prompt doesn't sit glued to the bottom of the previous answer.
-#     Range: ``CLI_MIN_GAP``..``CLI_MAX_GAP`` (0..2).
-#
-# :data:`CLI_DEFAULT_ROLE_HEADER_MODE`
-#     Visibility / style of the bar shown *before* each agent turn.
-#     Three modes:
-#       ``"always"``  — bold colored bar ``🤖 Femtobot ▌`` (default).
-#       ``"minimal"`` — emoji only (legacy Camada 1 behavior).
-#       ``"off"``     — no header at all (silent).
-#
-# :data:`CLI_DEFAULT_USER_SEPARATOR`
-#     When ``True``, prints a thin dim divider line (``· · · ·``) right
-#     after the user submits input, so the agent's reply is framed.
-#     Set to ``False`` for a borderless conversation look.
-#
-# :data:`CLI_DEFAULT_MARGIN_X`
-#     Horizontal padding (in chars) applied to the left *and* right of
-#     every agent reply via ``rich.Padding``. Solves the "text glued to
-#     terminal edges" complaint from P1. Range:
-#     ``CLI_MIN_MARGIN``..``CLI_MAX_MARGIN`` (2..4).
-#
-# :data:`CLI_DEFAULT_GAP_BEFORE_INPUT`
-#     Extra blank lines printed *before* the ``You:`` prompt. Gives the
-#     user visual space to read the last reply before starting to type.
-#     Range: ``CLI_MIN_INPUT_GAP``..``CLI_MAX_INPUT_GAP`` (0..4).
-#
-# :data:`CLI_DEFAULT_TURN_BOX`
-#     When ``True``, the role headers are rendered as bracketed boxes
-#     (``[🤖 Femtobot]`` for the agent, ``[👤 You]`` for the user).
-#     Each turn becomes a visually distinct block, solving the
-#     "agent/human indistinguishable" complaint from P3. Set to
-#     ``False`` for the legacy bar + plain ``You:`` style.
-# ---------------------------------------------------------------------------
-
-# -- Per-turn gaps ---------------------------------------------------------
-# Each constant has a paired comment describing its semantics, visual
-# impact, and range. Module-level ``__doc__`` is not preserved for
-# primitive literals (Python rebinds ``int.__doc__`` / ``str.__doc__``
-# at import time), so the per-constant docs live as side-comments
-# instead. The matching fields on :class:`CliConfig` carry the same
-# descriptions via Pydantic ``Field(description=...)`` so they show up
-# in JSON schemas and IDE tooltips.
-
-CLI_DEFAULT_GAP_AFTER_TURN: int = 1
-# Blank lines after each agent turn. Solves "last message glued to
-# bottom" (UX-1). Range: 0..3 (CLI_MIN_GAP..CLI_MAX_GAP). Default: 1.
-
-CLI_DEFAULT_ROLE_HEADER_MODE: str = "always"
-# Agent role-header visibility. One of "always" | "minimal" | "off".
-#   "always"  — full colored bar "🤖 Femtobot ▌" (default).
-#   "minimal" — emoji only (legacy Camada 1 behavior).
-#   "off"     — no header at all.
-
-CLI_DEFAULT_USER_SEPARATOR: bool = True
-# Print a thin "· · ·" divider after each user turn. Default: True.
-# Disable for a borderless conversation.
-
-# -- Camada 5 visual separation -------------------------------------------
-CLI_DEFAULT_MARGIN_X: int = 2
-# Lateral padding (chars) on both sides of agent output. Solves "text
-# glued to terminal edges" (P1). Range: 2..4 (CLI_MIN_MARGIN..CLI_MAX_MARGIN).
-# Default: 2.
-
-CLI_DEFAULT_GAP_BEFORE_INPUT: int = 0
-# Extra blank lines before the "You:" prompt. Solves "last message
-# glued to bottom" (P2). Range: 0..4 (CLI_MIN_INPUT_GAP..CLI_MAX_INPUT_GAP).
-# Default: 0.
-
-CLI_DEFAULT_TURN_BOX: bool = True
-# Render role headers as bracketed boxes "[🤖 Femtobot]" / "[👤 You]"
-# so agent and human turns are visually distinct blocks. Solves
-# "agent/human indistinguishable" (P3). Default: True.
-
-# -- Bounds (clamped by ``_normalize_*`` helpers in role_renderer) ---------
-CLI_MIN_GAP: int = 0
-# Inclusive lower bound for ``gap_after_turn``. 0 = no gap.
-
-CLI_MAX_GAP: int = 2
-# Inclusive upper bound for ``gap_after_turn``. 2 is the largest number
-# of blank lines the renderer will print — beyond that the terminal
-# feels empty.
-
-CLI_MIN_MARGIN: int = 2
-# Inclusive lower bound for ``margin_x``. 2 = the visual minimum that
-# keeps text off the terminal edge. Setting to 0 is not allowed because
-# it would defeat P1 ("text glued to terminal edges").
-
-CLI_MAX_MARGIN: int = 4
-# Inclusive upper bound for ``margin_x``. 4 chars is the widest
-# lateral padding that still leaves room for content on a typical
-# 80-col terminal.
-
-CLI_MIN_INPUT_GAP: int = 0
-# Inclusive lower bound for ``gap_before_input``. 0 = the prompt sits
-# directly under the last reply.
-
-CLI_MAX_INPUT_GAP: int = 4
-# Inclusive upper bound for ``gap_before_input``. 4 blank lines is
-# enough breathing room without making the user scroll back to
-# find context.
 
 
 class Base(BaseModel):
@@ -181,9 +57,9 @@ class DreamConfig(Base):
     model_override: str | None = Field(
         default=None
     )  # Override model for Dream sessions (pending implementation)
-    max_batch_size: int = Field(default=20, ge=1, exclude=True)  # Deprecated: no longer used
-    max_iterations: int = Field(default=15, ge=1, exclude=True)  # Deprecated: no longer used
-    annotate_line_ages: bool = Field(default=True, exclude=True)  # Deprecated: no longer used
+    max_batch_size: int = Field(default=20, ge=1)  # Deprecated: no longer used
+    max_iterations: int = Field(default=15, ge=1)  # Deprecated: no longer used
+    annotate_line_ages: bool = True  # Deprecated: no longer used
 
     def describe_schedule(self) -> str:
         """Return a human-readable summary for logs and startup output."""
@@ -226,376 +102,6 @@ class ModelPresetConfig(Base):
             max_tokens=self.max_tokens,
             reasoning_effort=self.reasoning_effort,
         )
-
-
-class CliWhimsyConfig(Base):
-    """Whimsical loading-state verbs and spinner choices for the CLI.
-
-    All fields default to the current Femtobot behavior, so the field is
-    fully backward-compatible when this block is added to existing configs.
-    """
-
-    verbs_enabled: bool = True
-    spinner_style: str = "auto"  # 'auto' | 'dots' | 'dots2' | 'dots3' | 'line' | 'aesthetic'
-    verb_pool_size: int = 40
-
-
-class CliUiParityConfig(Base):
-    """Claude-Code v2.1.x aesthetic parity layer for the CLI REPL (v0.1.0-ui.0+).
-
-    Three profiles, opt-in per the roadmap in
-    ``plans/claude_code_cli_parity/PLAN_claude_code_cli_parity_20260715.md``:
-
-      ``off``    — current Femtobot behaviour (StreamRenderer legacy, no
-                   aesthetic changes). Default in v0.1.0-ui.0.
-      ``compat`` — Rich Live + prompt_toolkit with header bar, welcome card,
-                   spinner with elapsed time, tool cards, permission prompt,
-                   and status footer matching Claude Code v2.1.x aesthetics.
-                   Opt-in in v0.1.0-ui.0; default in v0.1.0-ui.1.
-      ``full``   — Textual full TUI. NOT available in v0.1.0-ui.0 (preview
-                   release); arrives in the RC ``v0.1.0-ui.1`` per
-                   revision F4 of the plan.
-
-    Auto-fallback to ``off`` (regardless of the configured value) when
-    stdout is not a TTY, ``TERM=dumb`` is set, or ``NO_COLOR`` is set.
-    See ``femtobot/cli/renderer_factory.py`` for the resolver.
-    """
-
-    profile: Literal["off", "compat", "full"] = "off"
-    """Active UI profile. See :class:`CliUiParityConfig` for the full matrix."""
-
-    notice: bool = True
-    """When ``True``, print the preview notice block ("Extended through
-    July 19 — try parity UI on/off with ``/ui``") on the first turn.
-    Auto-flips to ``False`` after the first preview release cycle."""
-
-
-class CliPermissionPromptConfig(Base):
-    """Interactive permission prompts before tool execution (v0.1.0-ui.0+).
-
-    When ``enabled`` is ``False`` (default), tool calls run without
-    prompting — this is the v0.0.x Femtobot behaviour. When ``True`` and
-    the tool's risk level is ``high`` (per ``security/tool_risk.py``),
-    a numbered prompt is shown before the tool executes. The collector
-    is per-session (Q10): no prompts are persisted to disk.
-
-    See plan D4 for the risk taxonomy. The ``high_risk_only`` knob lets
-    the user opt into broader prompting (medium + high) if desired.
-    """
-
-    enabled: bool = False
-    """Master switch. ``False`` = no prompts (legacy). ``True`` = ask before
-    any tool whose ``risk_level`` matches the prompt filter (see below)."""
-
-    high_risk_only: bool = True
-    """When ``True`` (default), only ``risk_level == "high"`` tools trigger
-    a prompt — read-only and in-workspace writes pass silently. Set to
-    ``False`` to prompt for both ``high`` and ``medium`` tools."""
-
-
-class CliSessionStatusConfig(Base):
-    """Lightweight session indicators rendered at end-of-turn and in /status."""
-
-    enabled: bool = True
-    show_tokens: bool = True
-    show_elapsed: bool = True
-
-
-class CliBtwConfig(Base):
-    """Configuration for the /btw side-question handler."""
-
-    max_history_messages: int = 10
-    include_tools_result: bool = False
-
-
-class CliConfig(Base):
-    """CLI behavior configuration.
-
-    All fields default to safe backward-compatible values. See
-    FEMTOBOT_CLI_REFACTOR_PLAN.md Camada 1.
-
-    The per-turn spacing knobs (``gap_after_turn``, ``role_header``,
-    ``user_separator``, ``margin_x``, ``gap_before_input``, ``turn_box``)
-    are documented in detail at the top of this module — look for the
-    ``CLI_DEFAULT_*`` and ``CLI_MIN/MAX_*`` block. Override the defaults
-    in three ways (highest priority first):
-      1. ``/style set margin_x=6 gap_after_turn=2`` (REPL, session-only)
-      2. env var — e.g. ``FEMTOBOT_AGENTS__DEFAULTS__CLI__MARGIN_X=6``
-      3. ``config.json`` -> ``agents.defaults.cli.*`` (persistent)
-    """
-
-    # ------------------------------------------------------------------
-    # Input handling
-    # ------------------------------------------------------------------
-    multiline: Literal["off", "backslash"] = "backslash"
-    """How multi-line input is collected.
-
-    ``"backslash"`` (default) — a trailing ``\\`` continues the input on
-    the next line; pressing Enter on its own submits. Backward-compat
-    with the pre-Camada-1 behavior.
-
-    ``"off"`` — every Enter submits a single-line input. Multi-line
-    content must be pasted as a single block."""
-
-    completer_enabled: bool = True
-    """Enable the tab-completion popup for slash commands, file
-    mentions, and command palette suggestions. Disable for a quieter
-    REPL on slow terminals."""
-
-    completer_max_results: int = 10
-    """Maximum number of completion candidates shown at once. Lower this
-    on narrow terminals if the popup overflows."""
-
-    bash_mode_enabled: bool = True
-    """Allow the user to invoke a shell command directly by prefixing
-    the input with ``!`` (e.g. ``!git status``). Output is captured and
-    printed inline; it does NOT enter the agent loop on its own (so
-    inspection commands don't burn LLM tokens)."""
-
-    bash_mode_timeout_s: float = 30.0
-    """Maximum runtime (seconds) for a ``!bash`` invocation before it's
-    killed. Helps prevent runaway commands from blocking the REPL."""
-
-    file_mention_enabled: bool = True
-    """When the user types ``@``, suggest files from the active
-    workspace so they can be pasted into the prompt as mentions."""
-
-    # ------------------------------------------------------------------
-    # Visuals
-    # ------------------------------------------------------------------
-    theme: str = "terracotta-claude"
-    """Name of the active CliTheme (accent colors for the role header,
-    status line, and the agent/user turn boxes). Built-in themes:
-    ``"terracotta-claude"``. Custom themes live in
-    ``femtobot.cli.theme``."""
-
-    whimsy: CliWhimsyConfig = Field(default_factory=CliWhimsyConfig)
-    """Whimsical loading-state verbs and spinner style (e.g. "Pondering…",
-    "Brewing thoughts…"). See :class:`CliWhimsyConfig`."""
-
-    session_status: CliSessionStatusConfig = Field(default_factory=CliSessionStatusConfig)
-    """Lightweight end-of-turn indicators (model, tokens, elapsed). See
-    :class:`CliSessionStatusConfig`."""
-
-    btw: CliBtwConfig = Field(default_factory=CliBtwConfig)
-    """Configuration for the ``/btw`` side-question handler. See
-    :class:`CliBtwConfig`."""
-
-    # ------------------------------------------------------------------
-    # v0.1.0-ui.0+ — UI parity layer (Claude Code v2.1.x aesthetic)
-    # ------------------------------------------------------------------
-    ui_parity: CliUiParityConfig = Field(default_factory=CliUiParityConfig)
-    """UI parity profile (off | compat | full). See :class:`CliUiParityConfig`
-    and the plan in ``plans/claude_code_cli_parity/``. Default in
-    v0.1.0-ui.0 is ``"off"`` (no behaviour change)."""
-
-    permission_prompt: CliPermissionPromptConfig = Field(
-        default_factory=CliPermissionPromptConfig
-    )
-    """Interactive permission prompts before tool calls. See
-    :class:`CliPermissionPromptConfig`. Default off (legacy Femtobot)."""
-
-    # ------------------------------------------------------------------
-    # Camada 4 — turn-spacing aesthetics (Issue UX-1 / UX-2)
-    # ------------------------------------------------------------------
-    # These three knobs are the Camada 4 fixes for "messages glued to
-    # the bottom of the terminal" (UX-1) and "agent vs human messages
-    # look the same" (UX-2). Defaults match the ``CLI_DEFAULT_*``
-    # constants at the top of this module.
-    gap_after_turn: int = Field(
-        default=CLI_DEFAULT_GAP_AFTER_TURN,
-        description=(
-            "Blank lines printed after each completed agent turn. "
-            "Solves UX-1 ('last message glued to bottom'). "
-            f"Range: {CLI_MIN_GAP}..{CLI_MAX_GAP}. "
-            f"Default: {CLI_DEFAULT_GAP_AFTER_TURN}."
-        ),
-    )
-    """Blank lines printed after each completed agent turn. Range:
-    ``CLI_MIN_GAP``..``CLI_MAX_GAP``. Default:
-    :data:`CLI_DEFAULT_GAP_AFTER_TURN`."""
-
-    role_header: Literal["always", "minimal", "off"] = Field(
-        default=CLI_DEFAULT_ROLE_HEADER_MODE,
-        description=(
-            "Agent role-header visibility. "
-            "'always' = bold colored bar (default), "
-            "'minimal' = emoji only, "
-            "'off' = no header."
-        ),
-    )
-    """Visibility / style of the agent-side role header. One of
-    ``"always"``, ``"minimal"`` or ``"off"``. Default:
-    :data:`CLI_DEFAULT_ROLE_HEADER_MODE` (``"always"``)."""
-
-    user_separator: bool = Field(
-        default=CLI_DEFAULT_USER_SEPARATOR,
-        description=(
-            "Print a thin '· · ·' divider after each user turn so the "
-            "agent's reply is framed. Disable for a borderless look."
-        ),
-    )
-    """When ``True``, prints a thin dim divider line (``· · · ·``)
-    right after the user submits input. Default:
-    :data:`CLI_DEFAULT_USER_SEPARATOR` (``True``)."""
-
-    # ------------------------------------------------------------------
-    # Camada 5 — visual separation (Issue P1 / P2 / P3)
-    # ------------------------------------------------------------------
-    # These three knobs are the Camada 5 fixes for "text glued to
-    # terminal edges" (P1), "last message glued to bottom" (P2), and
-    # "agent/human messages indistinguishable" (P3).
-    margin_x: int = Field(
-        default=CLI_DEFAULT_MARGIN_X,
-        description=(
-            "Lateral padding (chars) on both sides of agent output via "
-            "rich.Padding. Solves P1 ('text glued to terminal edges'). "
-            f"Range: {CLI_MIN_MARGIN}..{CLI_MAX_MARGIN}. "
-            f"Default: {CLI_DEFAULT_MARGIN_X}."
-        ),
-    )
-    """Lateral padding (chars) on both sides of agent output. Range:
-    ``CLI_MIN_MARGIN``..``CLI_MAX_MARGIN``. Default:
-    :data:`CLI_DEFAULT_MARGIN_X`."""
-
-    gap_before_input: int = Field(
-        default=CLI_DEFAULT_GAP_BEFORE_INPUT,
-        description=(
-            "Extra blank lines printed before the 'You:' prompt. "
-            "Solves P2 ('last message glued to bottom'). "
-            f"Range: {CLI_MIN_INPUT_GAP}..{CLI_MAX_INPUT_GAP}. "
-            f"Default: {CLI_DEFAULT_GAP_BEFORE_INPUT}."
-        ),
-    )
-    """Extra blank lines printed before the ``You:`` prompt. Range:
-    ``CLI_MIN_INPUT_GAP``..``CLI_MAX_INPUT_GAP``. Default:
-    :data:`CLI_DEFAULT_GAP_BEFORE_INPUT`."""
-
-    turn_box: bool = Field(
-        default=CLI_DEFAULT_TURN_BOX,
-        description=(
-            "Render role headers as bracketed boxes '[🤖 Femtobot]' / "
-            "'[👤 You]'. Solves P3 ('agent/human indistinguishable'). "
-            "Set to false to revert to the legacy bar + plain 'You:'."
-        ),
-    )
-    """When ``True``, render role headers as bracketed boxes
-    (``[🤖 Femtobot]`` for the agent, ``[👤 You]`` for the user).
-    Default: :data:`CLI_DEFAULT_TURN_BOX` (``True``)."""
-
-
-class LongTaskApiMode(str, Enum):
-    """How the HTTP layer should behave when a sustained goal is active.
-
-    ``sync`` keeps the current request/response contract; ``async_goal``
-    admits the request immediately and returns ``202 Accepted`` plus a
-    polling/events URL; ``auto`` picks between the two based on whether
-    the inbound creates or extends a sustained goal.
-    """
-
-    SYNC = "sync"
-    ASYNC_GOAL = "async_goal"
-    AUTO = "auto"
-
-
-class LongTaskConfig(Base):
-    """Long-task (sustained goal) execution profile.
-
-    When ``by_default`` is True, every inbound message is wrapped as a
-    sustained goal — the worker continues until it calls
-    ``complete_goal`` or hits a guardrail.  When False, only explicit
-    ``/goal <objective>`` invocations start a sustained goal; other
-    turns keep the legacy one-shot behavior.
-    """
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    by_default: bool = (
-        False  # master switch — when True, agent runs in long-task mode by default
-    )
-
-    # --- guardrails (apply whenever a goal is active) ---
-    max_goal_rounds: int = Field(
-        default=12,
-        ge=1,
-    )  # cap on internal continuation slices
-    max_goal_runtime_s: float = Field(
-        default=14400.0,
-        ge=60.0,
-    )  # wall-clock cap per goal (4h default)
-    max_goal_wall_idle_s: float = Field(
-        default=1800.0,
-        ge=60.0,
-    )  # idle cap before forced block
-    max_goal_ask_attempts: int = Field(
-        default=3,
-        ge=0,
-    )  # cap on ask_orchestrator calls per goal (0 = no cap)
-    # Per-turn iteration budget — additive on top of max_tool_iterations
-    goal_iteration_extra_budget: int = Field(default=50, ge=0)
-
-    # --- escalation / supervisor wiring ---
-    escalation_channel: str | None = (
-        None  # e.g. "api", "websocket"; None = same channel
-    )
-    escalation_chat_id: str | None = None  # when None, falls back to ask-time routing
-
-    # --- progress reporting ---
-    progress_report_every_n_turns: int = Field(
-        default=0,
-        ge=0,
-    )  # 0 disables intermediate reports
-    progress_report_to: str = "self"  # "self" | "supervisor" | "channel"
-
-    # --- safety ---
-    require_objective_self_containment: bool = (
-        True  # reject objectives with "?", open-ended asks
-    )
-    block_on_workspace_violation: bool = (
-        True  # escalate to supervisor after N workspace hits
-    )
-    workspace_violation_threshold: int = Field(default=3, ge=1)
-
-    # --- runtime contract knobs ---
-    sdk_execution_mode: Literal["sync", "goal_aware"] = (
-        "goal_aware"  # used by Femtobot SDK / process_direct
-    )
-    api_mode: LongTaskApiMode = (
-        LongTaskApiMode.AUTO  # governs server.py behavior
-    )
-    api_async_accept_timeout_s: float = Field(
-        default=5.0,
-        ge=0.5,
-    )  # max time the server spends admitting a request before 202
-
-
-class UserConfig(Base):
-    """Identity of the human operating the agent (v0.1.0-ui.0+).
-
-    The display name is used by the parity header bar and welcome card
-    ("Welcome back <name>!"). It can be set explicitly in ``config.json``
-    via ``agents.user.name`` (Q2 of the parity plan), or left as the
-    placeholder ``"<your-name>"`` for the user to fill in. The CLI
-    resolves the effective name through a small lookup chain — see
-    ``femtobot/cli/parity_stream.py::resolve_user_name`` — and falls
-    back to ``os.getlogin()`` when no name is configured.
-    """
-
-    name: str = "<your-name>"
-    """Display name for header bar / welcome card. Placeholder
-    ``"<your-name>"`` indicates the user has not yet personalised it;
-    the CLI replaces this with a safe fallback at render time."""
-
-
-class ToolUseGuardConfig(Base):
-    """Opt-in safety net for the "asked-to-execute, answered-with-plan" pattern.
-
-    Added in PR 5.3 of the ``longlogs.txt`` remediation plan. Defaults
-    to disabled to preserve the existing behaviour of every Femtobot
-    configuration that does not opt in.
-    """
-
-    enabled: bool = False
 
 
 class AgentDefaults(Base):
@@ -647,18 +153,6 @@ class AgentDefaults(Base):
         le=0.95,
     )  # Consolidation target ratio (0.5 = 50% of budget retained after compression)
     dream: DreamConfig = Field(default_factory=DreamConfig)
-    notify_mcp_startup_failures: bool = (
-        False  # When True, surface MCP startup failures to the user (Fase 6)
-    )
-    include_mcp_context: bool = (
-        False  # When True, read AGENTS.md/MEMORY.md headers from MCPs (Fase 8)
-    )
-    tool_use_guard: ToolUseGuardConfig = Field(default_factory=ToolUseGuardConfig)
-    cli: CliConfig = Field(default_factory=CliConfig)  # Camada 1 CLI behavior
-    long_task: LongTaskConfig = Field(default_factory=LongTaskConfig)
-    user: UserConfig = Field(
-        default_factory=UserConfig
-    )  # v0.1.0-ui.0+ — identity for header bar / welcome card (Q2)
 
 
 class AgentsConfig(Base):
@@ -677,16 +171,6 @@ class ProviderConfig(Base):
     extra_body: dict[str, Any] | None = (
         None  # Extra provider request fields; shape depends on provider/API surface
     )
-    # A11 (REFACTOR_PLAN.md Lote A): per-request query string.  Some
-    # regional providers (e.g. Azure-style ?api-version=, certain
-    # gateways) require a query string that ``extra_headers`` /
-    # ``extra_body`` cannot model.  Values must be strings; bools and
-    # numbers get coerced via ``str()`` to keep the wire format simple.
-    extra_query: dict[str, str] | None = None
-    # D1 (REFACTOR_PLAN.md Lote D): AWS Bedrock region override.  When
-    # set, takes precedence over ``BEDROCK_REGION`` / ``AWS_REGION`` /
-    # the ``us-east-1`` default.  Other providers ignore this field.
-    region: str | None = None
 
 
 class ProvidersConfig(Base):
@@ -734,10 +218,6 @@ class ProvidersConfig(Base):
 
     qianfan: ProviderConfig = Field(default_factory=ProviderConfig)  # Qianfan (百度千帆)
     nvidia: ProviderConfig = Field(default_factory=ProviderConfig)  # NVIDIA NIM (nvapi- keys)
-    # D1 (REFACTOR_PLAN.md Lote D): AWS Bedrock (Converse API).  Auth
-    # via ``AWS_*`` env vars or ``BEDROCK_API_KEY`` (treated as the
-    # session token).  ``region`` overrides ``BEDROCK_REGION``.
-    bedrock: ProviderConfig = Field(default_factory=ProviderConfig)
 
     @model_validator(mode="after")
     def _validate_api_type_scope(self) -> "ProvidersConfig":
@@ -788,12 +268,6 @@ class MCPServerConfig(Base):
     enabled_tools: list[str] = Field(
         default_factory=lambda: ["*"]
     )  # Only register these tools; accepts raw MCP names or wrapped mcp_<server>_<tool> names; ["*"] = all tools; [] = no tools
-    # C4 (REFACTOR_PLAN.md Lote C): tags / capabilities surfaced to the
-    # system prompt for tools backed by this MCP server.  Common values:
-    # ``long-running``, ``needs-confirmation``, ``stateful``, ``network``.
-    # Each tool is registered with these capabilities appended to its
-    # own ``capabilities`` list.
-    capability_mentions: list[str] = Field(default_factory=list)
 
 
 def _lazy_default(module_path: str, class_name: str) -> Any:
@@ -802,26 +276,6 @@ def _lazy_default(module_path: str, class_name: str) -> Any:
 
     module = importlib.import_module(module_path)
     return getattr(module, class_name)()
-
-
-class McpConfig(Base):
-    """Behavior knobs for MCP server discovery and warnings.
-
-    Added as part of the ``longlogs.txt`` remediation plan (PR 0.1).
-    Defaults are intentionally backward-compatible:
-
-    - ``warn_on_missing_references`` is ``True``: when an MCP server is
-      mentioned in ``AGENTS.md``/``USER.md``/``SOUL.md`` (or in the
-      ``mcp-router`` skill triggers) but is not configured in
-      ``tools.mcp_servers``, the agent emits an honest warning at
-      startup instead of silently pretending it has the tools.
-    - ``auto_resolve_path_warnings`` is ``True``: reuses the legacy
-      ``agents.defaults.notify_mcp_startup_failures`` flag so existing
-      configs keep their current behavior (CLI / API parity preserved).
-    """
-
-    warn_on_missing_references: bool = True
-    auto_resolve_path_warnings: bool = True
 
 
 class ToolsConfig(Base):
@@ -841,26 +295,14 @@ class ToolsConfig(Base):
     my: MyToolConfig = Field(
         default_factory=lambda: _lazy_default("femtobot.agent.tools.self", "MyToolConfig")
     )
-    timer: TimerToolConfig = Field(
-        default_factory=lambda: _lazy_default("femtobot.agent.tools.time", "TimerToolConfig")
-    )
     restrict_to_workspace: bool = (
-        # R2-femtobot (refactor-parity-with-nanobot.md Phase 6): default
-        # flipped to True so a fresh instance constrains tool access to
-        # the workspace by default.  Operators who really need the old
-        # "full host shell" behaviour can opt back in by setting the
-        # field to False in their instance config.  The migration in
-        # ``_migrate_config`` only flips False/None → True for existing
-        # instances that do not already opt out — instances that
-        # explicitly set the field keep their choice.
-        True
+        False  # policy intent: keep tool access inside workspace when possible
     )
     webui_allow_local_service_access: bool = Field(default=True)
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
     ssrf_whitelist: list[str] = Field(
         default_factory=list
     )  # CIDR ranges to exempt from SSRF blocking (e.g. ["100.64.0.0/10"] for Tailscale)
-    mcp: McpConfig = Field(default_factory=McpConfig)
 
 
 class Config(BaseSettings):
@@ -1055,7 +497,6 @@ def _resolve_tool_config_refs() -> None:
 
     from femtobot.agent.tools.self import MyToolConfig
     from femtobot.agent.tools.shell import ExecToolConfig
-    from femtobot.agent.tools.time import TimerToolConfig
     from femtobot.agent.tools.web import WebFetchConfig, WebSearchConfig, WebToolsConfig
 
     # Re-export into this module's namespace
@@ -1065,7 +506,6 @@ def _resolve_tool_config_refs() -> None:
     mod.WebSearchConfig = WebSearchConfig  # type: ignore[attr-defined]
     mod.WebFetchConfig = WebFetchConfig  # type: ignore[attr-defined]
     mod.MyToolConfig = MyToolConfig  # type: ignore[attr-defined]
-    mod.TimerToolConfig = TimerToolConfig  # type: ignore[attr-defined]
 
     ToolsConfig.model_rebuild()
     Config.model_rebuild()

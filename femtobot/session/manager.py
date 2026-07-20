@@ -397,47 +397,8 @@ class SessionManager:
 
     @staticmethod
     def safe_key(key: str) -> str:
-        """Map an arbitrary key to a stable filename stem.
-
-        We keep the historical ``replace(":", "_")`` mapping in
-        v0.1.8 because existing on-disk sessions in
-        ``workspace/sessions/`` were written with this convention
-        and the runtime needs to keep reading them.  A future v0.2
-        migration can introduce a base64-tagged encoding alongside
-        this naive transliteration without breaking the existing
-        installation.
-        """
+        """Public helper used by HTTP handlers to map an arbitrary key to a stable filename stem."""
         return safe_filename(key.replace(":", "_"))
-
-    # CLI/WebUI parity v0.1.8 review (twelfth pass) explored a
-    # base64-tagged collision-safe stem (``_storage_key`` /
-    # ``_decode_storage_key``) but rolling it out alongside the
-    # new ``femtobot sessions`` command would have silently
-    # broken read-back for the 8 files already on disk
-    # (cli_direct.jsonl, cli_smoke.jsonl, ...).  We keep the
-    # helpers here as aliases / opt-in escape hatches; the
-    # canonical ``safe_key`` continues to match the on-disk format.
-
-    _KEY_PREFIX = "__key__"
-
-    @staticmethod
-    def _storage_key(key: str) -> str:
-        """Alias for :func:`safe_key` kept for parity with upstream."""
-        return SessionManager.safe_key(key)
-
-    @staticmethod
-    def _decode_storage_key(stem: str) -> str | None:
-        """Reverse of :func:`safe_key`.
-
-        For ``"foo_bar"`` returns ``"foo:bar"`` (the legacy
-        round-trip).  Returns ``None`` when the stem does not
-        look like a known encoding.
-        """
-        if not stem or SessionManager._KEY_PREFIX in stem:
-            return None
-        if "_" in stem:
-            return stem.replace("_", ":", 1)
-        return stem
 
     def _get_session_path(self, key: str) -> Path:
         """Get the file path for a session."""
@@ -667,37 +628,20 @@ class SessionManager:
         self._cache.pop(key, None)
 
     def delete_session(self, key: str) -> bool:
-        """Remove a session from disk (workspace + legacy locations) and cache.
+        """Remove a session from disk and the in-memory cache.
 
-        CLI/WebUI parity v0.1.8 (twelfth-pass Issue 2): the previous
-        implementation only unlinked the workspace path.  We now
-        delete the three storage locations so a migrated session
-        leaves no ghost copy behind — mirrors the upstream nanobot
-        ``delete_session`` which removes:
-          - workspace/sessions/{safe_key}.jsonl
-          - legacy global sessions dir
-          - legacy lossy path (the older format with collisions)
-
-        Returns True if **at least one** JSONL file was found
-        and unlinked.
-
-        Already-loaded cache entries are also invalidated.
+        Returns True if a JSONL file was found and unlinked.
         """
-        paths = [
-            self._get_session_path(key),
-            self._get_legacy_session_path(key),
-        ]
+        path = self._get_session_path(key)
         self.invalidate(key)
-        deleted = False
-        for path in paths:
-            if not path.exists():
-                continue
-            try:
-                path.unlink()
-                deleted = True
-            except OSError as e:
-                logger.warning("Failed to delete session file {}: {}", path, e)
-        return deleted
+        if not path.exists():
+            return False
+        try:
+            path.unlink()
+            return True
+        except OSError as e:
+            logger.warning("Failed to delete session file {}: {}", path, e)
+            return False
 
     def read_session_file(self, key: str) -> dict[str, Any] | None:
         """Load a session from disk without caching; intended for read-only HTTP endpoints.

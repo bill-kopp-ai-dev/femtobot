@@ -43,26 +43,14 @@ _LAZY_EXPORTS = {
 
 def __getattr__(name: str):
     module_path = _LAZY_EXPORTS.get(name)
-    if module_path is not None:
-        from importlib import import_module
+    if module_path is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from importlib import import_module
 
-        mod = import_module(module_path, __name__)
-        val = getattr(mod, name)
-        globals()[name] = val
-        return val
-
-    # Dynamically import submodules to avoid breaking import lookup under pytest / lazy schema resolution
-    submodules = {
-        "agent", "api", "bus", "channels", "cli", "command", "config",
-        "pairing", "providers", "security", "session", "skills", "templates", "utils"
-    }
-    if name in submodules:
-        from importlib import import_module
-        mod = import_module(f".{name}", __name__)
-        globals()[name] = mod
-        return mod
-
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    mod = import_module(module_path, __name__)
+    val = getattr(mod, name)
+    globals()[name] = val
+    return val
 
 
 __all__ = ["Femtobot", "RunResult"]

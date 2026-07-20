@@ -64,7 +64,6 @@ import logging
 import re
 import ssl
 import uuid
-from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -96,18 +95,8 @@ def websockets_server_logger():
     return logging.getLogger("websockets.server")
 
 
-def append_transcript_object(*args, **kwargs):  # pragma: no cover - debug only
-    """Best-effort append to the WebUI transcript.
-
-    Audit (I3 of the v0.1.0 fifth-pass review): the previous
-    implementation was a ``pass`` noop, so every WebUI
-    transcript call entered the ``except (ValueError, TypeError)``
-    branch and logged a warning.  The webui transcript module
-    is optional (and not installed in many deployments), so
-    we make this a quiet noop that logs only at debug level
-    when the import fails.
-    """
-    return None
+def append_transcript_object(*args, **kwargs):
+    pass
 
 
 def _normalize_config_path(p: str) -> str:
@@ -127,42 +116,8 @@ def _query_first(query, key):
     return query.get(key, [None])[0]
 
 
-def _is_localhost(conn) -> bool:
-    """Return True if ``conn`` originates from a loopback address.
-
-    Bug fix (audit 2026-07-18): the previous stub returned True for
-    every connection, which silently granted Full Access controls to
-    remote clients. We now inspect the websocket's ``remote_address``
-    and accept loopback IPv4 (127.0.0.0/8) + IPv6 (::1) plus the
-    IPv4-mapped IPv6 form (``::ffff:127.0.0.1``). Anything else
-    returns False.
-
-    Bug fix (re-audit 2026-07-18): the previous ``startswith("127.")``
-    check accepted arbitrary strings starting with that prefix (e.g.
-    ``127.0.0.1.attacker.com``). We now use ``ipaddress.is_loopback``
-    which validates that the value is an actual IP.
-    """
-    import ipaddress
-
-    if conn is None:
-        return False
-    addr = getattr(conn, "remote_address", None)
-    if not addr:
-        return False
-    host = addr[0] if isinstance(addr, tuple) else str(addr)
-    if not isinstance(host, str) or not host:
-        return False
-    # Normalize IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1) → IPv4.
-    if host.startswith("::ffff:"):
-        host = host[len("::ffff:") :]
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        # ``localhost`` (and similar hostname strings) won't parse as
-        # an IP. Accept the literal ``localhost`` defensively — in
-        # practice remote_address is always an IP, so this branch is
-        # rarely hit.
-        return host == "localhost"
+def _is_localhost(conn):
+    return True
 
 
 def normalize_cli_app_mentions(x):
@@ -198,14 +153,6 @@ class DummyWorkspaces:
 class DummyTokens:
     def take_issued_token_if_valid(self, t):
         return False
-
-    def clear(self) -> None:
-        # Audit (C6 of the v0.0.8 third-pass review): ``stop()``
-        # now calls ``_tokens.clear()`` to invalidate issued
-        # tokens between stop and a future start.  The
-        # production class has the same method; this stub is
-        # here so the dummy class also satisfies the contract.
-        return None
 
 
 class DummyMedia:
@@ -391,13 +338,6 @@ _MAX_IMAGES_PER_MESSAGE = 4
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024
 _MAX_VIDEOS_PER_MESSAGE = 1
 _MAX_VIDEO_BYTES = 20 * 1024 * 1024
-# Cap on the in-memory stream-text buffer.  The buffer holds streamed
-# deltas keyed by ``(chat_id, stream_id)`` until ``_stream_end`` pops
-# them.  If a stream is abandoned (no ``_stream_end`` ever arrives),
-# the next ``_stream_delta`` evicts the LRU entry.  1024 entries is
-# far above the realistic concurrent-stream count for a single
-# Femtobot instance and bounds the worst-case memory at a few MB.
-_STREAM_BUFFER_MAX_ENTRIES = 1024
 
 # Image MIME whitelist — matches the Composer's ``accept`` list. SVG is
 # explicitly excluded to avoid the XSS surface inside embedded scripts.
@@ -470,33 +410,11 @@ class WebSocketChannel(BaseChannel):
         self._stop_event: asyncio.Event | None = None
         self._server_task: asyncio.Task[None] | None = None
 
-        # CRITICAL: ``gateway`` was historically a parameter that was
-        # *consumed* but never assigned to ``self``.  ``_maybe_push_active_goal_state``
-        # (and a few other goal-replay helpers) read ``self.gateway.session_manager``,
-        # so any call against an instance whose constructor set ``gateway`` to a
-        # non-None value would crash with ``AttributeError``.  Assign here so the
-        # contract is honored end-to-end.
-        self.gateway = gateway
-
-        # Dummy stand-ins for the per-channel service protocol — used
-        # only when the gateway doesn't bind a real one.  ``self.gateway``
-        # wins when present (see ``_resolve_service``).
         self._tokens = DummyTokens()
         self._media = DummyMedia()
         self._workspaces = DummyWorkspaces()
 
-        # Bounded buffer for streamed text deltas, keyed by
-        # ``(chat_id, stream_id)``.  We use an ``OrderedDict`` to
-        # implement a soft LRU cap (``_STREAM_BUFFER_MAX_ENTRIES``):
-        # if a stream_id is abandoned (e.g. agent crash, cancellation,
-        # WebSocket disconnect mid-stream) and the ``_stream_end``
-        # frame never arrives, the next ``_stream_delta`` evicts the
-        # least-recently-used entry.  Without this cap, a malicious
-        # or buggy client could trigger a slow memory leak by sending
-        # many unique stream_ids.
-        #
-        # See audit item 4 of the v0.0.7 second-pass review.
-        self._stream_text_buffers: OrderedDict[tuple[str, str], list[str]] = OrderedDict()
+        self._stream_text_buffers: dict[tuple[str, str], list[str]] = {}
 
     # -- Subscription bookkeeping -------------------------------------------
 
@@ -524,7 +442,7 @@ class WebSocketChannel(BaseChannel):
         connected clients normally see it via ``goal_state`` / ``turn_end`` frames.
         Pushing here makes refresh + reconnect restore the strip without a new model turn.
         """
-        if self.gateway is None or self.gateway.session_manager is None:
+        if self.gateway.session_manager is None:
             return
         row = self.gateway.session_manager.read_session_file(f"websocket:{chat_id}")
         meta = row.get("metadata", {}) if isinstance(row, dict) else {}
@@ -695,19 +613,7 @@ class WebSocketChannel(BaseChannel):
                     logger=ws_logger,
                 )
             try:
-                # Audit (item 6 of the v0.0.7 second-pass review):
-                # we used to ``assert self._stop_event is not None``
-                # here, but the assertion is stripped by ``python -O``
-                # and an empty Event would then block the runner
-                # forever.  The invariant is that ``start()`` always
-                # assigns ``self._stop_event = asyncio.Event()`` at
-                # the top of the method; we still raise if the
-                # invariant is violated instead of silently blocking.
-                if self._stop_event is None:
-                    raise RuntimeError(
-                        "WebSocketChannel.start() did not initialize "
-                        "_stop_event — this is a programmer error."
-                    )
+                assert self._stop_event is not None
                 await self._stop_event.wait()
             finally:
                 server.close()
@@ -1031,55 +937,10 @@ class WebSocketChannel(BaseChannel):
             except Exception as e:
                 self.logger.warning("server task error during shutdown: {}", e)
             self._server_task = None
-        # Audit (C6 of the v0.0.8 third-pass review): we used to
-        # just clear the subscriptions and let the server die,
-        # which closed connections abruptly with EOF (clients
-        # see "connection reset").  We now send a graceful
-        # close frame (WS code 1001 = "going away") to each
-        # connected client before tearing the dicts down.
-        await self._send_close_to_all_clients()
         self._subs.clear()
         self._conn_chats.clear()
         self._conn_default.clear()
-        # Invalidate any auth tokens so reconnections during the
-        # window between stop() and a future start() can't reuse
-        # them.
         self._tokens.clear()
-
-    async def _send_close_to_all_clients(self) -> None:
-        """Send WS code 1001 to all currently connected clients.
-
-        Audit (C6): graceful close before shutdown.  The default
-        EOF is brutal; a polite close frame lets clients log
-        "server shutdown" instead of "connection reset".  This
-        function is best-effort: any failure to send a close
-        frame is logged at debug level and otherwise ignored.
-        """
-        # Snapshot the open connections.  We can't iterate the
-        # _conn_default dict directly while clearing it.
-        open_conns = list(self._conn_default.keys())
-        # Audit (I4 of the v0.1.0 fifth-pass review): the
-        # websockets v13+ API changed ``ServerConnection.close()``
-        # from sync to async.  Calling it without ``await``
-        # returned a coroutine that was never awaited, so the
-        # close frame was never actually sent before the server
-        # teardown.  We now ``await`` the close for each client
-        # and gather them so the shutdown waits for all
-        # in-flight close frames (with a short timeout to
-        # avoid blocking forever on a stuck client).
-        import asyncio
-
-        async def _close_one(conn) -> None:
-            try:
-                # ``asyncio.wait_for`` so a slow client doesn't
-                # block the whole shutdown.
-                await asyncio.wait_for(conn.close(code=1001), timeout=1.0)
-            except Exception as exc:  # pragma: no cover - defensive
-                self.logger.debug(
-                    "graceful close failed for {!r}: {!r}", conn, exc
-                )
-
-        await asyncio.gather(*(_close_one(c) for c in open_conns))
 
     async def _safe_send_to(self, connection: Any, raw: str, *, label: str = "") -> None:
         """Send a raw frame to one connection, cleaning up on ConnectionClosed."""
@@ -1093,17 +954,12 @@ class WebSocketChannel(BaseChannel):
             raise
 
     def _try_append_webui_transcript(self, chat_id: str, wire: dict[str, Any]) -> None:
-        # Audit (I3 of the v0.1.0 fifth-pass review): the
-        # ``append_transcript_object`` helper is a noop in
-        # deployments without the optional ``webui.transcript``
-        # module.  We used to log a warning every call; we now
-        # log at debug level so production logs aren't flooded.
         sk = f"websocket:{chat_id}"
         try:
             dup = json.loads(json.dumps(wire, ensure_ascii=False))
             append_transcript_object(sk, dup)
         except (ValueError, TypeError) as e:
-            self.logger.debug("webui transcript append skipped: {}", e)
+            self.logger.warning("webui transcript append failed: {}", e)
 
     async def send(self, msg: OutboundMessage) -> None:
         if msg.metadata.get("_runtime_model_updated"):
@@ -1302,21 +1158,7 @@ class WebSocketChannel(BaseChannel):
                 "chat_id": chat_id,
                 "text": delta,
             }
-            # Audit (item 4 of the v0.0.7 second-pass review): bound
-            # the stream-text buffer to avoid an unbounded leak when a
-            # stream is abandoned (e.g. agent crash, cancellation,
-            # WebSocket disconnect) and ``_stream_end`` never arrives.
-            # LRU-evict when we exceed the cap.
-            buf = self._stream_text_buffers.get(stream_key)
-            if buf is None:
-                if len(self._stream_text_buffers) >= _STREAM_BUFFER_MAX_ENTRIES:
-                    self._stream_text_buffers.popitem(last=False)
-                buf = []
-                self._stream_text_buffers[stream_key] = buf
-            else:
-                # Touch the entry so it remains the most-recently-used.
-                self._stream_text_buffers.move_to_end(stream_key)
-            buf.append(delta)
+            self._stream_text_buffers.setdefault(stream_key, []).append(delta)
         if meta.get("_stream_id") is not None:
             body["stream_id"] = meta["_stream_id"]
         self._try_append_webui_transcript(chat_id, body)

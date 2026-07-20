@@ -56,17 +56,6 @@ _FALLBACK_ERROR_TOKENS = (
     "insufficient_balance",
     "balance",
     "out of credits",
-    # A14 (REFACTOR_PLAN.md Lote A): provider-side billing / arrearage
-    # markers.  When a primary key is in arrears the request will never
-    # succeed; falling back to a healthy sibling model lets the user
-    # finish their turn.  The runner still surfaces the friendly
-    # "arrearage" message via ``LLMProvider.is_arrearage_response`` for
-    # callers that want a user-visible hint.
-    "arrearage",
-    "欠费",
-    "out of credit",
-    "payment_required",
-    "payment required",
 )
 
 
@@ -91,7 +80,6 @@ class FallbackProvider(LLMProvider):
         primary: LLMProvider,
         fallback_presets: list[Any],
         provider_factory: Callable[[Any], LLMProvider],
-        on_primary_error: Callable[[LLMResponse], None] | None = None,
     ):
         self._primary = primary
         self._fallback_presets = list(fallback_presets)
@@ -99,11 +87,6 @@ class FallbackProvider(LLMProvider):
         self._has_fallbacks = bool(fallback_presets)
         self._primary_failures = 0
         self._primary_tripped_at: float | None = None
-        # A5 (REFACTOR_PLAN.md Lote A): observability hook fired once every
-        # time the primary provider returns an error that triggers a
-        # fallback attempt.  Tests can use this to assert the call actually
-        # happened before any fallback provider is touched.
-        self._on_primary_error = on_primary_error
 
     @property
     def generation(self):
@@ -172,29 +155,6 @@ class FallbackProvider(LLMProvider):
                     "Primary model error but content already streamed; skipping failover"
                 )
                 return response
-
-            # A5 (REFACTOR_PLAN.md Lote A): log the primary error loudly
-            # BEFORE attempting any fallback.  This is the seam observability
-            # teams were missing — without it, an `error` response from the
-            # primary can be invisible in the logs (only the fallback's
-            # "trying next fallback" message survives).  Surface kind, code
-            # and a content snippet so an on-call engineer can correlate.
-            error_kind = (response.error_kind or "").lower()
-            error_code = (response.error_code or "")
-            error_status = response.error_status_code
-            logger.error(
-                "Primary model '{}' failed before fallback: kind={} code={} status={} content={!r}",
-                primary_model,
-                error_kind or "?",
-                error_code or "?",
-                error_status if error_status is not None else "?",
-                (response.content or "")[:120],
-            )
-            if self._on_primary_error is not None:
-                try:
-                    self._on_primary_error(response)
-                except Exception:  # pragma: no cover - defensive
-                    logger.exception("on_primary_error callback raised")
 
             if not self._should_fallback(response):
                 logger.warning(

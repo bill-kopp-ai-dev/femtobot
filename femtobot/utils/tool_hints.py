@@ -20,61 +20,6 @@ _TOOL_FORMATS: dict[str, tuple[list[str], str, bool, bool]] = {
     "list_dir": (["path"], "ls {}", True, False),
 }
 
-# Capability tags for MCP-wrapped tools.
-# Keys are the *bare* MCP tool names (without the `mcp_<server>_` prefix).
-# Tags appear in the tool hint as ``[tag1, tag2]`` so the model can see at
-# a glance whether a tool is long-running or requires confirmation.
-#
-# Refs: FEMTOBOT_MCP_IMPROVEMENT_PLAN.md Fase 2.
-_MCP_TOOL_METADATA: dict[str, tuple[str, ...]] = {
-    "agy_run_task": ("long-running", "safe-mode:confirm"),
-    "claude_run_task": ("long-running", "safe-mode:confirm"),
-    "agy_health": ("read-only", "cheap"),
-    "agy_self_test": ("read-only", "cheap"),
-    "claude_health": ("read-only", "cheap"),
-}
-
-
-def get_mcp_tool_metadata(tool_name: str) -> tuple[str, ...]:
-    """Return capability tags for an MCP-wrapped tool.
-
-    Uses suffix matching to handle both wrapped (``mcp_<server>_<tool>``)
-    and bare (``<tool>``) names. Falls back to an empty tuple when no
-    known tool suffix matches — by design, absence of tags means
-    "no special capability hints apply".
-
-    Suffix matching is preferred over a single prefix-strip because the
-    sanitization step (``-`` -> ``_`` + collapse runs) makes the server
-    portion of the wrapped name ambiguous to parse.
-    """
-    if tool_name in _MCP_TOOL_METADATA:
-        return _MCP_TOOL_METADATA[tool_name]
-    for bare_name, tags in _MCP_TOOL_METADATA.items():
-        if tool_name.endswith("_" + bare_name):
-            return tags
-    return ()
-
-
-def _strip_mcp_tool_prefix(tool_name: str) -> str:
-    """Best-effort strip of ``mcp_<server>_`` prefix from *tool_name*.
-
-    Examples:
-        ``mcp_agy_mcp_server_agy_run_task`` -> ``agy_run_task``
-        ``mcp_claude_code_cli_mcp_claude_health`` -> ``claude_health``
-        ``agy_run_task`` -> ``agy_run_task`` (no prefix to strip)
-
-    Note: this helper is intentionally approximate — after sanitization,
-    ``agy-mcp-server`` becomes ``agy_mcp_server`` which makes the
-    server/tool boundary ambiguous. Prefer
-    :func:`get_mcp_tool_metadata` for capability lookups.
-    """
-    if not tool_name.startswith("mcp_"):
-        return tool_name
-    body = tool_name[len("mcp_") :]
-    if "__" in body:
-        return body.split("__", 1)[1]
-    return body.split("_", 1)[1] if "_" in body else body
-
 # Matches file paths embedded in shell commands, including quoted paths with spaces.
 _PATH_IN_CMD_RE = re.compile(
     r'"(?P<double>(?:[A-Za-z]:[/\\]|~/|/)[^"]+)"'
@@ -166,7 +111,7 @@ def _abbreviate_command(cmd: str, max_len: int = 40) -> str:
 
 
 def _fmt_mcp(tc, max_length: int = 40) -> str:
-    """Format MCP tool as ``server::tool`` with optional capability tags."""
+    """Format MCP tool as server::tool."""
     name = tc.name
     if "__" in name:
         parts = name.split("__", 1)
@@ -181,15 +126,9 @@ def _fmt_mcp(tc, max_length: int = 40) -> str:
         return name
     args = _get_args(tc)
     val = next((v for v in args.values() if isinstance(v, str) and v), None)
-    base = (
-        f'{server}::{tool}("{abbreviate_path(val, max_length)}")'
-        if val
-        else f"{server}::{tool}"
-    )
-    tags = get_mcp_tool_metadata(name)
-    if tags:
-        return f"{base} [{', '.join(tags)}]"
-    return base
+    if val is None:
+        return f"{server}::{tool}"
+    return f'{server}::{tool}("{abbreviate_path(val, max_length)}")'
 
 
 def _fmt_fallback(tc, max_length: int = 40) -> str:

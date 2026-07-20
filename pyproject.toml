@@ -1,6 +1,6 @@
 [project]
 name = "femtobot"
-version = "0.1.0a0+cli1"
+version = "0.0.2"
 description = "A lightweight, CLI-first AI agent foundation for multi-agent systems"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
@@ -58,7 +58,6 @@ dependencies = [
     "loguru>=0.7.3,<1.0.0",
     "rich>=14.0.0,<15.0.0",
 
-
     # MCP protocol support
     "mcp>=1.26.0,<2.0.0",
 
@@ -83,14 +82,6 @@ dependencies = [
     # Utilities
     "filelock>=3.25.2",
     "dulwich>=0.22.0,<1.0.0",
-    "python-dotenv>=1.0.0,<2.0.0",
-
-    # CLI enhancements (Camada 2)
-    "watchdog>=5.0.0",  # hot-reload of keybindings.json
-
-    # Femtobot 1.0: PydanticAI agent framework + Logfire observability
-    "pydantic-ai>=1.0,<2.0",
-    "logfire>=3.14.1,<4.0.0",
 ]
 
 [project.urls]
@@ -99,16 +90,8 @@ Repository = "https://github.com/bill-kopp-ai-dev/femtobot"
 Issues = "https://github.com/bill-kopp-ai-dev/femtobot/issues"
 
 [project.optional-dependencies]
-tui = [
-    "textual>=0.50.0",
-]
 pdf = [
     "pymupdf>=1.25.0",
-]
-# D1 (REFACTOR_PLAN.md Lote D): AWS Bedrock support is gated behind
-# an optional extra so a vanilla install doesn't pull in ``boto3``.
-bedrock = [
-    "boto3>=1.34.0",
 ]
 dev = [
     "pytest>=9.0.0,<10.0.0",
@@ -162,23 +145,11 @@ ignore = [
     "E731",  # lambda assignment (acceptable for trivial callbacks)
     "N806",  # non-lowercase variable in function (allow UPPER_CASE constants in fns)
     "N818",  # exception name should end with Error (legacy: FileSizeExceeded is public API)
-    "E402",  # module-level imports not at top (used for back-compat re-exports)
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-markers = [
-    "security: security regression tests (Lote A in REFACTOR_PLAN.md).",
-    "durability: durability / concurrency regression tests (Lote B in REFACTOR_PLAN.md).",
-    "architecture: architecture / plugin tests (Lote C in REFACTOR_PLAN.md).",
-    "providers: provider / proxy tests (Lote D in REFACTOR_PLAN.md).",
-    "e2e: end-to-end smoke tests that may hit a real provider (run nightly).",
-    "audit: AGENTS.md / SOUL.md static contradiction audit (PR 5.1).",
-]
-filterwarnings = [
-    "error::RuntimeWarning",
-]
 
 [tool.coverage.run]
 source = ["femtobot"]

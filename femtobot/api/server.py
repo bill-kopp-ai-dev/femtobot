@@ -11,13 +11,11 @@ import contextlib
 import json as _json
 import time
 import uuid
-import weakref
 from typing import Any
 
 from aiohttp import web
 from loguru import logger
 
-from femtobot.utils.helpers import scrub_text
 from femtobot.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
 
 __all__ = (
@@ -42,37 +40,7 @@ def _error_json(status: int, message: str, err_type: str = "invalid_request_erro
     )
 
 
-def _chat_completion_response(
-    content: str,
-    model: str,
-    *,
-    usage: dict[str, int] | None = None,
-) -> dict[str, Any]:
-    """Build a /v1/chat/completions response payload.
-
-    B3 (REFACTOR_PLAN.md Lote B): forward real provider ``usage`` when
-    available so SDK callers can track token spend.  Falls back to the
-    historical zero placeholder only when the provider returned nothing
-    (matches v0.0.3 behavior for upstream providers that don't surface
-    usage yet).
-    """
-    if usage:
-        normalized = {
-            "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
-            "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
-            "total_tokens": int(
-                usage.get(
-                    "total_tokens",
-                    (
-                        int(usage.get("prompt_tokens", 0) or 0)
-                        + int(usage.get("completion_tokens", 0) or 0)
-                    ),
-                )
-                or 0
-            ),
-        }
-    else:
-        normalized = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+def _chat_completion_response(content: str, model: str) -> dict[str, Any]:
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
         "object": "chat.completion",
@@ -85,7 +53,7 @@ def _chat_completion_response(
                 "finish_reason": "stop",
             }
         ],
-        "usage": normalized,
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
 
 
@@ -178,40 +146,13 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
         return _error_json(400, f"Only configured model '{model_name}' is available")
 
     session_key = f"api:{session_id}" if session_id else API_SESSION_KEY
-    session_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = request.app[
-        "session_locks"
-    ]
-    # Audit (item 7 of the v0.0.7 second-pass review): the API used
-    # to keep a regular ``dict`` of per-session locks, which grew
-    # without bound — every new ``session_id`` (e.g. a UUID per
-    # browser tab) leaked a Lock object.  We use a
-    # ``WeakValueDictionary`` and a small factory so the lock is
-    # strongly referenced only while the request is in flight.
-    # Bug fix (audit 2026-07-18): a naive get/check/set had a TOCTOU
-    # race — two concurrent requests for the same fresh session_id
-    # could each create their own Lock, and the WVD would discard
-    # one as soon as the request finished. We serialize creation on
-    # a single application-wide init lock so each session_id maps
-    # to exactly one Lock for its entire lifetime.
-    init_lock: asyncio.Lock = request.app["session_locks_init"]
-    async with init_lock:
-        session_lock = session_locks.get(session_key)
-        if session_lock is None:
-            session_lock = asyncio.Lock()
-            session_locks[session_key] = session_lock
-    # Strong ref for the duration of this request so the WVD doesn't
-    # GC the Lock between ``get`` and ``acquire``.
-    _keep_alive = session_lock
+    session_locks: dict[str, asyncio.Lock] = request.app["session_locks"]
+    session_lock = session_locks.setdefault(session_key, asyncio.Lock())
 
-    # Audit (B1 of the v0.0.8 third-pass review): the user message
-    # used to land in the log verbatim, leaking API keys, tokens,
-    # and other secrets the caller embedded in their request.
-    # Apply ``scrub_text`` before logging — over-redaction is safe,
-    # under-redaction is what we are guarding against.
     logger.info(
         "API request session_key={} text={} stream={}",
         session_key,
-        scrub_text(text[:80]),
+        text[:80],
         stream,
     )
     # -- streaming path --
@@ -321,16 +262,7 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
         logger.exception("Unexpected API lock error for session {}", session_key)
         return _error_json(500, "Internal server error", err_type="server_error")
 
-    return web.json_response(
-        _chat_completion_response(
-            response_text,
-            model_name,
-            # B3: forward the LLMResponse's usage dict.  ``getattr``
-            # defends against older AgentRunResult variants that
-            # don't have ``usage`` on the response.
-            usage=getattr(response, "usage", None) or None,
-        )
-    )
+    return web.json_response(_chat_completion_response(response_text, model_name))
 
 
 async def handle_models(request: web.Request) -> web.Response:
@@ -375,17 +307,7 @@ def create_app(
     app["agent_loop"] = agent_loop
     app["model_name"] = model_name
     app["request_timeout"] = request_timeout
-    # Per-session locks, keyed by session_key.  We use a
-    # ``WeakValueDictionary`` so a session_id that no longer has a
-    # request in flight doesn't keep the Lock alive indefinitely
-    # (audit item 7 of the v0.0.7 second-pass review).  The request
-    # handler holds a strong ref to the Lock for the duration of
-    # the request to keep the WVD from GC'ing it mid-acquire.
-    app["session_locks"] = weakref.WeakValueDictionary()
-    # Init lock: serializes the get/check/set in handle_chat_completions
-    # so concurrent requests for the same fresh session_id don't race
-    # to create two Locks (audit 2026-07-18).
-    app["session_locks_init"] = asyncio.Lock()
+    app["session_locks"] = {}  # per-user locks, keyed by session_key
 
     # OpenAI-compatible endpoints
     app.router.add_post("/v1/chat/completions", handle_chat_completions)

@@ -2,9 +2,7 @@
 
 import base64
 import mimetypes
-import os
 import platform
-import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -22,126 +20,10 @@ from femtobot.utils.helpers import (
 )
 from femtobot.utils.prompt_templates import render_template
 
-# Max characters to read from each AGENTS.md / MEMORY.md snippet pulled
-# from an MCP server's persistence directory. Keeps the system prompt
-# bounded when an MCP's persistence is verbose.
-_MCP_PERSISTENCE_SNIPPET_MAX_CHARS = 1500
-
-
-def _collect_mcp_persistence_snippets(mcp_servers: dict | None) -> str:
-    """Return a Markdown block with headers of MCP servers' AGENTS.md / MEMORY.md.
-
-    Persistence directory resolution (in priority order):
-
-    1. ``*_PERSISTENCE_BASE_DIR`` in the server's env (global / custom mode).
-    2. Computed from ``MCPServerConfig.cwd`` when
-       ``*_PERSISTENCE_LOCATION=workspace`` is set:
-       ``<cwd_parent>/.open-cli-router/<namespace>/``.
-
-    The namespace is the server name as-is, matching how the MCP servers
-    themselves name the subdirectory under ``.open-cli-router/``.
-
-    Returns "" when no MCP servers are configured or no persistence
-    files are found. Defensive: any read error is swallowed.
-    """
-    if not mcp_servers:
-        return ""
-    snippets: list[str] = []
-    for server_name, cfg in mcp_servers.items():
-        env: Mapping[str, str] | None = getattr(cfg, "env", None) or {}
-        base_dir: Path | None = None
-
-        # Priority 1: explicit PERSISTENCE_BASE_DIR env var (global/custom mode).
-        for key, value in env.items():
-            if key.endswith("PERSISTENCE_BASE_DIR") and value:
-                base_dir = Path(os.path.expanduser(value))
-                break
-
-        # Priority 2: derive from server's cwd when in workspace mode.
-        # workspace mode sets PERSISTENCE_LOCATION=workspace but does NOT set
-        # PERSISTENCE_BASE_DIR (the server computes it internally as
-        # <cwd_parent>/.open-cli-router/<namespace>/).  We replicate that
-        # calculation here so femtobot can discover the files without needing
-        # the server to echo the computed path back via env.
-        if base_dir is None and getattr(cfg, "cwd", None):
-            location_keys = [k for k in env if k.endswith("PERSISTENCE_LOCATION")]
-            persistence_location = (
-                env[location_keys[0]] if location_keys else "global"
-            )
-            if persistence_location == "workspace":
-                server_cwd = Path(cfg.cwd)
-                base_dir = server_cwd.parent / ".open-cli-router" / server_name
-
-        if base_dir is None or not base_dir.exists():
-            continue
-        for fname in ("AGENTS.md", "MEMORY.md"):
-            fpath = base_dir / fname
-            if not fpath.exists():
-                continue
-            try:
-                head = fpath.read_text(encoding="utf-8")[:_MCP_PERSISTENCE_SNIPPET_MAX_CHARS]
-            except OSError:
-                continue
-            if head:
-                snippets.append(f"### {server_name} / {fname}\n\n{head}")
-    return "\n\n".join(snippets)
-
 
 def session_extra(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
     """Return persisted kwargs for turn-attached capabilities."""
     return mcp_tools.session_extra(metadata)
-
-
-# Pattern matching backtick-quoted tool names from MCP servers
-# (e.g. `osm_geocode`, `mcp_percival-osm_*`). Used by
-# ``collect_mcp_missing_references`` to detect when a workspace's
-# AGENTS.md / USER.md / SOUL.md reference MCP servers that are not
-# configured in ``tools.mcp_servers``. Added in PR 0.1 of the
-# ``longlogs.txt`` remediation plan (B1, B8).
-_MCP_TOOL_REF_RE = re.compile(r"`(mcp_[a-zA-Z0-9_-]+_[a-zA-Z0-9_]+)`")
-
-
-def collect_mcp_missing_references(
-    workspace: Path | None,
-    configured_servers: set[str],
-) -> list[str]:
-    """Return MCP server names referenced in workspace docs but not configured.
-
-    Scans ``<workspace>/AGENTS.md``, ``USER.md`` and ``SOUL.md`` (when
-    present) for tool references like ``mcp_<server>_*``. The leading
-    ``mcp_<server>_`` segment is matched against ``configured_servers``;
-    any segment that does not resolve to a configured server is added to
-    the returned list.
-
-    The function is purely diagnostic: it never raises, never mutates
-    state, and never reads from the network. Callers (PR 1.2) decide how
-    to surface the result to the user.
-    """
-    if workspace is None:
-        return []
-    missing: list[str] = []
-    seen: set[str] = set()
-    for fname in ("AGENTS.md", "USER.md", "SOUL.md"):
-        path = workspace / fname
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        for match in _MCP_TOOL_REF_RE.finditer(text):
-            full = match.group(1)
-            # Strip the trailing ``_<tool>`` to recover the server name.
-            # The wrapping template always uses the ``mcp_<server>_<tool>``
-            # form (see ``mcp_tools._sanitize_name``), so a single split is
-            # sufficient.
-            parts = full.split("_", 2)
-            if len(parts) < 3:
-                continue
-            server_name = parts[1]
-            if server_name in configured_servers or server_name in seen:
-                continue
-            seen.add(server_name)
-            missing.append(server_name)
-    return missing
 
 
 def runtime_lines(state: Any, msg: Any, workspace: Path, *, skip: bool = False) -> list[str]:
@@ -160,10 +42,6 @@ async def connect_mcp(state: Any, tools: ToolRegistry) -> None:
     await mcp_tools.connect_missing_servers(state, tools)
 
 
-async def close_mcp(state: Any) -> None:
-    await mcp_tools.close_mcp_servers(state)
-
-
 async def handle_runtime_control(state: Any, msg: InboundMessage, tools: ToolRegistry) -> bool:
     return await mcp_tools.handle_runtime_control(state, msg, tools)
 
@@ -178,11 +56,7 @@ class ContextBuilder:
     _RUNTIME_CONTEXT_END = "[/Runtime Context]"
 
     def __init__(
-        self,
-        workspace: Path,
-        timezone: str | None = None,
-        disabled_skills: list[str] | None = None,
-        agents_config: Any = None,
+        self, workspace: Path, timezone: str | None = None, disabled_skills: list[str] | None = None
     ):
         self.workspace = workspace
         self.timezone = timezone
@@ -190,16 +64,6 @@ class ContextBuilder:
         self.skills = SkillsLoader(
             workspace, disabled_skills=set(disabled_skills) if disabled_skills else None
         )
-        # Audit (H1 of the v0.0.9 fourth-pass review): the
-        # previous code read ``self.agents_config.defaults.X``
-        # in the ``_build_*_block`` method but never assigned
-        # ``self.agents_config`` anywhere in ``__init__``.  The
-        # ``try/except Exception`` wrapper silently caught the
-        # resulting ``AttributeError`` and disabled the
-        # ``include_mcp_context`` feature flag in production.
-        # The AgentLoop now passes the live ``config.agents`` so
-        # this is no longer dead code.
-        self.agents_config = agents_config
 
     def build_system_prompt(
         self,
@@ -208,19 +72,8 @@ class ContextBuilder:
         session_summary: str | None = None,
         workspace: Path | None = None,
         include_memory_recent_history: bool = True,
-        tools_config: Any = None,
-        connected_servers: set[str] | None = None,
-        configured_servers: set[str] | None = None,
     ) -> str:
-        """Build the system prompt from identity, bootstrap files, memory, and skills.
-
-        PR 5.2 (longlogs remediation): the new ``tools_config``,
-        ``connected_servers`` and ``configured_servers`` parameters let
-        the builder emit an honest ``## Tools available right now``
-        block listing the tools the agent can actually reach this
-        session. Defaults remain backward-compatible (no block emitted
-        if the parameters are not passed).
-        """
+        """Build the system prompt from identity, bootstrap files, memory, and skills."""
         root = workspace or self.workspace
         parts = [self._get_identity(channel=channel, workspace=root)]
 
@@ -229,43 +82,6 @@ class ContextBuilder:
             parts.append(bootstrap)
 
         parts.append(render_template("agent/tool_contract.md"))
-
-        tools_available_block = self._build_tools_available_block(
-            tools_config=tools_config,
-            connected_servers=connected_servers,
-            configured_servers=configured_servers,
-        )
-        if tools_available_block:
-            parts.append(tools_available_block)
-
-        mcp_capability_block = self._build_mcp_capability_block()
-        if mcp_capability_block:
-            parts.append(mcp_capability_block)
-
-        mcp_protocol_block = self._build_mcp_protocol_block()
-        if mcp_protocol_block:
-            parts.append(mcp_protocol_block)
-
-        # Phase 8: opt-in sync of AGENTS.md / MEMORY.md headers from MCPs.
-        # Audit (H1 of the v0.0.9 fourth-pass review): the previous
-        # ``try/except Exception`` wrapper silently caught
-        # ``AttributeError`` because ``self.agents_config`` was never
-        # assigned in ``__init__``.  Now that AgentLoop passes the
-        # live ``config.agents`` we can read the flag directly.
-        if self.agents_config is None:
-            include_mcp = False
-        else:
-            include_mcp = bool(
-                self.agents_config.defaults.include_mcp_context
-            )
-        if include_mcp and getattr(self, "tools_config", None) is not None:
-            mcp_persistence_snippets = _collect_mcp_persistence_snippets(
-                getattr(self.tools_config, "mcp_servers", None)
-            )
-            if mcp_persistence_snippets:
-                parts.append(
-                    "## MCP Persistence Pointers\n\n" + mcp_persistence_snippets
-                )
 
         memory = self.memory.get_memory_context()
         if memory and not self._is_template_content(self.memory.read_memory(), "memory/MEMORY.md"):
@@ -310,73 +126,6 @@ class ContextBuilder:
             platform_policy=render_template("agent/platform_policy.md", system=system),
             channel=channel or "",
         )
-
-    # Local tool names that are always available regardless of MCP state.
-    # Surfacing them explicitly closes the "agent says it has no tools"
-    # gap observed in longlogs.txt — even when every MCP server is
-    # missing, the agent still has exec / read_file / write / grep / glob
-    # / apply_patch / bash_mode at its disposal.
-    _LOCAL_TOOLS = (
-        "exec",
-        "read_file",
-        "write_file",
-        "apply_patch",
-        "grep",
-        "glob",
-        "list_dir",
-        "bash_mode (!)",
-        "web_fetch",
-    )
-
-    def _build_tools_available_block(
-        self,
-        *,
-        tools_config: Any,
-        connected_servers: set[str] | None,
-        configured_servers: set[str] | None,
-    ) -> str:
-        """Build the ``## Tools available right now`` block (PR 5.2).
-
-        Returns an empty string when the caller does not opt in (no
-        ``tools_config`` argument), so legacy call-sites keep the
-        pre-PR-5.2 system prompt byte-identical.
-        """
-        if tools_config is None:
-            return ""
-
-        lines: list[str] = ["## Tools available right now", ""]
-        lines.append("Local tools (always available):")
-        for name in self._LOCAL_TOOLS:
-            lines.append(f"- `{name}`")
-
-        connected = sorted(connected_servers or set())
-        configured = sorted(configured_servers or set())
-        # ``mcp_servers`` is a ``dict[str, MCPServerConfig]`` on
-        # ``ToolsConfig``. Iterate it so we can produce the tool-list
-        # per server when the config is present.
-        mcp_cfg = getattr(tools_config, "mcp_servers", None) or {}
-        if connected:
-            lines.append("")
-            lines.append("MCP tools (currently connected):")
-            for server in connected:
-                lines.append(f"- mcp_{server}_*  (server `{server}`)")
-        if configured and not connected:
-            lines.append("")
-            lines.append(
-                "⚠ MCP tools configured but not connected this session — "
-                "they will not work. Run `/mcp reload` or check the "
-                "server logs."
-            )
-            for server in configured:
-                lines.append(f"- mcp_{server}_*  (server `{server}` — ⚠ not connected)")
-
-        lines.append("")
-        lines.append(
-            "If a task requires a tool and the right tool is not listed above, "
-            "either request the missing configuration from the user or use the "
-            "closest local tool (e.g. `exec curl` to call a remote API)."
-        )
-        return "\n".join(lines)
 
     @staticmethod
     def _build_runtime_context(
@@ -440,60 +189,6 @@ class ContextBuilder:
             return content.strip() == tpl.strip()
         return False
 
-    @staticmethod
-    def _build_mcp_protocol_block() -> str:
-        """Render cached ``*_persistence_protocol`` snippets as a system-prompt section.
-
-        Reads from :mod:`femtobot.agent.tools.mcp`'s prompt-content cache
-        (populated by callers that pre-fetch prompts). Empty when no
-        snippets are cached — no impact for installations without
-        persistence-protocol prompts.
-        """
-        from femtobot.agent.tools import mcp as mcp_tools
-
-        cached = mcp_tools.get_cached_persistence_protocols()
-        if not cached:
-            return ""
-        lines: list[str] = []
-        for tool_name, content in cached:
-            bounded = (content or "")[: mcp_tools.MAX_PROMPT_SNIPPET_CHARS]
-            if not bounded:
-                continue
-            lines.append(f"### {tool_name}")
-            lines.append("")
-            lines.append(bounded)
-            lines.append("")
-        if not lines:
-            return ""
-        return "## MCP Persistence Protocols\n\n" + "\n".join(lines).rstrip()
-
-    @staticmethod
-    def _build_mcp_capability_block() -> str:
-        """Render a Markdown block describing MCP tool capabilities for the LLM.
-
-        Reads from the side-channel cache populated by
-        :mod:`femtobot.agent.tools.mcp`. The block is empty (and thus
-        omitted by the caller) when no MCP servers are connected, so the
-        prompt is unaffected in installations without MCP.
-        """
-        # Local import to avoid a hard dependency on ``tool_hints`` at module
-        # load time (keeps the context module import-graph cheap).
-        from femtobot.utils.tool_hints import get_mcp_tool_metadata
-
-        connected = mcp_tools.get_connected_servers()
-        if not connected:
-            return ""
-
-        lines = ["## MCP Servers in this workspace", ""]
-        for server_name, tool_names in sorted(connected.items()):
-            lines.append(f"### {server_name}")
-            for tool_name in tool_names:
-                tags = get_mcp_tool_metadata(tool_name)
-                tag_str = f" [{', '.join(tags)}]" if tags else ""
-                lines.append(f"- `{tool_name}`{tag_str}")
-            lines.append("")
-        return "\n".join(lines).rstrip()
-
     def build_messages(
         self,
         history: list[dict[str, Any]],
@@ -512,21 +207,12 @@ class ContextBuilder:
         inbound_message: Any | None = None,
         skip_runtime_lines: bool = False,
         include_memory_recent_history: bool = True,
-        tools_config: Any = None,
-        connected_servers: set[str] | None = None,
-        configured_servers: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Build the complete message list for an LLM call."""
         root = workspace or self.workspace
-        # M3 (long-task-by-default): enrich the runtime block with goal id,
-        # pending-ask summary, and blocked-goal context.  Each block is
-        # prefixed with its source tag so the LLM can identify them.
-        from femtobot.runtime_context import render_runtime_context
-
-        goal_runtime_block = render_runtime_context(session_metadata)
-        extra = []
-        if goal_runtime_block:
-            extra.extend(goal_runtime_block.splitlines())
+        extra = [
+            *goal_state_runtime_lines(session_metadata),
+        ]
         if runtime_state is not None and inbound_message is not None:
             extra.extend(
                 runtime_lines(runtime_state, inbound_message, root, skip=skip_runtime_lines)
@@ -559,9 +245,6 @@ class ContextBuilder:
                     session_summary=session_summary,
                     workspace=root,
                     include_memory_recent_history=include_memory_recent_history,
-                    tools_config=tools_config,
-                    connected_servers=connected_servers,
-                    configured_servers=configured_servers,
                 ),
             },
             *history,

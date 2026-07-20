@@ -1,77 +1,53 @@
 # Multiple Instances
 
-femtobot can run multiple instances on the same machine, each with its own
-isolated configuration, memory, and workspace. This is achieved by pointing
-the CLI at a different directory, either via `--folder-path` or via the
-`FEMTOBOT_HOME` environment variable.
+femtobot can run multiple instances on the same machine, each with its own isolated configuration, memory, and workspace. This is achieved using the `--suffix` or `--folder-path` CLI flags.
 
-This is the same model upstream nanobot uses: one instance per directory.
-Femtobot previously exposed a `--suffix` flag that named instances
-`.femtobot_<x>/`, but that flag was **removed in v0.2.0** (refactor for
-parity with nanobot, see
-[`docs/refactor-parity-with-nanobot.md`](refactor-parity-with-nanobot.md)).
-The flag was the only mechanism that produced derived directory names,
-and it carried a self-replication risk (an agent with shell access could
-materialize `.femtobot_ok/` etc. on disk).
+## Instances Structure
 
-## Directory layout
+By default, femtobot stores its data in `.femtobot/` (usually located in your home directory or `FEMTOBOT_HOME`).
+When you specify a suffix, it creates an isolated directory named `.femtobot_<suffix>/`.
 
-By default, femtobot stores its data in `.femtobot/` (located in your
-project root or `FEMTOBOT_HOME`).
+- Default instance: `.femtobot/`
+- Instance with suffix `dev`: `.femtobot_dev/`
+- Instance with suffix `test`: `.femtobot_test/`
 
-- Default: `<project>/.femtobot/`
-- Override: `--folder-path /path/to/my/custom/instance` →
-  `/path/to/my/custom/instance/.femtobot/`
-- Override: `FEMTOBOT_HOME=/path/to/my/custom/instance` → same.
+Alternatively, you can provide an exact absolute or relative path using `--folder-path`.
 
 ## Quick Start
 
 **1. Initialize instances:**
 
 ```bash
-# Initialize default instance in the current project
+# Initialize default instance
 femtobot onboard
+
+# Initialize a 'dev' instance
+femtobot onboard --suffix dev
 
 # Initialize an instance in a specific path
 femtobot onboard --folder-path /path/to/my/custom/instance
-
-# Same, via env var
-FEMTOBOT_HOME=/path/to/my/custom/instance femtobot onboard
 ```
 
 **2. Configure each instance:**
 
-Each instance directory contains its own `config.json` and `workspace/`
-directory. You can edit them independently.
+Each instance directory contains its own `config.json` and `workspace/` directory. You can edit them independently.
 
 **3. Run instances:**
 
 ```bash
-# Chat with the default instance
-femtobot agent -m "Hello"
+# Chat with the 'dev' instance
+femtobot agent -m "Hello dev instance!" --suffix dev
 
-# Chat with a custom-path instance
-femtobot agent -m "Hello custom instance!" --folder-path /path/to/my/custom/instance
-
-# Or via env var
-FEMTOBOT_HOME=/path/to/my/custom/instance femtobot agent -m "Hello"
+# Start the API server for the custom path instance
+femtobot serve --folder-path /path/to/my/custom/instance
 ```
+
+## Suffix Validation
+
+Suffixes must be alphanumeric and may contain hyphens or underscores (e.g., `test-1`, `dev_env`).
 
 ## Common Use Cases
 
 - Keep testing and production instances isolated
 - Use different models or providers for different projects
 - Run multiple autonomous agents with separate configurations
-
-## Migrating from `--suffix`
-
-If you previously used `femtobot onboard --suffix dev`, your data lives at
-`<project>/.femtobot_dev/`. Move it to a path under your control:
-
-```bash
-mv .femtobot_dev /path/to/my/custom/instance/.femtobot
-# Then use:
-femtobot agent -m "Hello" --folder-path /path/to/my/custom/instance
-```
-
-The contents (config.json, workspace/, history/) are unchanged.

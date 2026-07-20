@@ -5,25 +5,6 @@ from typing import Any
 from femtobot.agent.tools.base import Tool
 
 
-def is_tool_error_result(name: str, result: Any) -> bool:
-    """Return True when ``result`` represents a tool-level error.
-
-    Femtobot's tools return error responses as plain strings that begin with
-    ``"Error:"`` (this is the convention enforced by the runner and the MCP
-    wrappers).  The legacy femtobot runner used to detect this prefix inline
-    in ``_run_tool``; the helper centralises the rule so both the runner and
-    custom hooks can share the same definition.
-
-    Mirrors nanobot's ``is_tool_error_result`` (which checks
-    ``ToolResult.is_error``); the rule is semantically equivalent because
-    every Femtobot tool that returns an error-shaped payload prefixes its
-    string with ``"Error:"`` or wraps it in an exception.
-    """
-    if isinstance(result, str):
-        return result.startswith("Error")
-    return False
-
-
 class ToolRegistry:
     """
     Registry for agent tools.
@@ -44,37 +25,6 @@ class ToolRegistry:
         """Unregister a tool by name."""
         self._tools.pop(name, None)
         self._cached_definitions = None
-
-    def by_capability(self, capability: str) -> list[Tool]:
-        """Return the list of tools that advertise *capability* (C2).
-
-        Capability matching is exact (case-sensitive).  Empty /
-        ``None`` *capability* returns an empty list — the registry
-        never guesses.
-
-        The result is freshly sorted by tool name for stable display
-        in the ``femtobot tools list --capability <name>`` CLI.
-        """
-        if not capability:
-            return []
-        return sorted(
-            (tool for tool in self._tools.values() if tool.has_capability(capability)),
-            key=lambda t: t.name,
-        )
-
-    def capabilities(self) -> dict[str, list[str]]:
-        """Return a mapping of capability name → sorted list of tool names (C2).
-
-        Used by ``/status`` and the CLI to print "all capabilities
-        currently in the registry" without re-implementing the loop.
-        """
-        out: dict[str, list[str]] = {}
-        for tool in self._tools.values():
-            for cap in tool.get_capabilities():
-                out.setdefault(cap, []).append(tool.name)
-        for cap in out:
-            out[cap] = sorted(out[cap])
-        return out
 
     def get(self, name: str) -> Tool | None:
         """Get a tool by name."""

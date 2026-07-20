@@ -94,20 +94,6 @@ def get_cli_history_path() -> Path:
     return get_instance_dir() / "history" / "cli_history"
 
 
-def get_logs_dir() -> Path:
-    """Return the instance-level runtime logs directory.
-
-    Used for routing stderr from child processes (MCP stdio servers,
-    long-task workers, etc.) into per-process files instead of
-    inheriting the femtobot's own stderr. Without this, MCP server
-    logs ``INFO mcp.server.lowlevel.server: Processing request of
-    type CallToolRequest`` pollute the interactive TUI and get
-    interleaved with user input — see ``longlogs.txt`` 2026-07-19
-    issue #1, B2.
-    """
-    return get_runtime_subdir("logs")
-
-
 def get_legacy_sessions_dir() -> Path:
     """Return the legacy global session directory used for migration fallback."""
     from femtobot.config.loader import get_instance_dir

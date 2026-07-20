@@ -42,66 +42,6 @@ class AutoCompact:
     def _is_internal_session(cls, key: str) -> bool:
         return key.startswith(cls._INTERNAL_SESSION_PREFIXES)
 
-    def _has_compactable_idle_tail(self, key: str) -> bool:
-        """Whether *key* has a non-trivial message tail past last_consolidated.
-
-        R3 of the eighth-pass parity review
-        (``docs/dream_parity_review.md``): the prior version
-        archived any session whose ``updated_at`` was past TTL,
-        regardless of whether there was anything new to
-        consolidate.  That caused sessions to be re-archived
-        redundantly after a heartbeat or other internal tick
-        touched the timestamp without adding new content.
-
-        A "compactable" tail means there are messages after the
-        last consolidated index AND the tail is not just the
-        recent suffix we would always keep anyway.  The latter
-        avoids triggering redundant archives when the only new
-        messages are the small recent-suffix window.
-
-        A simplified port of nanobot's
-        ``_has_compactable_idle_tail`` (the original uses
-        ``Session.retain_recent_legal_suffix`` which is not
-        available in the Femtobot runtime).  We probe
-        ``retain_recent_legal_suffix`` defensively and fall
-        back to a count check.
-        """
-        try:
-            session = self.sessions.get_or_create(key)
-        except Exception:
-            return False
-        if not session or not session.messages:
-            return False
-        tail_len = len(session.messages) - session.last_consolidated
-        if tail_len <= 0:
-            return False
-        # If the tail fits entirely within the recent suffix we
-        # would always keep, it is not compactable yet.
-        if tail_len <= self._RECENT_SUFFIX_MESSAGES:
-            return False
-        # Try the upstream probe for stronger correctness.
-        if hasattr(session, "retain_recent_legal_suffix"):
-            try:
-                probe = Session(
-                    key=session.key,
-                    messages=list(session.messages[session.last_consolidated:]),
-                    created_at=session.created_at,
-                    updated_at=session.updated_at,
-                    metadata={},
-                    last_consolidated=0,
-                )
-                result = probe.retain_recent_legal_suffix(
-                    self._RECENT_SUFFIX_MESSAGES,
-                    extend_to_user=True,
-                )
-                return bool(
-                    result.dropped[result.already_consolidated_count:]
-                )
-            except Exception:
-                pass
-        # Fallback: tail longer than recent suffix is compactable.
-        return True
-
     def check_expired(
         self,
         schedule_background: Callable[[Coroutine], None],
@@ -111,32 +51,13 @@ class AutoCompact:
         now = datetime.now()
         for info in self.sessions.list_sessions():
             key = info.get("key", "")
-            if not key or self._is_internal_session(key):
+            if not key or self._is_internal_session(key) or key in self._archiving:
                 continue
             if key in active_session_keys:
                 continue
-            # Bug fix (audit 2026-07-18): the previous
-            # ``key in self._archiving`` + ``self._archiving.add(key)``
-            # pair was a TOCTOU race — two ticks could each pass the
-            # membership check before either add, scheduling the
-            # archive twice. ``set.add`` returns True only when the
-            # element was actually inserted, so we use it as the
-            # single atomic guard.
-            if not self._archiving.add(key):
-                continue
-            if self._is_expired(
-                info.get("updated_at"), now
-            ) and self._has_compactable_idle_tail(key):
-                # R3: ``_has_compactable_idle_tail`` ensures we only
-                # schedule an archive when there is actually
-                # something new to compact past the recent suffix,
-                # not just when the session was touched by an
-                # internal tick.
+            if self._is_expired(info.get("updated_at"), now):
+                self._archiving.add(key)
                 schedule_background(self._archive(key))
-            else:
-                # Nothing to compact right now — drop the marker so
-                # the next tick can retry.
-                self._archiving.discard(key)
 
     async def _archive(self, key: str) -> None:
         if self._is_internal_session(key):

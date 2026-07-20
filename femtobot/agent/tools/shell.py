@@ -17,7 +17,6 @@ from pydantic import Field
 from femtobot.agent.tools._constants import SHELL_MAX_OUTPUT_CHARS, SHELL_MAX_TIMEOUT_S
 from femtobot.agent.tools.base import Tool, tool_parameters
 from femtobot.agent.tools.context import current_request_session_key
-from femtobot.agent.tools.path_utils import resolve_default_cwd
 from femtobot.agent.tools.exec_session import (
     DEFAULT_EXEC_SESSION_MANAGER,
     DEFAULT_MAX_OUTPUT_CHARS,
@@ -311,13 +310,8 @@ class ExecTool(Tool):
         the LLM cannot request unbounded execution. The config-level default
         (self.timeout) may exceed that cap, and 0 disables the limit entirely
         for trusted long-running tasks (#3595).
-
-        Bug fix (audit 2026-07-18): the previous ``if timeout:`` check
-        treated ``timeout=0`` (explicit "disable limit") as falsy and
-        silently fell through to the config default. The fix uses an
-        explicit ``is not None`` check, so ``0`` is honored as "no limit".
         """
-        if timeout is not None:
+        if timeout:
             return min(timeout, SHELL_MAX_TIMEOUT_S)
         if self.timeout and self.timeout > 0:
             return self.timeout
@@ -339,21 +333,7 @@ class ExecTool(Tool):
         workspace_root = (
             str(access.project_path) if access.project_path is not None else self.working_dir
         )
-        # When the user did not pin a working_dir and there is no active
-        # workspace scope, prefer the project root over the Femtobot workspace
-        # so shell commands like ``ls femtobot/agent`` resolve against the
-        # user's source tree (the directory that contains ``.femtobot``),
-        # not the Femtobot internal workspace.  See
-        # ``path_utils.resolve_default_cwd`` for the full policy.
-        if not working_dir and not access.scope:
-            project_root = resolve_default_cwd(
-                workspace=Path(self.working_dir) if self.working_dir else None,
-                restrict_to_workspace=access.restrict_to_workspace,
-            )
-            default_cwd = str(project_root)
-        else:
-            default_cwd = None
-        cwd = working_dir or default_cwd or workspace_root or os.getcwd()
+        cwd = working_dir or workspace_root or os.getcwd()
 
         # Prevent an LLM-supplied working_dir from escaping the configured
         # workspace when restrict_to_workspace is enabled (#2826). Without

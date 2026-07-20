@@ -6,7 +6,7 @@ import asyncio
 import dataclasses
 import os
 import time
-from contextlib import AsyncExitStack, nullcontext
+from contextlib import AsyncExitStack, nullcontext, suppress
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
@@ -36,7 +36,7 @@ from femtobot.bus.runtime_events import (
     ensure_runtime_event_publisher,
 )
 from femtobot.command import CommandContext, CommandRouter, register_builtin_commands
-from femtobot.config.schema import AgentDefaults, LongTaskConfig, ModelPresetConfig
+from femtobot.config.schema import AgentDefaults, ModelPresetConfig
 from femtobot.providers.base import LLMProvider
 from femtobot.providers.factory import ProviderSnapshot
 from femtobot.security.workspace_access import (
@@ -52,7 +52,7 @@ from femtobot.session.goal_state import (
 )
 from femtobot.session.manager import Session, SessionManager
 from femtobot.utils.document import extract_documents, reference_non_image_attachments
-from femtobot.utils.helpers import image_placeholder_text, scrub_text
+from femtobot.utils.helpers import image_placeholder_text
 from femtobot.utils.helpers import truncate_text as truncate_text_fn
 from femtobot.utils.llm_runtime import LLMRuntime
 from femtobot.utils.runtime import (
@@ -72,14 +72,6 @@ UNIFIED_SESSION_KEY = "unified:default"
 _MAX_PENDING_QUEUE_SIZE = 20
 _MAX_PREVIEW_LEN = 120
 _MAX_INBOUND_PREVIEW_LEN = 80
-
-
-def _current_reasoning_effort(loop) -> str | None:
-    """Return the active reasoning_effort from the agent runner or loop."""
-    effort = getattr(getattr(loop, "runner", None), "_active_effort", None)
-    if effort is not None:
-        return effort
-    return getattr(loop, "_reasoning_effort", None)
 
 
 class TurnState(Enum):
@@ -153,28 +145,6 @@ class AgentLoop:
     3. Calls the LLM
     4. Executes tool calls
     5. Sends responses back
-
-    C1 (REFACTOR_PLAN.md Lote C): the canonical entrypoint is now
-    :meth:`AgentLoop.from_config`, which builds the loop from a
-    :class:`~femtobot.config.schema.Config` object (resolving the
-    provider, model preset, default tool iterations, and snapshot
-    loaders in one place).  The thin :class:`~femtobot.femtobot.Femtobot`
-    facade in :mod:`femtobot.femtobot` is a convenience wrapper for
-    embedders that don't need direct access to the bus / loop.
-
-    Example — direct usage without the ``Femtobot`` facade::
-
-        from femtobot.agent.loop import AgentLoop
-        from femtobot.bus.events import MessageBus
-        from femtobot.config.loader import load_config
-
-        config = load_config()
-        loop = AgentLoop.from_config(config, bus=MessageBus())
-        response = await loop.process_direct(
-            "Summarize the latest changelog",
-            session_key="docs",
-        )
-        print(response.content)
     """
 
     @property
@@ -237,7 +207,6 @@ class AgentLoop:
         preset_snapshot_loader: preset_helpers.PresetSnapshotLoader | None = None,
         runtime_events: RuntimeEventBus | None = None,
         runtime_model_publisher: Callable[[str, str | None], None] | None = None,
-        long_task_config: LongTaskConfig | None = None,
     ):
         from femtobot.config.schema import ToolsConfig
 
@@ -245,11 +214,6 @@ class AgentLoop:
         defaults = AgentDefaults()
         self.bus = bus
         self.runtime_events = runtime_events or RuntimeEventBus()
-        # M0 (long-task-by-default): expose the loop's bus to module-level
-        # goal-state publishers (slash commands, tools, hooks).
-        from femtobot.bus.goal_events import set_active_event_bus
-
-        set_active_event_bus(self.runtime_events)
         self.runtime_event_publisher = RuntimeEventPublisher(self.runtime_events)
         self.channels_config = channels_config
         self.provider = provider
@@ -292,32 +256,7 @@ class AgentLoop:
         self._last_usage: dict[str, int] = {}
         self._extra_hooks: list[AgentHook] = hooks or []
 
-        # Audit (H1 of the v0.0.9 fourth-pass review): assign
-        # ``self.agents_config`` *before* the ``ContextBuilder``
-        # call so the context builder can read the live flag
-        # (``include_mcp_context``) without falling back to a
-        # silent default.  Default to a fresh ``AgentsConfig``
-        # so direct ``__init__`` callers (e.g. tests) still get
-        # a usable object; ``from_config`` overrides this with
-        # the live ``config.agents`` after the loop is built.
-        from femtobot.config.schema import AgentsConfig
-
-        self.agents_config: Any = AgentsConfig()
-        # M0 (long-task-by-default): opt-in sustained-goal execution profile.
-        # ``by_default=False`` keeps every legacy one-shot behavior intact.
-        self.long_task_config: LongTaskConfig = long_task_config or LongTaskConfig()
-        logger.debug(
-            "AgentLoop long_task profile: by_default={} sdk_mode={} api_mode={}",
-            self.long_task_config.by_default,
-            self.long_task_config.sdk_execution_mode,
-            self.long_task_config.api_mode.value,
-        )
-        self.context = ContextBuilder(
-            workspace,
-            timezone=timezone,
-            disabled_skills=disabled_skills,
-            agents_config=self.agents_config,
-        )
+        self.context = ContextBuilder(workspace, timezone=timezone, disabled_skills=disabled_skills)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         # One file-read/write tracker per logical session. The tool registry is
@@ -333,39 +272,13 @@ class AgentLoop:
         self._mcp_connecting = False
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
         self._background_tasks: list[asyncio.Task] = []
-        # Back-reference to the live :class:`~femtobot.config.schema.Config`
-        # so slash commands (e.g. ``/style``) can mutate runtime settings.
-        # ``from_config`` fills this in; direct ``__init__`` callers get
-        # ``None`` and the slash commands must handle that (most just
-        # no-op when ``self._config is None``).
-        self._config: Any = None
         self._session_locks: dict[str, asyncio.Lock] = {}
-        # Serializes creation of new ``_session_locks[key]`` entries so
-        # two coroutines racing on the same session_key don't end up
-        # each creating a fresh lock and writing to ``Session`` in
-        # parallel.  Same pattern as ``Femtobot._acquire_session_lock``
-        # (see B1 fix in femtobot/femtobot.py).
-        self._session_locks_lock = asyncio.Lock()
         # Per-session pending queues for mid-turn message injection.
         # When a session has an active task, new messages for that session
         # are routed here instead of creating a new task.
         self._pending_queues: dict[str, asyncio.Queue] = {}
         # FEMTOBOT_MAX_CONCURRENT_REQUESTS: <=0 means unlimited; default 3.
-        # Audit (H2 of the v0.0.9 fourth-pass review): the
-        # previous ``int(os.environ.get(...))`` crashed startup
-        # with ``ValueError`` if the env var was set to a
-        # non-integer (e.g. ``"many"``).  We now fall back to
-        # the default and log a warning so operators notice.
-        raw = os.environ.get("FEMTOBOT_MAX_CONCURRENT_REQUESTS", "3")
-        try:
-            _max = int(raw)
-        except (ValueError, TypeError):
-            logger.warning(
-                "FEMTOBOT_MAX_CONCURRENT_REQUESTS={!r} is not an integer;"
-                " falling back to default of 3.",
-                raw,
-            )
-            _max = 3
+        _max = int(os.environ.get("FEMTOBOT_MAX_CONCURRENT_REQUESTS", "3"))
         self._concurrency_gate: asyncio.Semaphore | None = (
             asyncio.Semaphore(_max) if _max > 0 else None
         )
@@ -404,26 +317,9 @@ class AgentLoop:
     ) -> AgentLoop:
         """Create an AgentLoop from config with the common parameter set.
 
-        C1 (REFACTOR_PLAN.md Lote C): this is the canonical factory for
-        embedding Femtobot in another process.  It:
-
-        1. Resolves the model preset (``config.resolve_preset()``).
-        2. Builds the provider via :func:`femtobot.providers.factory.make_provider`.
-        3. Wires the snapshot loaders for ``/model`` rollback.
-        4. Plumbs the default tool-iteration cap and context window.
-
         Extra keyword arguments are forwarded to ``AgentLoop.__init__``,
         allowing callers to override or extend the standard config-derived
         parameters (e.g. ``cron_service``, ``session_manager``).
-
-        Example::
-
-            loop = AgentLoop.from_config(
-                config,
-                bus=MessageBus(),
-                # inject a custom session manager if needed
-                session_manager=MySessionManager(),
-            )
         """
         from femtobot.providers.factory import make_provider
 
@@ -447,7 +343,7 @@ class AgentLoop:
                 preset_snapshot_loader = lambda name: build_provider_snapshot(
                     config, preset_name=name
                 )
-        instance = cls(
+        return cls(
             bus=bus,
             provider=provider,
             workspace=config.workspace_path,
@@ -472,19 +368,8 @@ class AgentLoop:
             model_preset=defaults.model_preset,
             provider_snapshot_loader=provider_snapshot_loader,
             preset_snapshot_loader=preset_snapshot_loader,
-            long_task_config=defaults.long_task,
             **extra,
         )
-        # Keep a back-reference to the full Config so slash commands (e.g.
-        # ``/style``) can mutate live settings at runtime. See
-        # ``femtobot.command.builtin.cmd_style``.
-        instance._config = config
-        # Also expose ``config.agents`` directly so
-        # ``notify_mcp_startup_failures`` and
-        # ``include_mcp_context`` can read their flags without
-        # having to go through ``_config`` (audit H1).
-        instance.agents_config = config.agents
-        return instance
 
     def _apply_provider_snapshot(
         self,
@@ -595,131 +480,8 @@ class AgentLoop:
         logger.info("Registered {} tools: {}", len(registered), registered)
 
     async def _connect_mcp(self) -> None:
-        """Connect configured MCP servers.
-
-        After the underlying ``agent_context.connect_mcp`` completes,
-        surface a startup warning to the user when at least one
-        configured server failed to connect. The warning is gated on
-        ``agents.defaults.notifyMcpStartupFailures`` (default False)
-        to preserve the pre-Phase-6 behavior (log only).
-
-        PR 1.2 (longlogs remediation): in addition to the configured-
-        but-unconnected check, this method also scans the workspace
-        ``AGENTS.md``/``USER.md``/``SOUL.md`` for ``mcp_<server>_*``
-        tool references and persists the list of servers that are
-        referenced but not configured into every session's metadata
-        under ``mcp_missing``. When the new
-        ``tools.mcp.warn_on_missing_references`` flag is True (default),
-        it emits a user-facing warning at startup so the agent no
-        longer pretends to have tools it cannot reach.
-
-        Refs: FEMTOBOT_MCP_IMPROVEMENT_PLAN.md Fase 6.
-        """
+        """Connect configured MCP servers."""
         await agent_context.connect_mcp(self, self.tools)
-
-        configured = set(self._mcp_servers or {})
-        connected = set(self._mcp_stacks or {})
-        missing = configured - connected
-
-        # PR 1.2: scan workspace docs for ``mcp_<server>_*`` references
-        # and persist the unresolved server names into session metadata.
-        # This is what ``/mcp status`` reads back to the user (PR 1.1).
-        try:
-            from femtobot.agent.context import collect_mcp_missing_references
-
-            referenced_missing = collect_mcp_missing_references(
-                workspace=self.workspace,
-                configured_servers=configured | connected,
-            )
-        except Exception:
-            referenced_missing = []
-
-        warn_flag = True
-        try:
-            warn_flag = bool(self.tools_config.mcp.warn_on_missing_references)
-        except Exception:
-            warn_flag = True
-
-        # Persist the list into the startup session so ``/mcp status``
-        # can render it without re-scanning the workspace. Other
-        # sessions created later will inherit the same metadata via
-        # ``session.metadata.get_or_create``.
-        if referenced_missing:
-            try:
-                startup_session = self.sessions.get_or_create("cli:startup")
-                startup_session.metadata["mcp_missing"] = sorted(
-                    referenced_missing
-                )
-                self.sessions.save(startup_session)
-            except Exception:
-                logger.debug(
-                    "Could not persist mcp_missing into session metadata",
-                    exc_info=True,
-                )
-
-        if not missing and not referenced_missing:
-            return
-
-        if missing:
-            logger.warning(
-                "MCP servers configured but not connected at startup: {}. "
-                "Use `/mcp reload` to retry, or check the server logs.",
-                sorted(missing),
-            )
-        if referenced_missing:
-            logger.warning(
-                "MCP servers referenced in workspace docs but not configured: {}. "
-                "Add them to config.json `tools.mcp_servers` and run `/mcp reload`.",
-                sorted(referenced_missing),
-            )
-
-        # Opt-in user-facing warning (default: log only).
-        # Audit (H1 of the v0.0.9 fourth-pass review): the
-        # previous ``try/except Exception`` wrapper silently
-        # caught ``AttributeError`` because ``self.agents_config``
-        # was never assigned.  Now that ``__init__`` initializes
-        # the attribute, we can read the flag directly.
-        notify = bool(
-            getattr(
-                self.agents_config.defaults, "notify_mcp_startup_failures", False
-            )
-        )
-        # ``tools.mcp.warn_on_missing_references`` is a separate, opt-out
-        # flag that defaults to True (PR 0.1). It gates the
-        # referenced-but-not-configured warning independently from the
-        # legacy configured-but-disconnected warning.
-        referenced_notify = warn_flag
-
-        if not notify and not (referenced_missing and referenced_notify):
-            return
-
-        messages: list[str] = []
-        if missing and notify:
-            messages.append(
-                f"⚠ MCP servers unavailable: {sorted(missing)}. "
-                "Their tools will not be available this session. "
-                "Run `/mcp reload` to retry."
-            )
-        if referenced_missing and referenced_notify:
-            messages.append(
-                f"⚠ MCP servers referenced in workspace docs but not configured: "
-                f"{sorted(referenced_missing)}. "
-                "Add them to `tools.mcp_servers` in `.femtobot/config.json` "
-                "and run `/mcp reload`."
-            )
-
-        for content in messages:
-            try:
-                await self.bus.publish_outbound(
-                    OutboundMessage(
-                        channel="cli",
-                        chat_id="startup",
-                        content=content,
-                        metadata={"render_as": "text"},
-                    )
-                )
-            except Exception:
-                logger.debug("Could not publish startup MCP warning", exc_info=True)
 
     def _set_tool_context(
         self,
@@ -739,21 +501,12 @@ class AgentLoop:
         else:
             effective_key = f"{channel}:{chat_id}"
 
-        # Inject the absolute workspace path so MCP-wrapped tools that
-        # require ``workspace_path`` (agy_run_task, claude_run_task) can
-        # auto-fill it from the active request context. See Fase 3 of
-        # FEMTOBOT_MCP_IMPROVEMENT_PLAN.md.
-        merged_metadata = dict(metadata or {})
-        ws = getattr(self, "workspace", None)
-        if ws and isinstance(ws, Path):
-            merged_metadata.setdefault("workspace", str(ws))
-
         request_ctx = RequestContext(
             channel=channel,
             chat_id=chat_id,
             message_id=message_id,
             session_key=effective_key,
-            metadata=merged_metadata,
+            metadata=dict(metadata or {}),
         )
 
         for name in self.tools.tool_names:
@@ -843,12 +596,6 @@ class AgentLoop:
             runtime_state=self,
             inbound_message=msg,
             include_memory_recent_history=include_memory_recent_history,
-            # PR 5.2 (longlogs remediation): surface the actual tools
-            # available this session so the agent never says "I have
-            # no tools" when exec/read_file/grep are clearly reachable.
-            tools_config=self.tools_config,
-            connected_servers=set(self._mcp_stacks or {}),
-            configured_servers=set(self._mcp_servers or {}),
         )
 
     async def _dispatch_command_inline(
@@ -874,19 +621,8 @@ class AgentLoop:
         tasks = self._active_tasks.pop(key, [])
         cancelled = sum(1 for t in tasks if not t.done() and t.cancel())
         for t in tasks:
-            try:
+            with suppress(asyncio.CancelledError, Exception):
                 await t
-            except asyncio.CancelledError:
-                # Expected when we cancel a task; swallow silently.
-                pass
-            except Exception:
-                # Log unexpected failures so cancellation doesn't swallow
-                # real bugs (audit 2026-07-18).
-                logger.exception(
-                    "Task {} for key {} raised during cancellation cleanup",
-                    t,
-                    key,
-                )
         return cancelled
 
     def _effective_session_key(self, msg: InboundMessage) -> str:
@@ -950,30 +686,6 @@ class AgentLoop:
         hook: AgentHook = loop_hook
         if not ephemeral and self._extra_hooks:
             hook = CompositeHook([loop_hook] + self._extra_hooks)
-        # PR 5.3 (longlogs remediation): opt-in ``ToolUseGuardHook``.
-        # When ``agents.defaults.tool_use_guard.enabled`` is True, the
-        # hook injects a one-shot nudge when the agent answers with a
-        # plan / options instead of executing the user's request.
-        tool_use_guard_enabled = bool(
-            getattr(
-                getattr(self.agents_config, "defaults", None),
-                "tool_use_guard",
-                None,
-            )
-            and getattr(
-                self.agents_config.defaults.tool_use_guard,
-                "enabled",
-                False,
-            )
-        )
-        if tool_use_guard_enabled:
-            from femtobot.agent.tool_use_guard import ToolUseGuardHook
-
-            guard = ToolUseGuardHook()
-            if isinstance(hook, CompositeHook):
-                hook._hooks.append(guard)  # noqa: SLF001
-            else:
-                hook = CompositeHook([hook, guard])
 
         async def _checkpoint(payload: dict[str, Any]) -> None:
             if session is None:
@@ -981,22 +693,13 @@ class AgentLoop:
             self._set_runtime_checkpoint(session, payload)
 
         async def _drain_pending(*, limit: int = _MAX_INJECTIONS_PER_TURN) -> list[dict[str, Any]]:
-            """Drain follow-up messages from the pending queue (non-blocking).
+            """Drain follow-up messages from the pending queue.
 
-            Returns up to ``limit`` messages that are already queued
-            (i.e. ``Queue.get_nowait()``); returns ``[]`` immediately
-            when the queue is empty.  The implementation is
-            **deliberately non-blocking** — the runner tests
-            ``if not injections: return False`` and re-evaluates on
-            subsequent iterations of the main loop, so blocking here
-            would deadlock the iteration.
-
-            A previous docstring claimed this function "blocks until
-            at least one result arrives (or timeout)"; that was
-            inaccurate and would have caused a deadlock if a caller
-            actually relied on the documented behavior.  See
-            :meth:`AgentRunner._drain_injections` for the runner
-            side.
+            When no messages are immediately available but sub-agents
+            spawned in this dispatch are still running, blocks until at
+            least one result arrives (or timeout).  This keeps the runner
+            loop alive so subsequent sub-agent completions are consumed
+            in-order rather than dispatched separately.
             """
             if pending_queue is None:
                 return []
@@ -1067,7 +770,6 @@ class AgentLoop:
                     provider_retry_mode=self.provider_retry_mode,
                     progress_callback=on_progress,
                     stream_progress_deltas=on_stream is not None,
-                    reasoning_effort=_current_reasoning_effort(self),
                     retry_wait_callback=on_retry_wait,
                     checkpoint_callback=_checkpoint,
                     injection_callback=_drain_pending,
@@ -1195,31 +897,12 @@ class AgentLoop:
                 )
             )
 
-    async def _acquire_session_lock(self, session_key: str) -> asyncio.Lock:
-        """Return the asyncio.Lock for *session_key*, creating it on demand (B1+).
-
-        Same race-free pattern as ``Femtobot._acquire_session_lock``:
-        a fast-path dict lookup, then a slow path guarded by
-        ``self._session_locks_lock`` so two coroutines racing on a
-        fresh ``session_key`` don't end up with two different locks
-        (which would let them both mutate ``Session`` concurrently).
-        """
-        lock = self._session_locks.get(session_key)
-        if lock is not None:
-            return lock
-        async with self._session_locks_lock:
-            lock = self._session_locks.get(session_key)
-            if lock is None:
-                lock = asyncio.Lock()
-                self._session_locks[session_key] = lock
-            return lock
-
     async def _dispatch(self, msg: InboundMessage) -> None:
         """Process a message: per-session serial, cross-session concurrent."""
         session_key = self._effective_session_key(msg)
         if session_key != msg.session_key:
             msg = dataclasses.replace(msg, session_key_override=session_key)
-        lock = await self._acquire_session_lock(session_key)
+        lock = self._session_locks.setdefault(session_key, asyncio.Lock())
         gate = self._concurrency_gate or nullcontext()
 
         pending: asyncio.Queue | None = None
@@ -1450,9 +1133,6 @@ class AgentLoop:
             workspace=workspace_scope.project_path,
             runtime_state=self,
             inbound_message=msg,
-            tools_config=self.tools_config,
-            connected_servers=set(self._mcp_stacks or {}),
-            configured_servers=set(self._mcp_servers or {}),
         )
         t_wall = time.time()
         final_content, _, all_msgs, stop_reason, _ = await self._run_agent_loop(
@@ -1611,19 +1291,8 @@ class AgentLoop:
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
 
         meta = dict(msg.metadata or {})
-        # When the run streamed content via ``on_stream`` and finished
-        # normally, the per-delta stream already rendered the answer to
-        # the user. The trailing ``OutboundMessage`` here would otherwise
-        # cause the CLI consumer to render the same content a second time
-        # (see femtobot/cli/commands.py:_consume_outbound). Tag it with
-        # ``_streamed=True`` so the consumer knows to suppress the body,
-        # and with ``_stream_end_pending=True`` so the consumer can pair
-        # it with the matching ``on_stream_end`` callback that the runner
-        # already emitted. Channels that do not stream still hit the
-        # fallback path and render the body normally.
         if on_stream is not None and stop_reason not in {"error", "tool_error"}:
             meta["_streamed"] = True
-            meta["_stream_end_pending"] = True
         if turn_latency_ms is not None:
             meta["latency_ms"] = int(turn_latency_ms)
 
@@ -1648,20 +1317,7 @@ class AgentLoop:
             if len(msg.content) > _MAX_INBOUND_PREVIEW_LEN
             else msg.content
         )
-        # Audit (B2 of the v0.0.8 third-pass review): the message
-        # content used to land in the log verbatim (full content
-        # for short messages, 80-char prefix for longer ones),
-        # leaking API keys, tokens, or any secret the user embedded
-        # in their message.  ``scrub_text`` replaces common
-        # credential shapes with ``[REDACTED]`` before logging.
-        # Over-redaction is safe; under-redaction is what we guard
-        # against.
-        logger.info(
-            "Processing message from {}:{}: {}",
-            msg.channel,
-            msg.sender_id,
-            scrub_text(preview),
-        )
+        logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
 
         # Session is already fetched by the caller (_process_message) but
         # ensure it exists in case this handler is invoked independently.
@@ -1694,70 +1350,10 @@ class AgentLoop:
 
     async def _state_command(self, ctx: TurnContext) -> str:
         raw = ctx.msg.content.strip()
-        # M2 (long-task-by-default): when ``by_default=true`` and the inbound
-        # is not already a slash command, mark it as goal-requested so the
-        # runner side will know to bootstrap a sustained goal for this turn.
-        # This is *opt-in* — when ``by_default=false`` the metadata is left
-        # untouched and every existing test keeps passing.
-        long_task_cfg = getattr(self, "long_task_config", None)
-        if long_task_cfg is not None and bool(getattr(long_task_cfg, "by_default", False)):
-            if not raw.startswith("/"):
-                # Sample a single ``time.time()`` so the message and
-                # session metadata carry *the same* ``goal_started_at``.
-                started_at = time.time()
-                meta = dict(ctx.msg.metadata or {})
-                # Use the *implicit* flag only — ``goal_requested`` is
-                # reserved for explicit ``/goal`` slash commands so
-                # ``explicit_goal_requested()`` keeps its strict
-                # semantics.  ``implicit_goal_requested()`` is the
-                # proper predicate for the auto-wrap path.
-                meta.setdefault("goal_requested_implicitly", True)
-                meta.setdefault("goal_started_at", started_at)
-                ctx.msg.metadata = meta
-                # Also propagate into session metadata so the runner
-                # sees it.  Only stamp when there is no active goal
-                # already (a terminal status is allowed — the next
-                # ``long_task`` call will replace it).
-                if ctx.session is not None:
-                    smd = dict(ctx.session.metadata or {})
-                    if not sustained_goal_active(smd):
-                        smd.setdefault("goal_requested_implicitly", True)
-                        smd.setdefault("goal_started_at", started_at)
-                        ctx.session.metadata = smd
         cmd_ctx = CommandContext(
             msg=ctx.msg, session=ctx.session, key=ctx.session_key, raw=raw, loop=self
         )
-        # Detect the case where a slash command was *matched* by the router
-        # but the handler returned None — that means a "context-rewriting
-        # shortcut" (e.g. /goal, /btw) which mutates ``cmd_ctx.msg`` and
-        # expects the rest of the state machine to process it as a normal
-        # turn. We must not classify that as "unknown command".
-        #
-        # Audit 2026-07-18 v5: also include the priority tier (e.g.
-        # ``/restart``, ``/stop``) so the offline ``process_direct`` path
-        # (used by ``femtobot agent -m``) still recognises priority
-        # commands. The interactive ``run()`` path dispatches priority
-        # commands upstream, but the state machine here needs to handle
-        # them too in case they slip through (e.g. tests, future
-        # integrations).
-        raw_norm = raw.lower()
-        matched_shortcut = (
-            raw.startswith("/")
-            and (
-                raw_norm in self.commands._exact
-                or raw_norm in self.commands._priority
-                or any(
-                    raw_norm.startswith(pfx)
-                    for pfx, _ in self.commands._prefix
-                )
-            )
-        )
         result = await self.commands.dispatch(cmd_ctx)
-        # Priority commands (e.g. /restart) live in a separate tier and
-        # are not reached by ``dispatch`` — try them explicitly so the
-        # ``-m`` / offline path still honours them.
-        if result is None and raw_norm in self.commands._priority:
-            result = await self.commands.dispatch_priority(cmd_ctx)
         if result is not None:
             ctx.outbound = result
             # Shortcut commands skip BUILD and SAVE, so we must persist the
@@ -1773,28 +1369,6 @@ class AgentLoop:
                 self.sessions.save(ctx.session)
                 self._clear_pending_user_turn(ctx.session)
             return "shortcut"
-        # Audit 2026-07-18 v3: slash command the router did not recognise.
-        # Without this branch the input would fall through to the LLM
-        # builder, which would happily invent an answer for ``/tools``,
-        # ``/foo``, etc. — confusing the user. Surface a clear "unknown
-        # command" notice listing the available slash commands instead.
-        if raw.startswith("/") and not matched_shortcut:
-            ctx.outbound = self._reply_unknown_command(
-                ctx.msg.channel, ctx.msg.chat_id, raw
-            )
-            ctx.user_persisted_early = self._persist_user_message_early(
-                ctx.msg, ctx.session, _command=True
-            )
-            ctx.session.add_message("assistant", ctx.outbound.content, _command=True)
-            self.sessions.save(ctx.session)
-            self._clear_pending_user_turn(ctx.session)
-            return "shortcut"
-        # Matched shortcut that rewrote ctx.msg and returned None — let
-        # the state machine continue as a normal turn.
-        if matched_shortcut:
-            # Sync the rewritten message back into ctx so BUILD sees the
-            # updated content.
-            ctx.msg = cmd_ctx.msg
         return "dispatch"
 
     async def _state_build(self, ctx: TurnContext) -> str:
@@ -1872,44 +1446,11 @@ class AgentLoop:
         ctx.all_messages = all_msgs
         ctx.stop_reason = stop_reason
         ctx.had_injections = had_injections
-        # Only sustained-goal continuation slices are scheduled when the
-        # runner exhausted the iteration budget. Other stop reasons
-        # (``completed``, ``empty_final_response``, ``intent_only``,
-        # ``tool_error``, ``error``) all represent the runner reaching a
-        # legitimate terminal state for *this* turn — queuing another
-        # ``InboundMessage`` here would (a) fire a phantom turn with no
-        # new user input and (b) leak ``_internal_continuation_pending``
-        # into the next legitimate turn, making the next prompt appear
-        # as a continuation slice. See femtobot/cli/commands.py:_consume_outbound
-        # for the consumer-side symptoms (the "Falso-positivo de novo"
-        # loop observed in longlogs.txt).
-        if stop_reason == "max_iterations":
-            await turn_continuation.maybe_continue_turn(ctx)
-        else:
-            # Make sure no stale continuation flag from a previous turn
-            # poisons the next legitimate user message.
-            turn_continuation.clear_internal_continuation_state(
-                ctx.session.metadata if ctx.session is not None else {}
-            )
-            ctx.msg.metadata.pop(
-                turn_continuation.INTERNAL_CONTINUATION_PENDING_META, None
-            )
+        await turn_continuation.maybe_continue_turn(ctx)
         return "ok"
 
     async def _state_save(self, ctx: TurnContext) -> str:
         turn_continuation.prepare_save_boundary(ctx)
-
-        # NOTE: ``_state_run`` (which always runs immediately before this
-        # state) already owns ``INTERNAL_CONTINUATION_PENDING_META`` on
-        # ``ctx.msg.metadata`` — it sets the flag when it just scheduled a
-        # legitimate ``max_iterations`` continuation, and clears it for
-        # every other stop reason. Popping it again here unconditionally
-        # would erase the flag ``_state_run`` just set for the
-        # max_iterations case, one state transition later in the same
-        # turn — which made ``internal_continuation_pending()`` always
-        # false downstream (in ``run()``'s dispatch loop), firing a
-        # premature ``turn_completed`` / idle status while an internal
-        # continuation slice was still queued to run.
 
         if (
             ctx.final_content is None or not ctx.final_content.strip()
@@ -2061,46 +1602,6 @@ class AgentLoop:
     def _clear_pending_user_turn(self, session: Session) -> None:
         session.metadata.pop(self._PENDING_USER_TURN_KEY, None)
 
-    @staticmethod
-    def _reply_unknown_command(
-        channel: str, chat_id: str, raw: str
-    ) -> OutboundMessage:
-        """Build a friendly 'unknown slash command' notice.
-
-        Triggered when the user types something starting with ``/`` that
-        the command router did not match. The previous behaviour was to
-        silently fall through to the LLM builder, which would happily
-        invent an answer (e.g. for ``/tools``). Now we surface a clear
-        list of the available slash commands so the user can self-correct.
-        """
-        from femtobot.command.builtin import BUILTIN_COMMAND_SPECS
-
-        # Keep the first token of the command so the user can spot a
-        # typo at a glance.
-        head = raw.split(maxsplit=1)[0] if raw else "(empty)"
-        # Cap the listing to the first 20 commands to avoid an
-        # overwhelming reply; full palette is still discoverable via
-        # ``/help``.
-        spec_lines = []
-        for spec in BUILTIN_COMMAND_SPECS[:20]:
-            hint = f" {spec.arg_hint}" if spec.arg_hint else ""
-            spec_lines.append(f"  • `{spec.command}{hint}` — {spec.title}")
-        more = (
-            ""
-            if len(BUILTIN_COMMAND_SPECS) <= 20
-            else f"\n  …and {len(BUILTIN_COMMAND_SPECS) - 20} more (use `/help`)"
-        )
-        content = (
-            f"Unknown command: `{head}`.\n\n"
-            f"Available commands:\n" + "\n".join(spec_lines) + more
-        )
-        return OutboundMessage(
-            channel=channel,
-            chat_id=chat_id,
-            content=content,
-            metadata={"_unknown_command": head},
-        )
-
     def _clear_runtime_checkpoint(self, session: Session) -> None:
         if self._RUNTIME_CHECKPOINT_KEY in session.metadata:
             session.metadata.pop(self._RUNTIME_CHECKPOINT_KEY, None)
@@ -2203,18 +1704,8 @@ class AgentLoop:
         on_stream_end: Callable[..., Awaitable[None]] | None = None,
         ephemeral: bool = False,
         tools: ToolRegistry | None = None,
-        execution_mode: str | None = None,
     ) -> OutboundMessage | None:
-        """Process a message directly and return the outbound payload.
-
-        M4 (long-task-by-default): ``execution_mode`` is one of
-        ``"sync"`` (default behavior, no continuation queue) or
-        ``"goal_aware"`` (creates an ephemeral ``pending_queue`` so that
-        sustained-goal continuation slices and ``ask_orchestrator`` waits
-        can complete within the same call).  When ``None`` we honor the
-        loop's ``LongTaskConfig.sdk_execution_mode`` flag; ``by_default=true``
-        callers get ``"goal_aware"`` automatically.
-        """
+        """Process a message directly and return the outbound payload."""
         await self._connect_mcp()
         msg = InboundMessage(
             channel=channel,
@@ -2223,27 +1714,8 @@ class AgentLoop:
             content=content,
             media=media or [],
         )
-        # Resolve execution mode from config when not supplied.
-        if execution_mode is None:
-            cfg = getattr(self, "long_task_config", None)
-            execution_mode = (
-                getattr(cfg, "sdk_execution_mode", "sync")
-                if cfg is not None
-                else "sync"
-            )
-        execution_mode = str(execution_mode)
-        # Reject unknown values explicitly — a typo like ``"goal-aware"`` would
-        # otherwise silently fall back to ``"sync"`` and bypass the
-        # long-task continuation queue.
-        if execution_mode not in ("sync", "goal_aware"):
-            raise ValueError(
-                f"Invalid execution_mode={execution_mode!r}; "
-                "expected 'sync' or 'goal_aware'."
-            )
-        use_local_queue = execution_mode == "goal_aware"
         # Share the dispatch lock so direct calls serialize with bus turns.
-        lock = await self._acquire_session_lock(session_key)
-        local_queue: asyncio.Queue | None = None
+        lock = self._session_locks.setdefault(session_key, asyncio.Lock())
         try:
             async with lock:
                 kwargs: dict[str, Any] = {
@@ -2255,28 +1727,10 @@ class AgentLoop:
                 }
                 if tools is not None:
                     kwargs["tools"] = tools
-                if use_local_queue:
-                    local_queue = asyncio.Queue()
-                    kwargs["pending_queue"] = local_queue
-                outbound = await self._process_message(
+                return await self._process_message(
                     msg,
                     **kwargs,
                 )
-                # Drain continuation slices when the user asked for the
-                # goal-aware path.  Each slice re-enters ``_process_message``
-                # via the local queue; we run them serially.
-                if use_local_queue and local_queue is not None:
-                    while not local_queue.empty():
-                        try:
-                            next_msg = local_queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            break
-                        kwargs["pending_queue"] = local_queue
-                        outbound = await self._process_message(
-                            next_msg,
-                            **kwargs,
-                        )
-                return outbound
         finally:
             await self._runtime_events().run_status_changed(msg, session_key, "idle")
             self._runtime_events().clear_turn(session_key)

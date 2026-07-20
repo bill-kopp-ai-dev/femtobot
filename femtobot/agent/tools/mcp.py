@@ -1,15 +1,13 @@
 """MCP client: connects to MCP servers and wraps their tools as native femtobot tools."""
 
 import asyncio
-import json
 import os
 import re
 import shutil
 import urllib.parse
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack, suppress
-from pathlib import Path
-from typing import Any, Mapping, TextIO
+from typing import Any, Mapping
 from weakref import WeakKeyDictionary
 
 import httpx
@@ -48,116 +46,6 @@ _SANITIZE_RE = re.compile(r"_+")
 _RELOAD_LOCKS: WeakKeyDictionary[Any, asyncio.Lock] = WeakKeyDictionary()
 _ReconnectCallback = Callable[[str, str, Tool], Awaitable[Tool | None]]
 
-# Side-channel cache for context builders that don't have direct access to
-# the AgentLoop. Populated by ``connect_mcp_servers`` and cleared by
-# ``_unregister_server_tools`` / ``_close_server``.
-#
-# Refs: FEMTOBOT_MCP_IMPROVEMENT_PLAN.md Fase 2.
-_CONNECTED_TOOLS_CACHE: dict[str, list[str]] = {}
-_PROMPT_CONTENT_CACHE: dict[str, str] = {}
-
-# Pattern matching the persistence_protocol prompts exposed by the agy and
-# claude MCP servers. When an MCP prompt name matches this pattern, its
-# rendered content is injected into the system prompt as a "persistence
-# protocol" section.
-#
-# Refs: FEMTOBOT_MCP_IMPROVEMENT_PLAN.md Fase 7.
-_PERSISTENCE_PROTOCOL_RE = re.compile(r".*_persistence_protocol$")
-
-# Tools that *require* an absolute ``workspace_path``. When the agent calls
-# one of these without passing ``workspace_path``, ``MCPToolWrapper.execute``
-# fills it in from the active request context — see ``_resolve_active_workspace``.
-#
-# This is purely additive: an explicit ``workspace_path`` from the caller
-# always wins.
-#
-# Refs: FEMTOBOT_MCP_IMPROVEMENT_PLAN.md Fase 3.
-_MCP_WORKSPACE_AWARE_TOOLS: frozenset[str] = frozenset({
-    "agy_run_task",
-    "claude_run_task",
-})
-
-
-def get_connected_servers() -> dict[str, list[str]]:
-    """Snapshot of (server_name -> sorted tool names) for currently connected MCPs.
-
-    Returns a copy; callers may iterate freely without affecting the cache.
-    """
-    return {k: list(v) for k, v in _CONNECTED_TOOLS_CACHE.items()}
-
-
-def _update_connected_cache(server_name: str, tool_names: list[str]) -> None:
-    """Replace the cached tool list for *server_name* (sorted)."""
-    _CONNECTED_TOOLS_CACHE[server_name] = sorted(tool_names)
-
-
-def _clear_connected_cache(server_name: str | None = None) -> None:
-    """Remove one server (or all) from the cache."""
-    if server_name is None:
-        _CONNECTED_TOOLS_CACHE.clear()
-    else:
-        _CONNECTED_TOOLS_CACHE.pop(server_name, None)
-
-
-def cache_prompt_content(tool_name: str, content: str) -> None:
-    """Cache the rendered prompt content for a ``*_persistence_protocol`` tool."""
-    _PROMPT_CONTENT_CACHE[tool_name] = content
-
-
-def get_prompt_content(tool_name: str) -> str | None:
-    """Return previously cached prompt content, or ``None`` if absent."""
-    return _PROMPT_CONTENT_CACHE.get(tool_name)
-
-
-def is_persistence_protocol_prompt(prompt_name: str) -> bool:
-    """Whether a prompt name matches the persistence_protocol pattern."""
-    return bool(_PERSISTENCE_PROTOCOL_RE.match(prompt_name))
-
-
-def get_cached_persistence_protocols(server_name: str | None = None) -> list[tuple[str, str]]:
-    """Return ``(tool_name, content)`` pairs for cached persistence_protocol prompts.
-
-    Filters by the persistence_protocol name pattern (the server name
-    argument is currently informational and reserved for future per-server
-    scoping). The returned snippets are bounded by
-    :data:`MAX_PROMPT_SNIPPET_CHARS` so the system prompt does not balloon.
-    """
-    return [
-        (name, content)
-        for name, content in _PROMPT_CONTENT_CACHE.items()
-        if is_persistence_protocol_prompt(name) and content
-    ]
-
-
-# Bound the injected snippet so a runaway prompt does not blow the prompt budget.
-MAX_PROMPT_SNIPPET_CHARS: int = 2000
-
-
-def _resolve_active_workspace() -> str | None:
-    """Best-effort: return the workspace path bound to the current request.
-
-    Reads from the ``RequestContext`` contextvar populated by the agent
-    loop. Falls back to ``None`` when no context is set (e.g. direct
-    calls from a REPL or a test).
-
-    Refs: FEMTOBOT_MCP_IMPROVEMENT_PLAN.md Fase 3.
-    """
-    try:
-        from femtobot.agent.tools.context import current_request_context
-
-        ctx = current_request_context()
-        if ctx is None:
-            return None
-        meta = ctx.metadata if isinstance(ctx.metadata, dict) else None
-        if meta:
-            ws = meta.get("workspace")
-            if isinstance(ws, str) and ws:
-                return ws
-    except Exception:
-        # Never raise from a best-effort resolver.
-        return None
-    return None
-
 
 def _sanitize_name(name: str) -> str:
     """Sanitize an MCP-derived name for model API compatibility."""
@@ -179,97 +67,6 @@ def _is_session_terminated(exc: BaseException) -> bool:
         marker in message.lower()
         for marker in ("session terminated", "connection closed")
         for message in messages
-    )
-
-
-# Matches ``AGY_MCP_ALLOWED_ROOTS``, ``CLAUDE_MCP_ALLOWED_ROOTS``, or plain
-# ``ALLOWED_ROOTS``. Servers using the documented pydantic-settings
-# ``env_prefix="<NAME>_MCP_"`` produce keys like ``AGY_MCP_ALLOWED_ROOTS``.
-_ALLOWED_ROOTS_ENV_RE = re.compile(r"^(?:[A-Z0-9_]+_MCP_)?ALLOWED_ROOTS$")
-
-
-def _extract_allowed_roots(env: Mapping[str, str] | None) -> list[Path]:
-    """Extract ``*_MCP_ALLOWED_ROOTS`` (or ``ALLOWED_ROOTS``) from a server's env.
-
-    The value is expected to be a JSON list of path strings, matching the
-    pydantic-settings convention used by both ``agy_mcp_server`` and
-    ``claude_code_mcp`` (``AGY_MCP_ALLOWED_ROOTS='["/foo", "/bar"]'``).
-
-    Returns an empty list when no matching key is found. Defensive against
-    malformed input — never raises. A single warning is logged on the first
-    malformed value seen per call.
-    """
-    if not env:
-        return []
-    for key, raw in env.items():
-        if not isinstance(key, str) or not _ALLOWED_ROOTS_ENV_RE.match(key):
-            continue
-        if not raw or not isinstance(raw, str):
-            return []
-        try:
-            parsed = json.loads(raw)
-        except (ValueError, TypeError):
-            logger.warning(
-                "MCP ALLOWED_ROOTS env var {!r} is not valid JSON; ignoring: {!r}",
-                key,
-                raw[:120],
-            )
-            return []
-        if not isinstance(parsed, list):
-            logger.warning(
-                "MCP ALLOWED_ROOTS env var {!r} must be a JSON list; got {}",
-                key,
-                type(parsed).__name__,
-            )
-            return []
-        roots: list[Path] = []
-        for entry in parsed:
-            if isinstance(entry, str) and entry:
-                roots.append(Path(entry))
-        return roots
-    return []
-
-
-def _validate_workspace_against_allowed_roots(
-    workspace_path: str,
-    allowed_roots: list[Path],
-) -> str | None:
-    """Return an actionable error if ``workspace_path`` is outside ``allowed_roots``.
-
-    Returns ``None`` when valid. Semantics:
-
-    - Empty ``allowed_roots`` -> always valid (no policy; defer to the server).
-    - ``["/"]`` in ``allowed_roots`` -> always valid (documented escape hatch;
-      mirrors the server-side handling of the ``"/"`` wildcard).
-    - Otherwise: ``workspace_path`` must equal one of the roots or be a
-      descendant of one (path-component boundary, not prefix-string match).
-
-    The returned message is meant to be a *user-facing* diagnostic: it names
-    the rejected path, lists the configured roots, and tells the caller what
-    to do instead of retrying with a different invented path.
-    """
-    if not allowed_roots:
-        return None
-    if any(str(r) == "/" for r in allowed_roots):
-        return None
-    try:
-        p = Path(workspace_path).expanduser().resolve()
-    except (OSError, RuntimeError) as exc:
-        return f"invalid workspace_path ({exc!r}); omit it to use the auto-filled workspace"
-    for root in allowed_roots:
-        try:
-            root_resolved = root.expanduser().resolve()
-        except (OSError, RuntimeError):
-            continue
-        if p == root_resolved or str(p).startswith(str(root_resolved) + "/"):
-            return None
-    roots_repr = ", ".join(f"'{r}'" for r in allowed_roots)
-    return (
-        f"workspace_path '{workspace_path}' is outside the MCP server's "
-        f"ALLOWED_ROOTS ({roots_repr}). "
-        f"Omit workspace_path to use the auto-filled active workspace, "
-        f"or pass a subdirectory inside it (e.g. '<active_workspace>/.scratch_<id>/'). "
-        f"Do NOT retry with a different invented path — the server will reject it again."
     )
 
 
@@ -296,101 +93,6 @@ async def _probe_http_url(url: str, timeout: float = 3.0) -> bool:
         return True
     except (OSError, asyncio.TimeoutError):
         return False
-
-
-class _close_file_on_exit:
-    """Async context manager that closes a TextIO handle on exit.
-
-    ``AsyncExitStack.enter_async_context`` only accepts async context
-    managers, but the built-in ``open(...)`` returns a sync one. This
-    adapter makes ``_resolve_mcp_errlog``'s file handles compatible
-    with the existing stack-cleanup pattern used elsewhere in this
-    module (PR 6.1 of the longlogs remediation plan).
-    """
-
-    def __init__(self, handle: TextIO) -> None:
-        self._handle = handle
-
-    async def __aenter__(self) -> TextIO:
-        return self._handle
-
-    async def __aexit__(self, *exc: Any) -> None:
-        try:
-            self._handle.close()
-        except Exception:  # pragma: no cover - close is best-effort
-            pass
-
-
-def _resolve_mcp_errlog(server_name: str) -> TextIO | int:
-    """Resolve the ``errlog`` target for a stdio MCP server.
-
-    ``mcp.client.stdio.stdio_client`` accepts an ``errlog`` parameter
-    that defaults to ``sys.stderr``. When the femtobot runs in an
-    interactive TTY, the MCP subprocess inherits this stderr and every
-    ``INFO mcp.server.lowlevel.server: …`` line ends up interleaved
-    with the user's input (see ``longlogs.txt`` 2026-07-19 issue #1,
-    B2). The fix is to redirect each server's stderr into a per-server
-    rotating log file under the femtobot's runtime data directory so
-    the TUI stays clean while debugging info remains accessible.
-
-    Returns:
-        - An opened writable text file (``TextIO``) on success.
-        - ``subprocess.DEVNULL`` if the runtime data dir cannot be
-          resolved (very early boot before ``get_instance_dir`` is
-          configured). We never fall back to ``sys.stderr`` because
-          that is precisely the bug we are fixing.
-    """
-    import subprocess
-
-    try:
-        from femtobot.config.paths import get_logs_dir
-    except Exception:
-        return subprocess.DEVNULL
-
-    try:
-        logs_dir = get_logs_dir()
-    except Exception:
-        logger.debug(
-            "Could not resolve MCP log dir for server '{}'; routing stderr to DEVNULL",
-            server_name,
-            exc_info=True,
-        )
-        return subprocess.DEVNULL
-
-    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", server_name) or "unknown"
-    log_path = logs_dir / f"mcp-{safe_name}.log"
-    try:
-        # Line-buffered so partial writes don't sit in the buffer during
-        # a crash; append-mode so consecutive sessions in the same
-        # instance dir accumulate history.
-        return open(log_path, "a", buffering=1, encoding="utf-8", errors="replace")
-    except OSError:
-        logger.debug(
-            "Could not open MCP log file '{}'; routing stderr to DEVNULL",
-            log_path,
-            exc_info=True,
-        )
-        return subprocess.DEVNULL
-
-
-def _preflight_check_mcp_url(url: str, *, allow_loopback: bool = True) -> tuple[bool, str]:
-    """Reject unsafe MCP HTTP URLs before any network probe (A2).
-
-    SSRF guard treats ``cfg.url`` the same way ``web_fetch`` does: scheme +
-    hostname + resolved IPs.  Without this, a malicious or accidental
-    ``http://169.254.169.254/...`` config would make the probe (and the
-    transport) try to talk to the EC2 metadata service before any policy
-    could stop it.
-
-    Returns ``(ok, error_message)``.  When ``allow_loopback`` is True, the
-    guard only accepts literal loopback hosts (``localhost``, ``127.0.0.0/8``,
-    ``::1``) — public DNS that resolves to a loopback is still blocked.
-    """
-    from femtobot.security.network import validate_url_target
-
-    if not url:
-        return False, "missing url"
-    return validate_url_target(url, allow_loopback=allow_loopback)
 
 
 def _windows_command_basename(command: str) -> str:
@@ -536,15 +238,7 @@ class MCPToolWrapper(_MCPWrapperBase):
 
     _plugin_discoverable = False
 
-    def __init__(
-        self,
-        session,
-        server_name: str,
-        tool_def,
-        tool_timeout: int = 30,
-        allowed_roots: list[Path] | None = None,
-        capability_mentions: list[str] | None = None,
-    ):
+    def __init__(self, session, server_name: str, tool_def, tool_timeout: int = 30):
         self._set_mcp_connection(session, server_name)
         self._original_name = tool_def.name
         self._name = _sanitize_name(f"mcp_{server_name}_{tool_def.name}")
@@ -552,19 +246,6 @@ class MCPToolWrapper(_MCPWrapperBase):
         raw_schema = tool_def.inputSchema or {"type": "object", "properties": {}}
         self._parameters = _normalize_schema_for_openai(raw_schema)
         self._tool_timeout = tool_timeout
-        # C4 (REFACTOR_PLAN.md Lote C): tags inherited from the server
-        # config (``cfg.capability_mentions``).  These show up in
-        # ``Tool.get_capabilities()`` and surface in the system prompt.
-        self._capability_mentions: list[str] = list(capability_mentions or [])
-        # Server's ALLOWED_ROOTS policy, extracted from cfg.env by
-        # ``connect_mcp_servers``. Used by ``execute`` to short-circuit
-        # workspace_path violations with an actionable message *before*
-        # the round-trip to the server (which would otherwise surface as a
-        # raw ``ValueError: NOT_ALLOWED``).
-        #
-        # Empty list = no policy known client-side; defer entirely to the
-        # server's own enforcement.
-        self._allowed_roots: list[Path] = list(allowed_roots or [])
 
     @property
     def name(self) -> str:
@@ -578,61 +259,8 @@ class MCPToolWrapper(_MCPWrapperBase):
     def parameters(self) -> dict[str, Any]:
         return self._parameters
 
-    def get_capabilities(self) -> list[str]:
-        """C4: forward the server's ``capability_mentions`` plus ``network``.
-
-        MCP tools always reach the network (regardless of whether the
-        server is local), so the registry filter has a meaningful
-        ``network`` capability to query without any extra config.  Any
-        tags declared via ``cfg.capability_mentions`` are appended
-        verbatim and de-duplicated.
-        """
-        caps = ["network", *self._capability_mentions]
-        # Stable order, no duplicates.
-        seen: set[str] = set()
-        out: list[str] = []
-        for c in caps:
-            if c and c not in seen:
-                seen.add(c)
-                out.append(c)
-        return out
-
     async def execute(self, **kwargs: Any) -> str:
         from mcp import types
-
-        # Best-effort workspace_path auto-fill for tools that require it.
-        # Refs: FEMTOBOT_MCP_IMPROVEMENT_PLAN.md Fase 3.
-        if self._original_name in _MCP_WORKSPACE_AWARE_TOOLS and not (
-            isinstance(kwargs.get("workspace_path"), str) and kwargs["workspace_path"]
-        ):
-            workspace = _resolve_active_workspace()
-            if workspace:
-                kwargs = {**kwargs, "workspace_path": workspace}
-
-        # Pre-flight validation: short-circuit ``workspace_path`` violations
-        # against the server's ``ALLOWED_ROOTS`` *before* the round-trip, so
-        # the caller sees an actionable diagnostic instead of a raw
-        # ``ValueError: NOT_ALLOWED: workspace_path is outside allowed roots``
-        # bubbling up from the server. Defensive only — the server still
-        # enforces its own check (the source of truth).
-        #
-        # Skipped when ``allowed_roots`` is empty (no policy known client-side)
-        # or when the tool is not workspace-aware.
-        if (
-            self._original_name in _MCP_WORKSPACE_AWARE_TOOLS
-            and self._allowed_roots
-        ):
-            ws = kwargs.get("workspace_path")
-            if isinstance(ws, str) and ws:
-                err = _validate_workspace_against_allowed_roots(ws, self._allowed_roots)
-                if err is not None:
-                    logger.warning(
-                        "MCP tool '{}' blocked pre-flight: workspace_path='{}' "
-                        "outside allowed_roots",
-                        self._name,
-                        ws,
-                    )
-                    return f"(MCP tool blocked by pre-flight check: {err})"
 
         retried_transient = False
         refreshed_session = False
@@ -979,31 +607,8 @@ async def connect_mcp_servers(
                     env=env,
                     cwd=cfg.cwd or None,
                 )
-                # Route the MCP subprocess stderr to a per-server log
-                # file instead of letting it inherit femtobot's stderr
-                # (issue #1, B2: MCP logs were interleaving with the
-                # interactive TUI). The file handle is registered with
-                # the server_stack so it gets closed on disconnect.
-                errlog_target = _resolve_mcp_errlog(name)
-                if isinstance(errlog_target, TextIO):
-                    await server_stack.enter_async_context(
-                        _close_file_on_exit(errlog_target)
-                    )
-                read, write = await server_stack.enter_async_context(
-                    stdio_client(params, errlog=errlog_target)
-                )
+                read, write = await server_stack.enter_async_context(stdio_client(params))
             elif transport_type == "sse":
-                # A2: reject unsafe URLs pre-flight (SSRF / metadata service).
-                ok, err = _preflight_check_mcp_url(cfg.url, allow_loopback=True)
-                if not ok:
-                    logger.warning(
-                        "MCP server '{}': rejecting unsafe URL {} ({})",
-                        name,
-                        cfg.url,
-                        err,
-                    )
-                    await server_stack.aclose()
-                    return name, None
                 if not await _probe_http_url(cfg.url):
                     logger.warning("MCP server '{}': {} unreachable, skipping", name, cfg.url)
                     await server_stack.aclose()
@@ -1030,17 +635,6 @@ async def connect_mcp_servers(
                     sse_client(cfg.url, httpx_client_factory=httpx_client_factory)
                 )
             elif transport_type == "streamableHttp":
-                # A2: reject unsafe URLs pre-flight (SSRF / metadata service).
-                ok, err = _preflight_check_mcp_url(cfg.url, allow_loopback=True)
-                if not ok:
-                    logger.warning(
-                        "MCP server '{}': rejecting unsafe URL {} ({})",
-                        name,
-                        cfg.url,
-                        err,
-                    )
-                    await server_stack.aclose()
-                    return name, None
                 if not await _probe_http_url(cfg.url):
                     logger.warning("MCP server '{}': {} unreachable, skipping", name, cfg.url)
                     await server_stack.aclose()
@@ -1073,11 +667,6 @@ async def connect_mcp_servers(
             available_wrapped_names = [
                 _sanitize_name(f"mcp_{name}_{tool_def.name}") for tool_def in tools.tools
             ]
-            # Extract the server's ALLOWED_ROOTS from its env (if present) so
-            # ``MCPToolWrapper`` can pre-flight validate workspace_path before
-            # round-tripping. Falls back to an empty list when no policy is
-            # declared client-side (server is the source of truth).
-            allowed_roots = _extract_allowed_roots(cfg.env or None)
             for tool_def in tools.tools:
                 wrapped_name = _sanitize_name(f"mcp_{name}_{tool_def.name}")
                 if (
@@ -1091,17 +680,7 @@ async def connect_mcp_servers(
                         name,
                     )
                     continue
-                wrapper = MCPToolWrapper(
-                    session,
-                    name,
-                    tool_def,
-                    tool_timeout=cfg.tool_timeout,
-                    allowed_roots=allowed_roots,
-                    # C4: forward the server-level ``capability_mentions``
-                    # so the registry filter and system prompt see the
-                    # right tags without per-tool config.
-                    capability_mentions=getattr(cfg, "capability_mentions", None),
-                )
+                wrapper = MCPToolWrapper(session, name, tool_def, tool_timeout=cfg.tool_timeout)
                 registry.register(wrapper)
                 logger.debug("MCP: registered tool '{}' from server '{}'", wrapper.name, name)
                 registered_count += 1
@@ -1152,17 +731,6 @@ async def connect_mcp_servers(
             logger.info(
                 "MCP server '{}': connected, {} capabilities registered", name, registered_count
             )
-
-            # Refresh the side-channel cache for context builders that don't
-            # have direct access to the AgentLoop's registry. Tools registered
-            # here match the prefix ``mcp_<server>_*`` (resources/prompts use
-            # ``_resource_`` / ``_prompt_`` infixes).
-            registered_tools = [
-                t_name
-                for t_name in registry.tool_names
-                if t_name.startswith(_tool_prefix(name))
-            ]
-            _update_connected_cache(name, registered_tools)
             return name, server_stack
 
         except Exception as e:
@@ -1266,65 +834,34 @@ def runtime_lines(
 
 async def connect_missing_servers(state: Any, registry: ToolRegistry) -> None:
     """Connect configured MCP servers that are not currently live."""
-    async with _reload_lock(state):
-        if getattr(state, "_mcp_closing", False):
-            return
-        missing_servers = {
-            name: cfg for name, cfg in state._mcp_servers.items() if name not in state._mcp_stacks
-        }
-        if state._mcp_connecting or not missing_servers:
-            return
-        state._mcp_connecting = True
-        try:
-            connected = await connect_mcp_servers(missing_servers, registry)
-            if getattr(state, "_mcp_closing", False):
-                for stack in connected.values():
-                    with suppress(Exception):
-                        await stack.aclose()
-                return
-            state._mcp_stacks.update(connected)
-            _attach_reconnect_handlers(state, registry, connected)
-            state._mcp_connected = bool(state._mcp_stacks)
-            if connected:
-                logger.info("MCP connected servers: {}", sorted(connected))
-            else:
-                logger.warning("No MCP servers connected successfully (will retry next message)")
-        except asyncio.CancelledError:
-            # Audit (H4 of the v0.0.9 fourth-pass review): this
-            # branch was shadowed by the ``except BaseException``
-            # below (BaseException is a superclass of
-            # CancelledError).  Python picks the first matching
-            # except clause, so when CancelledError was raised, the
-            # first branch ran as expected — *but* the dead code
-            # confused readers and made the cancel path
-            # ungrep-able.  We re-raise after logging so cancellation
-            # propagates as designed (the outer
-            # ``state._mcp_connecting = False`` in the ``finally``
-            # block still runs).
-            logger.warning("MCP connection cancelled (will retry next message)")
-            state._mcp_connected = bool(state._mcp_stacks)
-            raise
-        except Exception as e:
-            # ``BaseException`` was used here previously, but that
-            # also caught ``CancelledError`` (shadowing the explicit
-            # branch above) and ``SystemExit`` / ``KeyboardInterrupt``,
-            # which should propagate.  ``Exception`` is the right
-            # boundary for "MCP failed, log and continue".
-            logger.warning("Failed to connect MCP servers (will retry next message): {}", e)
-            state._mcp_connected = bool(state._mcp_stacks)
-        finally:
-            state._mcp_connecting = False
+    missing_servers = {
+        name: cfg for name, cfg in state._mcp_servers.items() if name not in state._mcp_stacks
+    }
+    if state._mcp_connecting or not missing_servers:
+        return
+    state._mcp_connecting = True
+    try:
+        connected = await connect_mcp_servers(missing_servers, registry)
+        state._mcp_stacks.update(connected)
+        _attach_reconnect_handlers(state, registry, connected)
+        state._mcp_connected = bool(state._mcp_stacks)
+        if connected:
+            logger.info("MCP connected servers: {}", sorted(connected))
+        else:
+            logger.warning("No MCP servers connected successfully (will retry next message)")
+    except asyncio.CancelledError:
+        logger.warning("MCP connection cancelled (will retry next message)")
+        state._mcp_connected = bool(state._mcp_stacks)
+    except BaseException as e:
+        logger.warning("Failed to connect MCP servers (will retry next message): {}", e)
+        state._mcp_connected = bool(state._mcp_stacks)
+    finally:
+        state._mcp_connecting = False
 
 
 async def reload_servers(state: Any, registry: ToolRegistry) -> dict[str, Any]:
     """Reconcile live MCP connections with the current config file."""
     async with _reload_lock(state):
-        if getattr(state, "_mcp_closing", False):
-            return {
-                "ok": False,
-                "message": "MCP connections are shutting down.",
-                "requires_restart": True,
-            }
         try:
             from femtobot.config.loader import load_config, resolve_config_env_vars
 
@@ -1366,15 +903,6 @@ async def reload_servers(state: Any, registry: ToolRegistry) -> dict[str, Any]:
         connected: dict[str, AsyncExitStack] = {}
         if to_connect:
             connected = await connect_mcp_servers(to_connect, registry)
-            if getattr(state, "_mcp_closing", False):
-                for stack in connected.values():
-                    with suppress(Exception):
-                        await stack.aclose()
-                return {
-                    "ok": False,
-                    "message": "MCP connections are shutting down.",
-                    "requires_restart": True,
-                }
             state._mcp_stacks.update(connected)
             _attach_reconnect_handlers(state, registry, connected)
 
@@ -1514,8 +1042,6 @@ async def _refresh_terminated_server(
     stale_tool: Tool,
 ) -> Tool | None:
     async with _reload_lock(state):
-        if getattr(state, "_mcp_closing", False):
-            return None
         cfg = state._mcp_servers.get(server_name)
         if cfg is None:
             logger.warning(
@@ -1537,11 +1063,6 @@ async def _refresh_terminated_server(
         await _close_server(state, server_name)
 
         connected = await connect_mcp_servers({server_name: cfg}, registry)
-        if getattr(state, "_mcp_closing", False):
-            for stack in connected.values():
-                with suppress(Exception):
-                    await stack.aclose()
-            return None
         state._mcp_stacks.update(connected)
         _attach_reconnect_handlers(state, registry, connected)
         state._mcp_connected = bool(state._mcp_stacks)
@@ -1569,15 +1090,7 @@ def _unregister_server_tools(state: Any, registry: ToolRegistry, server_name: st
     for tool_name in list(registry.tool_names):
         if tool_name.startswith(prefix):
             registry.unregister(tool_name)
-            # Also drop cached prompt content for any prompt owned by this server.
-            _PROMPT_CONTENT_CACHE.pop(tool_name, None)
             removed += 1
-    # Sync the side-channel cache so context builders don't show stale tools.
-    if removed:
-        _update_connected_cache(
-            server_name,
-            [n for n in registry.tool_names if n.startswith(prefix)],
-        )
     return removed
 
 
@@ -1589,33 +1102,3 @@ async def _close_server(state: Any, server_name: str) -> None:
         await stack.aclose()
     except (RuntimeError, BaseExceptionGroup):
         logger.debug("MCP server '{}' cleanup error (can be ignored)", server_name)
-    # Clear the side-channel cache for this server so context builders see
-    # the right "connected" picture on the next ``build_system_prompt``.
-    _clear_connected_cache(server_name)
-
-
-async def close_mcp_servers(state: Any) -> None:
-    """Close every MCP connection while excluding reconnect and hot reload.
-
-    Sets ``state._mcp_closing`` so concurrent ``connect_missing_servers`` /
-    ``reload_servers`` / ``_refresh_terminated_server`` calls bail out
-    cleanly instead of racing the shutdown.
-
-    Ported from nanobot — femtobot previously lacked this guard, so
-    shutdown paths could leave orphan AnyIO cancel scopes alive and crash
-    on the next reconnect attempt with ``RuntimeError`` /
-    ``BaseExceptionGroup``.
-    """
-    state._mcp_closing = True
-    async with _reload_lock(state):
-        connections = list(state._mcp_stacks.items())
-        state._mcp_stacks.clear()
-        for name, stack in connections:
-            try:
-                await stack.aclose()
-            except (RuntimeError, BaseExceptionGroup):
-                logger.debug("MCP server '{}' cleanup error (can be ignored)", name)
-            # Clear the side-channel cache so context builders see an empty
-            # connected picture the next time ``build_system_prompt`` runs.
-            _clear_connected_cache(name)
-        state._mcp_connected = False

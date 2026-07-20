@@ -5,8 +5,6 @@ import os
 import select
 import signal
 import sys
-import threading
-import uuid
 from contextlib import nullcontext, suppress
 from pathlib import Path
 from typing import Any
@@ -44,7 +42,6 @@ from prompt_toolkit.application import run_in_terminal  # noqa: E402
 from prompt_toolkit.formatted_text import ANSI, HTML  # noqa: E402
 from prompt_toolkit.history import FileHistory  # noqa: E402
 from prompt_toolkit.patch_stdout import patch_stdout  # noqa: E402
-from prompt_toolkit.styles import Style  # noqa: E402
 from rich.console import Console  # noqa: E402
 from rich.markdown import Markdown  # noqa: E402
 from rich.text import Text  # noqa: E402
@@ -60,27 +57,6 @@ from femtobot.utils.restart import (  # noqa: E402
     format_restart_completed_message,
     should_show_cli_restart_notice,
 )
-
-
-def _build_simple_renderer(config_obj, *, render_markdown: bool = True):
-    """Build a StreamRenderer for the active agent loop.
-
-    Phase 4 cleanup — the parity ``build_renderer`` factory was
-    removed. We construct the mirror's ``StreamRenderer`` directly,
-    reading ``bot_name`` and ``bot_icon`` from the resolved
-    ``Config`` (with safe fallbacks if the user's config does not
-    define them). This keeps the call-sites in this module unchanged
-    from the parity days.
-    """
-    defaults = getattr(config_obj.agents, "defaults", None) if config_obj else None
-    bot_name = getattr(defaults, "bot_name", None) or "Femtobot"
-    bot_icon = getattr(defaults, "bot_icon", None) or "\U0001f408"
-    return StreamRenderer(
-        render_markdown=render_markdown,
-        show_spinner=True,
-        bot_name=bot_name,
-        bot_icon=bot_icon,
-    )
 
 
 def _sanitize_surrogates(text: str) -> str:
@@ -158,14 +134,6 @@ def _heartbeat_has_active_tasks(content: str) -> bool:
 
 _PROMPT_SESSION: PromptSession | None = None
 _SAVED_TERM_ATTRS = None  # original termios settings, restored on exit
-# Camada 5 — track the most recently created renderer so we can
-# print the user-box + input-gap before the next prompt. Set by the
-# REPL when a new turn starts; cleared on exit. Type is ``Any`` because
-# the factory may return a :class:`StreamRenderer` (legacy ``off``
-# profile) or a :class:`ParityStreamRenderer` (``compat`` profile);
-# both expose the same surface used below (``print_input_gap`` /
-# ``print_user_box``).
-_ACTIVE_RENDERER: Any = None
 
 
 def _flush_pending_tty_input() -> None:
@@ -203,13 +171,7 @@ def _restore_terminal() -> None:
 
 
 def _init_prompt_session() -> None:
-    """Create the prompt_toolkit session with persistent file history.
-
-    Camada 1 wires the multiline filter, slash completer, and file-mention
-    completer into the underlying ``PromptSession``. All three are
-    feature-flagged by ``agents.cli.*`` and gracefully degrade to the
-    pre-Camada-1 behavior if the active config is missing or malformed.
-    """
+    """Create the prompt_toolkit session with persistent file history."""
     global _PROMPT_SESSION, _SAVED_TERM_ATTRS
 
     # Save terminal state so we can restore it on exit
@@ -223,95 +185,11 @@ def _init_prompt_session() -> None:
     history_file = get_cli_history_path()
     history_file.parent.mkdir(parents=True, exist_ok=True)
 
-    multiline_mode, completer = _build_prompt_session_features()
-    session_kwargs: dict = {
-        "history": SafeFileHistory(str(history_file)),
-        "enable_open_in_editor": False,
-    }
-    if completer is not None:
-        session_kwargs["completer"] = completer
-        session_kwargs["complete_while_typing"] = True
-    if multiline_mode == "off":
-        session_kwargs["multiline"] = False
-    else:
-        from prompt_toolkit.filters import Condition
-
-        def _multiline_filter() -> bool:
-            """Decide whether the current input buffer is in multiline mode.
-
-            ``prompt_toolkit.filters.Condition`` calls this callable with no
-            arguments, so we read the focused buffer via ``get_app()``.
-            Returning True keeps the cursor on the same line when the user
-            presses Enter (i.e. they want a newline, not a submit).
-            """
-            from prompt_toolkit.application.current import get_app
-
-            try:
-                app = get_app()
-                buf = app.layout.get_focused_buffer()
-                text = buf.text if buf is not None else ""
-            except Exception:
-                return False
-            return _wants_multiline_text(text)
-
-        session_kwargs["multiline"] = Condition(_multiline_filter)
-
-    _PROMPT_SESSION = PromptSession(**session_kwargs)
-
-
-def _build_prompt_session_features() -> tuple[str, object | None]:
-    """Return ``(multiline_mode, completer)`` honoring the active config.
-
-    Phase 4 cleanup — the parity completers (``SlashCompleter``,
-    ``FileMentionCompleter``) and the slash+file-mention config
-    flags lived in the deleted parity modules. We keep this
-    helper so the surrounding code structure is preserved, but the
-    returned completer is now always ``None`` and the multiline
-    mode defaults to ``"backslash"`` (the nanobot default).
-    """
-    return "backslash", None
-
-
-def _wants_multiline_text(text: str) -> bool:
-    """Pure decision: should ``text`` be in multiline mode right now?
-
-    Two escape signals are supported:
-      * trailing ``\\`` — the user wants a newline (continuation)
-      * trailing ``[EOF]`` (possibly with surrounding whitespace) — the
-        user wants to submit a multiline block
-
-    Returns False for empty text or for any input that ends in a
-    "submit-able" state (no escape marker).
-    """
-    if not text:
-        return False
-    if text.endswith("\\"):
-        return True
-    if text.rstrip().endswith("[EOF]"):
-        return True
-    return False
-
-
-def submit_multiline_transform(text: str) -> str:
-    """Strip trailing ``\\`` escape markers, collapsing them into newlines.
-
-    For each ``\\\n`` in the buffer, replace with ``\\n``. Called right before
-    submitting input when multiline mode is on, so the trailing backslash
-    used as a 'continue' signal is converted into the literal newline the
-    user intended.
-    """
-    return text.replace("\\\n", "\n")
-
-
-def _get_cli_multiline_mode() -> str:
-    """Read ``agents.cli.multiline`` from the active config, defaulting to 'backslash'."""
-    try:
-        from femtobot.config.loader import get_active_config
-
-        cfg = get_active_config()
-        return cfg.agents.defaults.cli.multiline
-    except Exception:
-        return "backslash"
+    _PROMPT_SESSION = PromptSession(
+        history=SafeFileHistory(str(history_file)),
+        enable_open_in_editor=False,
+        multiline=False,  # Enter submits (single line mode)
+    )
 
 
 def _make_console() -> Console:
@@ -335,34 +213,8 @@ def _print_agent_response(
     render_markdown: bool,
     metadata: dict | None = None,
     show_header: bool = True,
-    _await_via_run_in_terminal: bool = False,
 ) -> None:
-    """Render assistant response with consistent terminal styling.
-
-    Phase 4 cleanup — ``_print_agent_response`` previously wrote
-    directly to ``sys.stdout`` via Rich's ``Console.print``, which
-    conflicted with prompt_toolkit's active input loop. The nanobot
-    baseline routes async interjections through
-    ``prompt_toolkit.application.run_in_terminal`` so the prompt
-    is paused, the line is written, then the prompt resumes. We
-    keep a sync form (default, used by the startup-drain path
-    before the REPL begins) and add the async form via the
-    ``_await_via_run_in_terminal=True`` flag for the REPL-time
-    paths.
-
-    The bug #30 fix is unrelated; see issue surfaced 2026-07-20
-    where the body render raced the prompt and produced a loop
-    where the response text was echoed back as input on the
-    next iteration.
-    """
-    if _await_via_run_in_terminal:
-        return _print_agent_response_in_terminal(
-            response,
-            render_markdown=render_markdown,
-            metadata=metadata,
-            show_header=show_header,
-        )
-
+    """Render assistant response with consistent terminal styling."""
     console = _make_console()
     content = response or ""
     body = _response_renderable(content, render_markdown, metadata)
@@ -371,44 +223,6 @@ def _print_agent_response(
         console.print(f"[cyan]{__logo__} Femtobot[/cyan]")
     console.print(body)
     console.print()
-
-
-async def _print_agent_response_in_terminal(
-    response: str,
-    render_markdown: bool,
-    metadata: dict | None = None,
-    show_header: bool = True,
-) -> None:
-    """Async form of ``_print_agent_response`` that yields control to prompt_toolkit.
-
-    See ``_print_agent_response`` for the rationale. This wrapper
-    runs the write inside ``run_in_terminal`` so prompt_toolkit
-    cleanly pauses its renderer, lets us print, then restores
-    the prompt state — eliminating the bug where the agent's
-    body was echoed back into the prompt_toolkit input queue.
-    """
-    from prompt_toolkit.application import run_in_terminal  # local import
-    from prompt_toolkit.formatted_text import ANSI
-    from prompt_toolkit import print_formatted_text
-
-    content = response or ""
-
-    def _write() -> None:
-        ansi = _render_interactive_ansi(
-            lambda c: (
-                c.print(),
-                (
-                    c.print(f"[cyan]{__logo__} Femtobot[/cyan]")
-                    if show_header
-                    else c.print()
-                ),
-                c.print(_response_renderable(content, render_markdown, metadata)),
-                c.print(),
-            )
-        )
-        print_formatted_text(ANSI(ansi), end="")
-
-    await run_in_terminal(_write)
 
 
 def _response_renderable(content: str, render_markdown: bool, metadata: dict | None = None):
@@ -586,142 +400,23 @@ def _is_exit_command(command: str) -> bool:
     return command.lower() in EXIT_COMMANDS
 
 
-async def _read_interactive_input_async(config=None) -> str:
+async def _read_interactive_input_async() -> str:
     """Read user input using prompt_toolkit (handles paste, history, display).
 
     prompt_toolkit natively handles:
     - Multiline paste (bracketed paste mode)
     - History navigation (up/down arrows)
     - Clean display (no ghost characters or artifacts)
-
-    Camada 5 — prints the input gap + user-box header before each
-    prompt, so there's clear separation from the previous turn.
-
-    ``config`` — the active Femtobot config (used to read the live
-    ``margin_x`` so the ``You:`` prompt lines up with the agent reply).
-    Optional for backward-compat with any legacy call site that hasn't
-    been updated yet.
     """
     if _PROMPT_SESSION is None:
         raise RuntimeError("Call _init_prompt_session() first")
-    # Camada 5 — visual setup before user input. Done OUTSIDE patch_stdout
-    # so it survives across the prompt_toolkit context.
-    renderer = _ACTIVE_RENDERER
-    if renderer is not None:
-        # Issue #1 (B1 / B6 / B7 — longlogs.txt 2026-07-19): the
-        # renderer may still be running a ``Live`` display or a
-        # ``console.status`` spinner from a previous turn that did
-        # not stop cleanly (e.g. mid-tool-call cancellation, runner
-        # exception). Force-stop those transports so the upcoming
-        # ``[ 👤 You ]`` header and the user's input do not get
-        # interleaved with leftover spinner frames. ``stop_for_input``
-        # is a no-op when nothing is running, so this is safe to call
-        # every loop iteration.
-        try:
-            renderer.stop_for_input()
-        except Exception:
-            logger.debug("stop_for_input before prompt failed", exc_info=True)
-        # Phase 4 cleanup — the parity-only renderers exposed
-        # ``print_input_gap``/``print_user_box``/``print_input_bar``
-        # helpers to draw a Claude-style accent row above the input
-        # box. The mirror's ``StreamRenderer`` does not implement
-        # them; we call via ``getattr`` so missing-attribute is a
-        # silent no-op (the legacy profile had no row at all).
-        for parity_method in ("print_input_gap", "print_user_box", "print_input_bar"):
-            parity_fn = getattr(renderer, parity_method, None)
-            if parity_fn is not None:
-                try:
-                    parity_fn()
-                except Exception:
-                    pass
-    # Camada 5 — apply lateral margin to the prompt so it lines up with
-    # the agent reply (which already receives padding via the Markdown
-    # renderer). Without this the prompt sits flush against the
-    # terminal's left edge while the agent's reply stays indented.
-    margin_spaces = ""
-    spacing_obj = (
-        getattr(renderer, "_spacing", None) if renderer is not None else None
-    )
-    if spacing_obj is not None and hasattr(spacing_obj, "margin_x"):
-        margin_spaces = " " * spacing_obj.margin_x
-    # The legacy profile keeps the original "You:" markup byte-identical;
-    # the parity profile returns the Claude-style prompt row and toolbar:
-    #
-    #   ────────────────  (printed via ``print_input_bar()``)
-    #   ❯  nova mensagem▌
-    #   ────────────────  (via ``bottom_toolbar``)
-    #   ▌ manual mode on
-    #
-    # This matches the reference screenshot more closely than printing a
-    # free-floating footer after the prompt.
-    # Phase 4 cleanup — the ``input_prompt_markup`` /
-    # ``input_toolbar_markup`` attributes lived on the parity
-    # ``ParityStreamRenderer`` and were never carried over to the
-    # nanobot mirror's ``StreamRenderer``. Reading them via direct
-    # attribute access raises ``AttributeError`` the moment the
-    # user types into the prompt (see issue surfaced during the
-    # 2026-07-20 audit). We use ``getattr`` with ``None`` defaults
-    # so missing-attribute is a silent no-op; the legacy ``You:``
-    # markup and no-toolbar fallback are the post-mirror defaults.
-    if renderer is not None:
-        prompt_markup = getattr(renderer, "input_prompt_markup", None)
-    else:
-        prompt_markup = None
-    if prompt_markup is None:
-        prompt_markup = HTML("<b fg='ansiblue'>You:</b> ")
-    if renderer is not None:
-        toolbar_markup = getattr(renderer, "input_toolbar_markup", None)
-    else:
-        toolbar_markup = None
-    if isinstance(prompt_markup, str) and margin_spaces:
-        # The parity bottom-rule markup is already self-contained; only
-        # inject the margin spacer for the plain legacy markup.
-        prompt_markup = f"{margin_spaces}{prompt_markup}"
-    # prompt_toolkit defaults the bottom-toolbar to ``reverse``, which
-    # inverts the active accent color and paints the toolbar background
-    # solid orange (the screenshot effect that doesn't match Claude's
-    # flat separator line). Override the styles so the toolbar stays
-    # transparent and the content uses the same color as the prompt.
-    input_style = (
-        Style.from_dict(
-            {
-                "bottom-toolbar": "noreverse nobold",
-                "bottom-toolbar.text": "",
-                "": "",  # neutral default
-            }
-        )
-        if renderer is not None and toolbar_markup is not None
-        else None
-    )
     try:
         with patch_stdout():
             return await _PROMPT_SESSION.prompt_async(
-                prompt_markup,
-                bottom_toolbar=toolbar_markup,
-                style=input_style,
+                HTML("<b fg='ansiblue'>You:</b> "),
             )
     except EOFError as exc:
         raise KeyboardInterrupt from exc
-
-
-async def _handle_bash_mode(
-    user_input: str, config, console
-) -> bool:
-    """Run a bash-mode command if ``user_input`` looks like one.
-
-    Returns True when the input was handled (and should NOT enter the
-    agent loop), False otherwise. Respects
-    ``agents.cli.bashModeEnabled`` and surfaces timeouts / non-zero exit
-    codes inline.
-
-    Phase 4 cleanup — the original ``bash_mode.py`` extension was
-    removed with the parity layer. The shell-mode feature was
-    femtobot-only and is not in the nanobot mirror. The hook now
-    is a no-op (returns False) so callers fall through to the
-    normal agent loop. Users who relied on shell-mode can pin to
-    0.1.0-ui.4 or re-implement via a femtobot extension.
-    """
-    return False
 
 
 def version_callback(value: bool):
@@ -735,15 +430,6 @@ def main(
     version: bool = typer.Option(None, "--version", "-v", callback=version_callback, is_eager=True),
 ):
     """Femtobot - Minimalist CLI Agent."""
-    # Phase 4 cleanup — ``--ui compat`` was the only valid value of
-    # the parity profile flag, and the parity profile itself was
-    # deleted. We hard-error (exit 64) before Typer parses anything
-    # so users get a clear deprecation message instead of an
-    # ImportError for ``femtobot.cli.renderer_factory``. This runs
-    # eagerly because Typer invokes the root callback before any
-    # sub-command parser.
-    from femtobot.cli._nanobot_mirror._ui_parity_shim import block_if_compat
-    block_if_compat()
     pass
 
 
@@ -764,6 +450,7 @@ def _load_runtime_config(
     config: str | None,
     workspace: str | None,
     folder_path: str | None = None,
+    suffix: str | None = None,
 ) -> Config:
     """Load runtime configuration with optional instance selection."""
     from femtobot.config.loader import load_config, resolve_runtime_location
@@ -772,6 +459,7 @@ def _load_runtime_config(
     resolve_runtime_location(
         config_path=Path(config) if config else None,
         folder_path=Path(folder_path) if folder_path else None,
+        suffix=suffix,
     )
 
     # Load config
@@ -827,6 +515,12 @@ def onboard(
         "-c",
         help="Explicit config file path (default: <instance_dir>/config.json)",
     ),
+    suffix: str | None = typer.Option(
+        None,
+        "--suffix",
+        "-s",
+        help="Instance suffix for multi-agent setup (e.g., 'dev', 'prod'). Creates .femtobot_<suffix>",
+    ),
     wizard: bool = typer.Option(
         False,
         "--wizard",
@@ -844,14 +538,18 @@ def onboard(
 
     Examples:
         femtobot onboard                    # Creates .femtobot in parent directory
-        femtobot onboard --folder-path /opt # Creates /opt/.femtobot
+        femtobot onboard --suffix dev       # Creates .femtobot_dev in parent directory
+        femtobot onboard --folder-path /opt  # Creates /opt/.femtobot
+        femtobot onboard -f /opt -s billing # Creates /opt/.femtobot_billing
     """
     from rich.console import Console
     from rich.panel import Panel
 
     from femtobot.config.loader import (
+        build_instance_dir_name,
         resolve_instance_dir,
         set_instance_dir,
+        validate_instance_suffix,
     )
     from femtobot.utils.helpers import (
         build_default_onboard_config,
@@ -864,17 +562,23 @@ def onboard(
 
     console = Console()
 
+    # Validate suffix
+    validated_suffix = validate_instance_suffix(suffix)
+    if suffix and not validated_suffix:
+        console.print("[red]![/red] Invalid suffix. Use only letters, numbers, '_' or '-'.")
+        raise typer.Exit(1)
+
     # Resolve instance directory
     parent_dir = Path(folder_path) if folder_path else None
-    instance_dir = resolve_instance_dir(folder_path=parent_dir)
+    instance_dir = resolve_instance_dir(folder_path=parent_dir, suffix=validated_suffix)
 
-    # Determine the config file path. When an explicit folder_path is
+    # Determine the config file path. When an explicit folder_path/suffix is
     # supplied, use the instance_dir; otherwise honor the runtime config path
     # (which tests typically patch via `get_config_path`).
     from femtobot.config.loader import get_config_path
 
     config_file = (
-        instance_dir / "config.json" if folder_path else get_config_path()
+        instance_dir / "config.json" if (folder_path or validated_suffix) else get_config_path()
     )
 
     # Check if already exists
@@ -891,7 +595,7 @@ def onboard(
                 # config_file is the test mock path; let the rest of the
                 # command create config.json from defaults.
                 console.print("[dim]→[/dim] Re-initializing test instance")
-                config = build_default_onboard_config(instance_dir)
+                config = build_default_onboard_config(instance_dir, validated_suffix)
                 # Force overwrite so the mock file gets a real config.
                 config_written = write_default_config(config, config_file, force=True)
             else:
@@ -913,32 +617,7 @@ def onboard(
             console.print("[yellow]![/yellow] Config already exists")
             console.print("  existing values preserved.")
         except Exception:
-            config = build_default_onboard_config(instance_dir)
-
-    # Phase 4 cleanup — the femtobot-local ``onboard_wizard.py``
-    # was removed with the parity layer. The wizard is therefore
-    # not available in 0.1.0-cli.1; users wanting an interactive
-    # first-time setup can either:
-    #
-    #   - edit ``config.json`` directly after ``onboard`` creates
-    #     the instance skeleton, or
-    #   - use the env-var based config loader
-    #     (``MINIMAX_API_KEY``, ``FEMTOBOT_PROVIDER``, etc.).
-    #
-    # To prevent silent regressions (the previous stub returned
-    # ``None`` and the flag was a no-op), ``--wizard`` now exits
-    # with a clear error pointing at the migration notes.
-    if wizard:
-        console.print(
-            "[red]error[/red] --wizard is not available in 0.1.0-cli.1.\n"
-            "The femtobot onboard wizard lived in the parity layer and\n"
-            "was removed when the parity UI was deleted. To configure\n"
-            "the instance interactively, run ``femtobot onboard`` and\n"
-            "edit the resulting ``config.json`` directly, or set env\n"
-            "vars (``MINIMAX_API_KEY``, ``FEMTOBOT_PROVIDER``, ...).\n"
-            "See plans/femtobot_nanobot_cli_migration/PLAN_*.md."
-        )
-        raise typer.Exit(code=2)
+            config = build_default_onboard_config(instance_dir, validated_suffix)
 
     # Create instance structure
     console.print(f"\n{__logo__} Initializing Femtobot Instance\n")
@@ -971,10 +650,10 @@ def onboard(
         "config" not in dir()
         or config is None
         or not isinstance(
-            config, type(build_default_onboard_config(instance_dir))
+            config, type(build_default_onboard_config(instance_dir, validated_suffix))
         )
     ):
-        config = build_default_onboard_config(instance_dir)
+        config = build_default_onboard_config(instance_dir, validated_suffix)
     if "config_written" not in dir():
         config_written = write_default_config(config, config_file, force=force)
     elif config_written is None:
@@ -1003,7 +682,7 @@ def onboard(
     console.print("  [green]+[/green] Created .gitignore")
 
     # Create README
-    readme = create_instance_readme(instance_dir)
+    readme = create_instance_readme(instance_dir, validated_suffix)
     console.print("  [green]+[/green] Created README.md")
 
     # Sync workspace templates (creates templates only, not the directory itself)
@@ -1021,7 +700,7 @@ def onboard(
     set_instance_dir(instance_dir)
 
     # Print summary
-    instance_name = ".femtobot"
+    instance_name = build_instance_dir_name(validated_suffix)
     summary = f"""[green]✓[/green] Instance [bold]{instance_name}[/bold] initialized successfully!
 femtobot is ready.
 
@@ -1030,8 +709,12 @@ Instance root: [cyan]{instance_dir}[/cyan]
 To use this instance:
 """
 
-    summary += "  femtobot status\n"
-    summary += '  femtobot agent -m "Hello"\n'
+    if validated_suffix:
+        summary += f"  femtobot status --suffix {validated_suffix}\n"
+        summary += f'  femtobot agent -m "Hello" --suffix {validated_suffix}\n'
+    else:
+        summary += "  femtobot status\n"
+        summary += '  femtobot agent -m "Hello"\n'
 
     console.print(Panel(summary, title="[bold]Next Steps[/bold]", border_style="green"))
 
@@ -1077,11 +760,7 @@ def serve(
     host = host if host is not None else api_cfg.host
     port = port if port is not None else api_cfg.port
     timeout = timeout if timeout is not None else api_cfg.timeout
-    # R2-femtobot (refactor-parity-with-nanobot.md Phase 3): the
-    # `serve` command used to call ``sync_workspace_templates`` on
-    # every startup.  This leaked internal prompt templates into
-    # the user workspace on each restart.  The workspace is now
-    # seeded exactly once by ``onboard``, and ``serve`` just runs.
+    sync_workspace_templates(runtime_config.workspace_path)
     bus = MessageBus()
     session_manager = SessionManager(runtime_config.workspace_path)
     try:
@@ -1134,10 +813,11 @@ def gateway(
     folder_path: str | None = typer.Option(
         None, "--folder-path", "-f", help="Instance folder path"
     ),
+    suffix: str | None = typer.Option(None, "--suffix", "-s", help="Instance suffix"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
     """Start the Femtobot gateway."""
-    cfg = _load_runtime_config(config, workspace, folder_path)
+    cfg = _load_runtime_config(config, workspace, folder_path, suffix)
 
     if verbose:
         logger.remove(_log_handler_id)
@@ -1199,14 +879,12 @@ def agent(
     folder_path: str | None = typer.Option(
         None, "--folder-path", "-f", help="Instance folder path"
     ),
+    suffix: str | None = typer.Option(None, "--suffix", help="Instance suffix"),
     markdown: bool = typer.Option(
         True, "--markdown/--no-markdown", help="Render assistant output as Markdown"
     ),
     logs: bool = typer.Option(
         False, "--logs/--no-logs", help="Show Femtobot runtime logs during chat"
-    ),
-    ui: str | None = typer.Option(
-        None, "--ui", help="UI parity profile: off|compat|full (per-session, see docs/cli-ui-parity.md)"
     ),
 ):
     """Interact with Femtobot directly."""
@@ -1214,29 +892,8 @@ def agent(
 
     from femtobot.bus.queue import MessageBus
 
-    config = _load_runtime_config(config, workspace, folder_path)
-    # R2-femtobot (refactor-parity-with-nanobot.md Phase 3): the
-    # ``agent`` command used to call ``sync_workspace_templates`` on
-    # every REPL entry.  Same justification as ``serve``: the workspace
-    # is seeded by ``onboard`` exactly once, and re-syncing on every
-    # invocation re-leaks internal templates into the user workspace.
-
-    # v0.1.0-ui.0+ — honour `--ui` (per-session, not persisted). The
-    # ``/ui`` slash command does the same mutation; we set it here
-    # BEFORE the renderer is built so the very first turn sees the
-    # right profile.
-    if ui is not None:
-        ui_norm = ui.strip().lower()
-        if ui_norm in ("off", "compat", "full"):
-            config.agents.defaults.cli.ui_parity.profile = ui_norm
-        else:
-            # Unknown value: warn and continue with the configured
-            # profile (do not crash the REPL on a typo).
-            typer.echo(
-                f"Unknown --ui value {ui!r}; using "
-                f"{config.agents.defaults.cli.ui_parity.profile!r} from config.",
-                err=True,
-            )
+    config = _load_runtime_config(config, workspace, folder_path, suffix)
+    sync_workspace_templates(config.workspace_path)
 
     bus = MessageBus()
 
@@ -1253,11 +910,12 @@ def agent(
     except ValueError as exc:
         console.print(f"[red]Error: {exc}[/red]")
         raise typer.Exit(1) from exc
-    # PR 6.2 (longlogs remediation): the restart notice is consumed
-    # here (so the env vars are cleared for the rest of the session)
-    # but the actual print is deferred until after ``_ACTIVE_RENDERER``
-    # is built, so the parity header / welcome card render first.
     restart_notice = consume_restart_notice_from_env()
+    if restart_notice and should_show_cli_restart_notice(restart_notice, session_id):
+        _print_agent_response(
+            format_restart_completed_message(restart_notice.started_at_raw),
+            render_markdown=False,
+        )
 
     # Shared reference for progress callbacks
     _thinking: ThinkingSpinner | None = None
@@ -1296,12 +954,11 @@ def agent(
     if message:
         # Single message mode — direct call, no bus needed
         async def run_once():
-            renderer = _build_simple_renderer(
-                config,
+            renderer = StreamRenderer(
                 render_markdown=markdown,
+                bot_name=config.agents.defaults.bot_name,
+                bot_icon=config.agents.defaults.bot_icon,
             )
-            global _ACTIVE_RENDERER
-            _ACTIVE_RENDERER = renderer
             response = await agent_loop.process_direct(
                 message,
                 session_id,
@@ -1329,10 +986,6 @@ def agent(
 
         _init_prompt_session()
         _model, _preset_tag = _model_display(config)
-        # Phase 4 cleanup — the parity "Interactive mode" banner
-        # (``HeaderBar`` + Welcome card) was the parity layer's
-        # first-screen. The mirror does not draw a parity banner,
-        # so we always print the legacy ASCII-banner header.
         console.print(
             f"{__logo__} Interactive mode [bold blue]({_model})[/bold blue]{_preset_tag} — type [bold]exit[/bold] or [bold]Ctrl+C[/bold] to quit\n"
         )
@@ -1342,35 +995,11 @@ def agent(
         else:
             cli_channel, cli_chat_id = "cli", session_id
 
-        # Audit (C3 of the v0.0.8 third-pass review): the
-        # previous signal handler called ``sys.exit(0)`` from the
-        # signal frame, which raised ``SystemExit`` *between*
-        # bytecodes of the asyncio loop.  The ``finally`` block
-        # that calls ``agent_loop.stop()``, ``close_mcp()`` and
-        # ``outbound_task.cancel()`` never ran, leaving the agent
-        # loop's background tasks and MCP sockets dangling.
-        #
-        # The fix: signal handlers run in the main thread (where
-        # asyncio is the running loop), so we can schedule a
-        # callback on the loop via ``call_soon_threadsafe`` that
-        # sets a flag.  The ``run_interactive`` loop checks the
-        # flag and exits cleanly, which lets the ``finally`` block
-        # run.
-        stop_requested = threading.Event()
-
         def _handle_signal(signum, frame):
             sig_name = signal.Signals(signum).name
             _restore_terminal()
             console.print(f"\nReceived {sig_name}, goodbye!")
-            stop_requested.set()
-            # Wake the loop if it's blocked on an await.
-            try:
-                loop = asyncio.get_running_loop()
-                loop.call_soon_threadsafe(stop_requested.set)
-            except RuntimeError:
-                # No running loop; we're already exiting.  Fall
-                # back to a hard ``os._exit`` so we don't hang.
-                os._exit(0)
+            sys.exit(0)
 
         signal.signal(signal.SIGINT, _handle_signal)
         signal.signal(signal.SIGTERM, _handle_signal)
@@ -1382,188 +1011,18 @@ def agent(
         if hasattr(signal, "SIGPIPE"):
             signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
-        # Build the renderer ONCE before the REPL loop. The
-        # mirror's ``StreamRenderer`` does not carry parity-only
-        # state (no HeaderBar, no WelcomeCard) so reuse across
-        # turns is safe — the spinner / Live display gets reset
-        # between turns via ``renderer.stop_for_input()`` and
-        # ``renderer.on_end()``.
-        renderer = _build_simple_renderer(
-            config,
-            render_markdown=markdown,
-        )
-        global _ACTIVE_RENDERER
-        _ACTIVE_RENDERER = renderer
-
-        # PR 6.2 (longlogs remediation): print the restart notice AFTER
-        # the renderer is constructed, so the parity header / welcome
-        # card have a chance to render first and the notice slots in
-        # below them. The previous order printed the notice before
-        # ``_ACTIVE_RENDERER`` existed, causing a duplicate bare
-        # header in the legacy profile.
-        if restart_notice:
-            _print_agent_response(
-                format_restart_completed_message(restart_notice.started_at_raw),
-                render_markdown=False,
-            )
-
-        def _swap_renderer() -> None:
-            """Hot-swap the active renderer (PR 3.1 of the longlogs plan).
-
-            Closes the current renderer and builds a fresh one from the
-            latest ``config`` (mutated by ``/ui``). The
-            ``_ACTIVE_RENDERER`` global is the source of truth read by
-            the input loop and ``_init_prompt_session``, so updating it
-            is enough to make the next ``print_input_bar`` /
-            ``input_prompt_markup`` use the new profile.
-            """
-            nonlocal renderer
-            try:
-                if hasattr(renderer, "close") and asyncio.iscoroutinefunction(
-                    renderer.close
-                ):
-                    # Best-effort: schedule close on the running loop.
-                    asyncio.create_task(renderer.close())  # noqa: RUF006
-                elif hasattr(renderer, "_stop_spinner"):
-                    renderer._stop_spinner()  # noqa: SLF001
-            except Exception:
-                logger.debug("Could not close previous renderer", exc_info=True)
-            # Phase 4 cleanup — the ``/ui`` slash command's hot-swap
-            # previously built a fresh ``ParityStreamRenderer``. After
-            # the parity layer was removed this hot-swap can no longer
-            # succeed (the mirror's ``StreamRenderer`` does not support
-            # a re-init path that preserves the active ``_live``). We
-            # keep the existing renderer instead and surface a warning
-            # — restart the session to pick up UI changes.
-            logger.warning(
-                "/ui hot-swap was removed in 0.1.0-cli.1 along with "
-                "the parity UI. Restart the femtobot session to pick "
-                "up UI configuration changes."
-            )
-
         async def run_interactive():
             bus_task = asyncio.create_task(agent_loop.run())
             turn_done = asyncio.Event()
             turn_done.set()
-            # Issue #2 (longlogs 2026-07-19, compat profile): each user
-            # turn is tagged with a UUID ``_turn_id`` that propagates
-            # through every OutboundMessage derived from it (stream
-            # deltas, stream_end, the trailing body, progress events).
-            # The consumer (``_consume_outbound``) drops any message
-            # whose ``_turn_id`` does not match the active turn, so a
-            # late-arriving body from the previous turn can never
-            # collide with the new ``[ 👤 You ]`` prompt — the root
-            # cause of the 'body printed under You:' bug observed when
-            # the trailing body raced with the user's next input.
-            # ``None`` means "no turn is active yet" (fresh REPL).
-            active_turn_id: str | None = None
-            # Same drop policy outside turns (e.g. background warnings
-            # such as ``_runtime_control`` notifications) — see
-            # ``_consume_outbound``.
-            def _is_for_current_turn(msg) -> bool:
-                """Return True when ``msg`` belongs to the active turn.
-
-                Background / startup messages (``cli:startup`` channel,
-                ``_progress`` / ``_retry_wait`` flags, ``_runtime_control``
-                metadata) have no ``_turn_id`` and are always admitted
-                so the agent can still surface tool-hint notifications
-                or post-turn MCP warnings without race-loss.
-                """
-                meta = msg.metadata or {}
-                msg_turn = meta.get("_turn_id")
-                if msg_turn is None:
-                    return True
-                # Background notifications (no _turn_id on the
-                # inbound-derived side): let them through under any
-                # turn-state. The only requirement is that ``msg_turn``
-                # is a registered turn in the active session, which
-                # we approximate as "matches the active turn OR no
-                # active turn yet" — micro-race window where the
-                # previous turn's _runtime_control arrives after the
-                # next turn started is acceptable (the message would
-                # print as a notification in the gap, never as a body).
-                if active_turn_id is None:
-                    return True
-                return msg_turn == active_turn_id
-
-            # Issue #1, B8 (longlogs 2026-07-19): give the agent loop
-            # a moment to publish its startup-time warnings (MCP
-            # configured-but-not-connected, referenced-but-unconfigured)
-            # and drain them to the console *before* the user sees the
-            # ``[ 👤 You ]`` prompt. Without this, the warnings and
-            # the user's typed input race for stdout and the user
-            # sees ``⚠ MCP servers unavailable…`` interleaved with
-            # their first keystrokes.
-            try:
-                await asyncio.sleep(0)  # let bus_task's _connect_mcp run
-                drained = 0
-                while drained < 8:
-                    try:
-                        msg = await asyncio.wait_for(
-                            bus.consume_outbound(), timeout=0.15
-                        )
-                    except asyncio.TimeoutError:
-                        break
-                    if msg.channel != "cli" or msg.chat_id != "startup":
-                        # Not a startup warning — re-enqueue would
-                        # require mutable Queue; instead, let the
-                        # normal _consume_outbound pick it up by
-                        # publishing it back to inbound (it carries no
-                        # inbound semantics here, so dropping it is
-                        # acceptable; this branch is rare).
-                        continue
-                    _print_agent_response(
-                        msg.content,
-                        render_markdown=False,
-                        metadata=msg.metadata or None,
-                    )
-                    drained += 1
-            except Exception:
-                logger.debug("Startup warning drain failed", exc_info=True)
             turn_response: list[tuple[str, dict]] = []
-            # ``renderer`` is intentionally captured from the enclosing
-            # scope above (build_renderer ran once, before the loop, so
-            # the parity welcome/header render only once). No rebinding
-            # here; that is the whole point.
+            renderer: StreamRenderer | None = None
             reasoning_buffer = _ReasoningBuffer()
-            # Pairs the trailing ``OutboundMessage`` (carrying the full
-            # ``content``) with its ``_stream_end`` notification. The
-            # runner emits them in this order:
-            #   1. on_stream_end(resuming=False) → outbound with
-            #      ``_stream_end=True`` and empty content.
-            #   2. _assemble_outbound → outbound with ``_streamed=True``
-            #      and ``_stream_end_pending=True`` and the full content.
-            # The CLI must render the body exactly once: if the
-            # ``_stream_end`` arrived first, the Rich Live transient has
-            # already persisted the body and the second message must be
-            # suppressed. If the body message arrived first (out-of-order
-            # delivery via the bus), buffer it until ``_stream_end``
-            # arrives and then discard — the user already saw the
-            # streamed version. Without this pairing the same response
-            # appears twice in the terminal (observed in longlogs.txt:
-            # the "Opção 1" block was rendered back-to-back).
-            _pending_streamed_body: dict[str, tuple[str, dict]] = {}
 
             async def _consume_outbound():
                 while True:
                     try:
                         msg = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
-                        chat_key = f"{msg.channel}:{msg.chat_id}"
-
-                        # Issue #2 (longlogs 2026-07-19): a late-arriving
-                        # body from the previous turn (the trailing
-                        # ``_streamed`` ``OutboundMessage`` that raced
-                        # ahead of the user's next input) used to slip
-                        # through here and render under the new
-                        # ``[ 👤 You ]`` prompt. The turn-token guard
-                        # drops it cleanly. Background notifications
-                        # (no ``_turn_id``) are always admitted.
-                        if not _is_for_current_turn(msg):
-                            logger.debug(
-                                "Dropping stale OutboundMessage: turn_id={!r} != active",
-                                (msg.metadata or {}).get("_turn_id"),
-                            )
-                            continue
 
                         if msg.metadata.get("_stream_delta"):
                             if renderer:
@@ -1574,37 +1033,8 @@ def agent(
                                 await renderer.on_end(
                                     resuming=msg.metadata.get("_resuming", False),
                                 )
-                            # If the trailing body message raced ahead of
-                            # us, discard it now — the Live render is
-                            # already persisted.
-                            _pending_streamed_body.pop(chat_key, None)
-                            turn_done.set()
                             continue
                         if msg.metadata.get("_streamed"):
-                            if msg.metadata.get("_stream_end_pending"):
-                                # Body arrived before ``_stream_end``
-                                # callback: hold it until the end signal
-                                # tells us the stream is closed.
-                                _pending_streamed_body[chat_key] = (
-                                    msg.content,
-                                    dict(msg.metadata or {}),
-                                )
-                                # Don't release the REPL until the
-                                # stream-end signal arrives — otherwise
-                                # the next ``await turn_done.wait()``
-                                # could exit early and the user could
-                                # type before the stream closes.
-                                continue
-                            # No stream callback was associated (rare
-                            # edge case: streaming channel sent the
-                            # trailing body without an end signal). Fall
-                            # through and render normally so the user
-                            # sees something.
-                            if msg.content and not _pending_streamed_body.get(chat_key):
-                                _pending_streamed_body[chat_key] = (
-                                    msg.content,
-                                    dict(msg.metadata or {}),
-                                )
                             turn_done.set()
                             continue
 
@@ -1617,59 +1047,15 @@ def agent(
                         ):
                             continue
 
-                        # PR 3.1 (longlogs remediation): when a slash
-                        # command such as ``/ui`` requests a hot-swap of
-                        # the renderer, do it before the body is
-                        # rendered so the user sees the new profile's
-                        # framing instead of the stale one.
-                        if msg.metadata.get("_rebuild_renderer"):
-                            try:
-                                _swap_renderer()
-                            except Exception:
-                                logger.debug(
-                                    "Renderer swap failed; continuing with stale renderer",
-                                    exc_info=True,
-                                )
-
-                        # Non-streamed turn: render the body once and
-                        # signal turn completion. ``turn_response`` is
-                        # the source of truth for the REPL loop below;
-                        # we never append to it on the streamed path so
-                        # we cannot accidentally double-render.
-                        # Audit 2026-07-18: when no turn is active
-                        # (``turn_done.is_set()`` and the bus message is
-                        # unsolicited — e.g. the background completion
-                        # notice from ``/dream``), buffer the body and
-                        # render it immediately. Without this branch
-                        # the REPL would either drop the message on the
-                        # next ``turn_response.clear()`` or print it
-                        # later as if it were the user's reply, breaking
-                        # the conversation flow.
                         if not turn_done.is_set():
-                            # Turn in progress: defer to the REPL loop.
                             if msg.content:
-                                turn_response.append(
-                                    (msg.content, dict(msg.metadata or {}))
-                                )
+                                turn_response.append((msg.content, dict(msg.metadata or {})))
                             turn_done.set()
-                        elif msg.content and not msg.metadata.get("_progress"):
-                            # No active turn: this is a background
-                            # notification (e.g. /dream completion,
-                            # /mcp status, runtime warnings). Render it
-                            # inline without disturbing the prompt.
-                            if renderer:
-                                await renderer.close()
-                            # Bug surfaced 2026-07-20: a sync write to
-                            # sys.stdout inside the consumer task races
-                            # the prompt_toolkit input loop and the body
-                            # text gets echoed back into the input queue,
-                            # producing a self-feeding loop. We await the
-                            # in-terminal form so prompt_toolkit cleanly
-                            # pauses its renderer before we print.
-                            await _print_agent_response_in_terminal(
+                        elif msg.content:
+                            await _print_interactive_response(
                                 msg.content,
                                 render_markdown=markdown,
-                                metadata=msg.metadata or None,
+                                metadata=msg.metadata,
                             )
 
                     except asyncio.TimeoutError:
@@ -1686,10 +1072,7 @@ def agent(
                         # Stop spinner before user input to avoid prompt_toolkit conflicts
                         if renderer:
                             renderer.stop_for_input()
-                        raw_input = await _read_interactive_input_async(config)
-                        if _get_cli_multiline_mode() != "off":
-                            raw_input = submit_multiline_transform(raw_input)
-                        user_input = _sanitize_surrogates(raw_input)
+                        user_input = _sanitize_surrogates(await _read_interactive_input_async())
                         command = user_input.strip()
                         if not command:
                             continue
@@ -1699,44 +1082,14 @@ def agent(
                             console.print("\nGoodbye!")
                             break
 
-                        # Bash mode: prefix '!' executes a subprocess directly.
-                        # Output is captured and printed; it does NOT enter the
-                        # agent loop on its own (avoids burning LLM tokens on
-                        # inspection). The user can `/mention` the output into
-                        # a subsequent turn by typing `!git status` and then
-                        # describing what they want.
-                        bash_handled = await _handle_bash_mode(
-                            user_input, config, console
-                        )
-                        if bash_handled:
-                            continue
-
                         turn_done.clear()
                         turn_response.clear()
                         reasoning_buffer.clear()
-                        # ``renderer`` is reused from the enclosing scope
-                        # (built once before the loop). Resetting the
-                        # parity renderer's per-turn transport (Live /
-                        # spinner / streamed flag) is the responsibility
-                        # of ``stop_for_input`` (above) and ``on_end``
-                        # (called by the bus when the turn completes).
-                        # Keeping a single instance across turns is what
-                        # prevents the Welcome card and HeaderBar from
-                        # re-appearing on every prompt.
-                        # Issue #2 (longlogs 2026-07-19): mint a per-turn
-                        # UUID. The agent_loop copies ``msg.metadata``
-                        # into every OutboundMessage it publishes, so the
-                        # stream deltas / ``_stream_end`` / trailing
-                        # ``_streamed`` body all inherit this token and
-                        # the consumer can age them out on the next turn.
-                        # Issue #3 (longlogs 2026-07-20 screenshots):
-                        # ``new_core = StreamRenderer(...)`` and
-                        # ``renderer.replace_core(new_core)`` were
-                        # removed here — see issue #3 for why per-turn
-                        # rebuilds leaked the previous ``Live`` and
-                        # produced raw ANSI escapes.
-                        new_turn_id = uuid.uuid4().hex
-                        active_turn_id = new_turn_id
+                        renderer = StreamRenderer(
+                            render_markdown=markdown,
+                            bot_name=config.agents.defaults.bot_name,
+                            bot_icon=config.agents.defaults.bot_icon,
+                        )
 
                         await bus.publish_inbound(
                             InboundMessage(
@@ -1744,10 +1097,7 @@ def agent(
                                 sender_id="user",
                                 chat_id=cli_chat_id,
                                 content=user_input,
-                                metadata={
-                                    "_wants_stream": True,
-                                    "_turn_id": new_turn_id,
-                                },
+                                metadata={"_wants_stream": True},
                             )
                         )
 
@@ -1761,40 +1111,14 @@ def agent(
                                 print_kwargs: dict[str, Any] = {}
                                 if renderer and renderer.header_printed:
                                     print_kwargs["show_header"] = False
-                                # Bug surfaced 2026-07-20: sync
-                                # ``_print_agent_response`` writes to
-                                # ``sys.stdout`` while prompt_toolkit
-                                # still owns the terminal. The body
-                                # text gets echoed back into the input
-                                # queue and the next turn self-feeds.
-                                # Use the in-terminal async form so
-                                # prompt_toolkit cleanly pauses its
-                                # renderer before we print.
-                                await _print_agent_response_in_terminal(
+                                _print_agent_response(
                                     content,
                                     render_markdown=markdown,
                                     metadata=meta,
-                                    show_header=print_kwargs.get("show_header", True),
+                                    **print_kwargs,
                                 )
                         elif renderer and not renderer.streamed:
                             await renderer.close()
-                        # Bug A fix (plan §3 D9): render the "Cooked for
-                        # Ns" footer AFTER the agent's reply, never
-                        # before. The parity layer keeps the elapsed
-                        # timer alive across the buffered response so the
-                        # Phase 4 cleanup — the ``Cooked for Ns``
-                        # footer lived in the parity layer. The
-                        # mirror's ``StreamRenderer`` does not
-                        # expose ``print_cooked_footer``; we call it
-                        # via ``getattr`` so missing-attribute is a
-                        # silent no-op rather than an exception.
-                        if renderer is not None:
-                            cooked_fn = getattr(renderer, "print_cooked_footer", None)
-                            if cooked_fn is not None:
-                                try:
-                                    cooked_fn()
-                                except Exception:
-                                    pass
                     except KeyboardInterrupt:
                         _restore_terminal()
                         console.print("\nGoodbye!")
@@ -1802,14 +1126,6 @@ def agent(
                     except EOFError:
                         _restore_terminal()
                         console.print("\nGoodbye!")
-                        break
-                    # Audit (C3 of the v0.0.8 third-pass review):
-                    # signal handlers now set ``stop_requested``
-                    # instead of calling ``sys.exit(0)`` mid-loop.
-                    # Check the flag here so the ``finally`` block
-                    # (which closes MCP, cancels tasks, etc.) still
-                    # runs and we don't leak resources.
-                    if stop_requested.is_set():
                         break
             finally:
                 agent_loop.stop()
@@ -1830,36 +1146,16 @@ def status(
     folder_path: str | None = typer.Option(
         None, "--folder-path", "-f", help="Instance folder path"
     ),
+    suffix: str | None = typer.Option(None, "--suffix", "-s", help="Instance suffix"),
 ):
     """Show Femtobot status."""
     from femtobot.config.loader import get_config_path, load_config, resolve_runtime_location
     from femtobot.config.paths import get_workspace_path
 
-    # Audit 2026-07-18 v6: reject explicitly-bad --folder-path values
-    # instead of silently falling back to the nearest ``.femtobot`` we
-    # can find on the filesystem. ``discover_instance_dir`` falls back
-    # to ``Path.cwd() / .femtobot`` when the requested folder does not
-    # exist, which made ``femtobot status --folder-path /tmp/bogus``
-    # happily report the active instance instead of complaining.
-    if folder_path:
-        fp = Path(folder_path)
-        if not fp.is_dir():
-            typer.echo(
-                f"--folder-path {folder_path!r} does not exist or is not a "
-                f"directory.",
-                err=True,
-            )
-            raise typer.Exit(code=2)
-        if not (fp / ".femtobot").is_dir():
-            typer.echo(
-                f"--folder-path {folder_path!r} contains no .femtobot instance.",
-                err=True,
-            )
-            raise typer.Exit(code=2)
-
     resolve_runtime_location(
         config_path=None,
         folder_path=Path(folder_path) if folder_path else None,
+        suffix=suffix,
     )
 
     config_path = get_config_path()
@@ -1905,189 +1201,4 @@ def status(
 
 
 if __name__ == "__main__":
-    # The ``--ui compat`` block runs from the Typer root callback
-    # when invoked via the ``femtobot`` entry-point. When invoked
-    # via ``python -m femtobot.cli.commands``, we duplicate the
-    # check here so ``python -m femtobot.cli.commands --ui compat``
-    # also exits 64 immediately.
-    from femtobot.cli._nanobot_mirror._ui_parity_shim import block_if_compat
-    block_if_compat()
     app()
-
-
-# ============================================================================
-# Sessions subcommands (CLI-parity v0.1.8 Issue 4)
-# ============================================================================
-
-# Phase 4 cleanup — ``femtobot.cli.sessions`` was deleted with the
-# parity layer. The nanobot CLI does not ship a separate ``sessions``
-# sub-app (sessions live alongside the agent loop). We add a stub
-# ``sessions_app`` so existing callers / scripts that reference it
-# keep working (the stub prints a helpful pointer to ``femtobot
-# agent`` which now owns the session lifecycle).
-sessions_app = typer.Typer(help="Sessions are managed via `femtobot agent`. Use the in-session /clear to start a new session.")
-
-
-@sessions_app.callback(invoke_without_command=True)
-def _sessions_default() -> None:
-    console.print(
-        "[yellow]![/yellow] The standalone ``sessions`` sub-app was removed in 0.1.0-cli.1."
-    )
-    console.print(
-        "Use the in-REPL ``/clear`` slash command to start a new session, or run ``femtobot agent`` directly."
-    )
-
-app.add_typer(sessions_app, name="sessions")
-
-
-# ============================================================================
-# Config subcommands (A1)
-# ============================================================================
-
-config_app = typer.Typer(help="Inspect and validate the active config.")
-app.add_typer(config_app, name="config")
-
-
-@config_app.command("validate")
-def config_validate(
-    folder_path: str | None = typer.Option(
-        None, "--folder-path", "-f", help="Instance folder path"
-    ),
-    config_path: str | None = typer.Option(
-        None, "--config", "-c", help="Explicit path to config.json"
-    ),
-    strict: bool = typer.Option(
-        False,
-        "--strict",
-        help="Fail-fast with exit 2 on invalid config (sets FEMTOBOT_STRICT_CONFIG_LOAD).",
-    ),
-):
-    """Validate config.json without starting the agent loop.
-
-    Exit code 0 = OK, 2 = invalid (only when --strict is passed or
-    FEMTOBOT_STRICT_CONFIG_LOAD is set).
-    """
-    from femtobot.config.loader import (
-        resolve_runtime_location,
-    )
-    from femtobot.config.loader import (
-        validate_config as _validate_config,
-    )
-
-    resolve_runtime_location(
-        config_path=Path(config_path) if config_path else None,
-        folder_path=Path(folder_path) if folder_path else None,
-    )
-    target = Path(config_path) if config_path else None
-    ok, message = _validate_config(config_path=target, strict=strict)
-    if ok:
-        console.print(f"[green]✓[/green] {message}")
-        raise SystemExit(0)
-    console.print(f"[red]✗[/red] {message}")
-    raise SystemExit(2)
-
-
-# ============================================================================
-# Tools subcommands (C2)
-# ============================================================================
-
-tools_app = typer.Typer(help="Inspect the tool registry.")
-app.add_typer(tools_app, name="tools")
-
-
-@tools_app.command("list")
-def tools_list(
-    folder_path: str | None = typer.Option(
-        None, "--folder-path", "-f", help="Instance folder path"
-    ),
-    capability: str | None = typer.Option(
-        None,
-        "--capability",
-        "-c",
-        help="Filter to tools that advertise this capability (e.g. read-only, long-running).",
-    ),
-    show_capabilities: bool = typer.Option(
-        False,
-        "--show-capabilities",
-        help="Also print the capability list for each tool.",
-    ),
-):
-    """List tools registered in the active agent loop.
-
-    With ``--capability <name>`` (C2), only the tools that advertise
-    that capability are listed.  With ``--show-capabilities``, each
-    tool's ``get_capabilities()`` output is appended after the name.
-    """
-    from femtobot.agent.tools.context import ToolContext
-    from femtobot.agent.tools.loader import ToolLoader
-    from femtobot.agent.tools.registry import ToolRegistry
-    from femtobot.bus.queue import MessageBus
-    from femtobot.config.loader import load_config, resolve_runtime_location
-    from femtobot.config.paths import get_workspace_path
-
-    resolve_runtime_location(
-        config_path=None,
-        folder_path=Path(folder_path) if folder_path else None,
-    )
-    # Audit 2026-07-18 v6: build a ToolContext (not a bare Config) so
-    # ``tool_cls.create`` has the ``bus``, ``sessions``,
-    # ``provider_snapshot_loader`` etc. it expects. The previous code
-    # passed either ``None`` or ``Config`` to ``create`` and let the
-    # ``except (TypeError, …)`` swallow the failure for almost every
-    # tool — the user saw only the 5 tools that happen to accept a
-    # null config.
-    config = load_config()
-    workspace = get_workspace_path(
-        config.agents.defaults.workspace if hasattr(config, "agents") else None
-    )
-    bus = MessageBus()
-    ctx = ToolContext(
-        config=config.tools,
-        workspace=str(workspace),
-        bus=bus,
-        sessions=None,
-        file_state_store=None,
-        provider_snapshot_loader=None,
-        timezone="UTC",
-        workspace_sandbox=None,
-        runtime_events=None,
-    )
-    registry = ToolRegistry()
-    loader = ToolLoader()
-    tool_classes = loader.discover()
-    for tool_cls in tool_classes:
-        # Narrow catch so a typo or import error in a builtin surfaces
-        # instead of being silently swallowed.
-        try:
-            tool = tool_cls.create(ctx)
-            registry.register(tool)
-        except (TypeError, ValueError, RuntimeError, AttributeError):  # pragma: no cover - defensive
-            continue
-    if capability:
-        tools = registry.by_capability(capability)
-    else:
-        tools = sorted(registry._tools.values(), key=lambda t: t.name)  # type: ignore[attr-defined]
-    if not tools:
-        msg = (
-            f"No tools match capability {capability!r}."
-            if capability
-            else "No tools registered."
-        )
-        console.print(f"[yellow]{msg}[/yellow]")
-        raise SystemExit(0)
-    for tool in tools:
-        # Audit (H3 of the v0.0.9 fourth-pass review): the
-        # previous code did ``suffix = ""`` which shadowed the
-        # ``suffix`` Typer parameter (used to locate the
-        # instance folder).  The outer ``suffix`` was no longer
-        # ``None`` (default) but a string; the existing
-        # ``resolve_runtime_location(...)`` call had already
-        # captured the original, so this was a latent bug (the
-        # Typer parameter still worked, but the inner ``suffix``
-        # binding was a confusing shadow).  We rename the inner
-        # binding to ``cap_suffix`` for clarity.
-        cap_suffix = ""
-        if show_capabilities:
-            caps = tool.get_capabilities()
-            cap_suffix = f"  [dim]({', '.join(caps)})[/dim]" if caps else ""
-        console.print(f"- {tool.name}{cap_suffix}")

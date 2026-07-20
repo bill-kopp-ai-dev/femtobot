@@ -17,12 +17,6 @@ _BLOCKED_NETWORKS = [
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
     ipaddress.ip_network("::1/128"),
-    # A4 (REFACTOR_PLAN.md Lote A): belt-and-suspenders block for
-    # IPv6-mapped IPv4 addresses.  ``_normalize_addr`` already strips the
-    # ::ffff:0:0/96 prefix, but listing the range explicitly makes a
-    # future regression in ``_normalize_addr`` (or a call site that forgets
-    # to invoke it) unblockable as a defense-in-depth measure.
-    ipaddress.ip_network("::ffff:0:0/96"),
     ipaddress.ip_network("fc00::/7"),  # unique local
     ipaddress.ip_network("fe80::/10"),  # link-local v6
 ]

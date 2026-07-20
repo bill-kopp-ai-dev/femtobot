@@ -12,12 +12,8 @@ from typing import Any, Callable
 
 from loguru import logger
 
-from femtobot.agent.context_governance import (
-    ContextGovernanceConfig,
-    ContextGovernor,
-)
 from femtobot.agent.hook import AgentHook, AgentHookContext
-from femtobot.agent.tools.registry import ToolRegistry, is_tool_error_result
+from femtobot.agent.tools.registry import ToolRegistry
 from femtobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from femtobot.utils.file_edit_events import (
     StreamingFileEditTracker,
@@ -37,7 +33,6 @@ from femtobot.utils.helpers import (
     extract_reasoning,
     find_legal_message_start,
     maybe_persist_tool_result,
-    scrub_text,
     strip_think,
     truncate_text,
 )
@@ -47,16 +42,12 @@ from femtobot.utils.progress_events import (
 )
 from femtobot.utils.prompt_templates import render_template
 from femtobot.utils.runtime import (
-    _INTENT_VERB_RE,
-    _MAX_INTENT_RETRIES,
     EMPTY_FINAL_RESPONSE_MESSAGE,
     build_finalization_retry_message,
     build_goal_continue_message,
-    build_intent_only_feedback_message,
     build_length_recovery_message,
     ensure_nonempty_tool_result,
     is_blank_text,
-    is_intent_only_response,
     repeated_external_lookup_error,
     repeated_workspace_violation_error,
 )
@@ -127,16 +118,7 @@ class AgentRunSpec:
     injection_callback: Any | None = None
     llm_timeout_s: float | None = None
     goal_active_predicate: Callable[[], bool] | None = None
-    goal_continue_message: str | Callable[[], str] | None = None
-    # B2: extra iterations allowed per ``max_iterations`` exhaustion when
-    # ``goal_active_predicate()`` returns True.  Default 50 matches
-    # nanobot v0.2.1 #4127.  Set to 0 to disable the extra budget.
-    goal_iteration_extra_budget: int = 50
-    # L1 (v0.1.7): mutable counter used by the intent_only guard to cap
-    # consecutive "described-but-didn't-execute" responses.  Set to 0
-    # explicitly to opt out of intent_only pushback (used by tests that
-    # want the prose to pass through unchanged).
-    intent_only_retries: int = 0
+    goal_continue_message: str | None = None
 
 
 @dataclass(slots=True)
@@ -220,7 +202,7 @@ class AgentRunner:
         if not injections and allow_goal_continue and assistant_message is not None:
             predicate = spec.goal_active_predicate
             if predicate is not None and predicate():
-                injections = [self._build_goal_continue_message(spec.goal_continue_message)]
+                injections = [build_goal_continue_message(spec.goal_continue_message)]
         if not injections:
             return False, injection_cycles
         if real_injection:
@@ -252,85 +234,6 @@ class AgentRunner:
             logger.info("Injected sustained-goal continuation {}", phase)
         return True, injection_cycles
 
-    # W5 (of the v0.1.3 eighth-pass review, comparative audit with
-    # nanobot): the ``goal_continue_message`` spec field is now
-    # ``str | Callable[[], str] | None`` (it was just ``str | None``).
-    # The nanobot runner has a dedicated ``_build_goal_continue_message``
-    # helper that handles the callable case with try/except (a broken
-    # callable should not crash the entire run; we fall back to the
-    # default prompt).  We adopt the same pattern.
-    @staticmethod
-    def _build_goal_continue_message(custom: "str | Callable[[], str] | None") -> dict[str, str]:
-        """Build the goal-continuation message, supporting callable custom.
-
-        ``custom`` may be:
-        * a string  — used as the message content directly.
-        * a callable  — called with no args, returns the content.
-        * ``None``  — falls back to the default
-          ``SUSTAINED_GOAL_CONTINUE_PROMPT``.
-
-        A broken callable is logged and we fall back to the default
-        rather than raising, so a misconfigured ``goal_continue_message``
-        doesn't take down the entire run.
-        """
-        if callable(custom):
-            try:
-                custom = custom()
-            except Exception:
-                logger.exception("goal_continue_message callback failed")
-                custom = None
-        return build_goal_continue_message(custom)
-
-    # W4 (of the v0.1.3 eighth-pass review, comparative audit with
-    # nanobot): the helper ``_has_injection_content`` is present in
-    # nanobot but was inlined in the Femtobot ``_drain_injections``
-    # method.  The inlined version checked ``text.strip()`` on
-    # strings but did not handle ``None`` explicitly, falling back to
-    # ``str(None)`` (which is truthy, ``"None"``), and did not
-    # recognize list-typed content (e.g. content blocks like
-    # ``[{"type": "text", "text": "..."}]``).  We lift the helper
-    # to a staticmethod and use it in both injection paths.
-    @staticmethod
-    def _has_injection_content(content: Any) -> bool:
-        """Whether a candidate injection item has meaningful content.
-
-        Returns ``False`` for ``None``, empty strings, empty lists;
-        ``True`` for non-empty strings, non-empty lists, and any
-        other type.  This mirrors nanobot's behavior.
-        """
-        if content is None:
-            return False
-        if isinstance(content, str):
-            return bool(content.strip())
-        if isinstance(content, list):
-            return bool(content)
-        return True
-
-    @staticmethod
-    def _count_available_tools(spec: AgentRunSpec) -> int:
-        """Best-effort count of tools available to the model in *spec*.
-
-        The runner only depends on ``spec.tools.get_definitions()``; this
-        helper centralizes that probe so the intent_only guard stays
-        defensive against test doubles that may not implement the full
-        ``ToolRegistry`` API.
-        """
-        tools = getattr(spec, "tools", None)
-        if tools is None:
-            return 0
-        get_defs = getattr(tools, "get_definitions", None)
-        if callable(get_defs):
-            try:
-                defs = get_defs()
-                return len(defs or [])
-            except Exception:
-                return 0
-        # Last-resort: a list-like ``defs`` attribute (used by some test stubs).
-        defs_attr = getattr(tools, "defs", None)
-        if isinstance(defs_attr, list):
-            return len(defs_attr)
-        return 0
-
     async def _drain_injections(self, spec: AgentRunSpec) -> list[dict[str, Any]]:
         """Drain pending user messages via the injection callback.
 
@@ -358,19 +261,12 @@ class AgentRunner:
             return []
         injected_messages: list[dict[str, Any]] = []
         for item in items:
-            if item is None:
-                # W4: explicit None skip — the prior inlined code
-                # fell through to ``getattr(item, "content", str(item))``
-                # which returned ``"None"`` (truthy) and produced a
-                # bogus injection message.
-                continue
             if isinstance(item, dict) and item.get("role") == "user" and "content" in item:
-                if self._has_injection_content(item.get("content")):
-                    injected_messages.append(item)
+                injected_messages.append(item)
                 continue
-            content = getattr(item, "content", str(item))
-            if self._has_injection_content(content):
-                injected_messages.append({"role": "user", "content": content})
+            text = getattr(item, "content", str(item))
+            if text.strip():
+                injected_messages.append({"role": "user", "content": text})
         if len(injected_messages) > _MAX_INJECTIONS_PER_TURN:
             dropped = len(injected_messages) - _MAX_INJECTIONS_PER_TURN
             logger.warning(
@@ -398,128 +294,21 @@ class AgentRunner:
         length_recovery_count = 0
         had_injections = False
         injection_cycles = 0
-        # V3 (port of nanobot ContextGovernor): track tool calls that the
-        # in-flight overflow compactor has already collapsed this turn so we
-        # do not re-compact them on the next iteration. Reset at the start of
-        # each new user turn.
-        compacted_tool_call_ids: set[str] = set()
-        governance_config = ContextGovernanceConfig(
-            provider=self.provider,
-            model=spec.model,
-            tools=spec.tools,
-            workspace=spec.workspace,
-            session_key=spec.session_key,
-            max_tool_result_chars=spec.max_tool_result_chars,
-            context_window_tokens=spec.context_window_tokens,
-            context_block_limit=spec.context_block_limit,
-            max_tokens=spec.max_tokens,
-            inflight_start_index=len(spec.initial_messages),
-        )
-        self._governor = ContextGovernor()
 
-        # B2 (nanobot v0.2.1 #3999 + #4127): when a sustained goal
-        # is active, allow a one-time extra budget of
-        # ``spec.goal_iteration_extra_budget`` iterations after the
-        # base ``max_iterations`` is exhausted.  Strategy: drive the
-        # loop with ``itertools.count`` and a dynamic ``current_max``;
-        # when the iteration counter reaches ``current_max`` AND the
-        # goal is still active AND we have headroom, bump
-        # ``current_max`` by ``extra_budget`` and continue.  When the
-        # cap is hit a second time (or no goal is active), we
-        # ``break`` and the ``for/else`` finalize path runs.
-        #
-        # W1 (of the v0.1.3 eighth-pass review): the previous
-        # implementation used a manual ``capped_out = True`` flag set
-        # just before the cap-exhaustion ``break``, and the post-loop
-        # code wrapped the finalize path in ``if capped_out:``.  This
-        # was needed to avoid the K1 bug from v0.1.2 where
-        # *every* break fell through the cap-exhaustion finalize
-        # path.  The nanobot refactor (W1 of the eighth-pass review)
-        # replaced that pattern with the Python ``for/else`` clause,
-        # which only runs when the loop terminates without a
-        # ``break``.  We adopt the same idiom here: the cap-exhaustion
-        # path is the *only* way to exit the loop without a ``break``
-        # statement.  All other exits (final response, empty
-        # response, LLM error) use ``break`` and therefore skip the
-        # ``for/else`` clause.
-        import itertools
-
-        base_max = spec.max_iterations
-        extra_budget = int(getattr(spec, "goal_iteration_extra_budget", 50) or 0)
-        current_max = base_max
-        extended = False  # has the extra-budget extension fired yet?
-
-        # W1 (of the v0.1.3 eighth-pass review): we considered
-        # migrating to the Python ``for/else`` idiom used by
-        # nanobot, but the Femtobot loop has FOUR ``break``
-        # statements (cap-exhaustion, final response, empty
-        # response, LLM error) — nanobot has only one.  When the
-        # iterator is ``itertools.count()`` (infinite), the
-        # ``else`` clause never runs naturally and a ``break``
-        # always skips it, so we cannot distinguish "cap exhausted"
-        # from "final response" without an external flag.  Nanobot
-        # can use ``for/else`` because their iterator is
-        # ``range(max_iterations)`` (finite) and the only ``break``
-        # is the cap-exhaustion one.  We keep the explicit
-        # ``capped_out`` flag (from the v0.1.2 C1 fix) which is
-        # the minimal pattern that preserves the dynamic-cap
-        # extension behavior while correctly routing the post-loop
-        # finalize path.
-        capped_out = False
-
-        for iteration in itertools.count():
-            # B2: enforce the current iteration cap.  When we hit it
-            # and the goal is still active, bump the cap by
-            # ``extra_budget`` and continue; when we hit it a second
-            # time (or no goal is active), set ``capped_out`` and
-            # ``break`` so the post-loop finalize path runs.
-            if iteration >= current_max:
-                if (
-                    not extended
-                    and extra_budget > 0
-                    and spec.goal_active_predicate is not None
-                    and spec.goal_active_predicate()
-                ):
-                    extended = True
-                    current_max = base_max + extra_budget
-                    logger.info(
-                        "Sustained goal still active after {base} iterations; "
-                        "extending by {extra} more (session={session})",
-                        base=base_max,
-                        extra=extra_budget,
-                        session=spec.session_key or "default",
-                    )
-                    continue
-                # W1: the only ``break`` that sets ``capped_out``;
-                # the post-loop ``if capped_out:`` block runs the
-                # cap-exhaustion finalize path.  Other ``break``
-                # statements (in the loop body) leave the flag
-                # False and skip the finalize.
-                capped_out = True
-                break
+        for iteration in range(spec.max_iterations):
             try:
-                # V3 (port of nanobot ContextGovernor): the in-flight overflow
-                # compactor only fires when ``estimate > budget``.  Previously,
-                # Femtobot called ``_microcompact`` unconditionally on every
-                # turn, which destroyed results from
-                # ``read_file``/``exec``/``grep``/etc. as soon as the
-                # conversation had more than 10 such tool outputs — making the
-                # agent unable to keep a coherent context.
-                #
-                # Order mirrors nanobot exactly: strip placeholders → strip
-                # malformed calls → drop orphans → backfill missing →
-                # apply_tool_result_budget → compact_inflight_overflow
-                # (CONDITIONAL) → snip_history → drop orphans → backfill.
-                #
-                # The persisted conversation is left untouched; only the
-                # model-facing copy is repaired.  ``compacted_tool_call_ids``
-                # survives across iterations so we don't re-compact the same
-                # tool result in the same turn.
-                messages_for_model = self._governor.prepare_for_model(
-                    governance_config,
-                    messages,
-                    compacted_tool_call_ids,
-                )
+                # Keep the persisted conversation untouched. Context governance
+                # may repair or compact historical messages for the model, but
+                # those synthetic edits must not shift the append boundary used
+                # later when the caller saves only the new turn.
+                messages_for_model = self._drop_orphan_tool_results(messages)
+                messages_for_model = self._backfill_missing_tool_results(messages_for_model)
+                messages_for_model = self._microcompact(messages_for_model)
+                messages_for_model = self._apply_tool_result_budget(spec, messages_for_model)
+                messages_for_model = self._snip_history(spec, messages_for_model)
+                # Snipping may have created new orphans; clean them up.
+                messages_for_model = self._drop_orphan_tool_results(messages_for_model)
+                messages_for_model = self._backfill_missing_tool_results(messages_for_model)
             except Exception:
                 logger.exception(
                     "Context governance failed on turn {} for {}; applying minimal repair",
@@ -527,22 +316,8 @@ class AgentRunner:
                     spec.session_key or "default",
                 )
                 try:
-                    # Minimal repair: keep the same placeholders + malformed
-                    # stripping so corrupted sessions can self-heal on the
-                    # next turn.  Skip overflow compactor entirely — the
-                    # failure path should not silently compact things.
-                    messages_for_model = (
-                        ContextGovernor.strip_placeholder_assistant_messages(messages)
-                    )
-                    messages_for_model = ContextGovernor.strip_malformed_tool_calls(
-                        messages_for_model
-                    )
-                    messages_for_model = ContextGovernor.drop_orphan_tool_results(
-                        messages_for_model
-                    )
-                    messages_for_model = ContextGovernor.backfill_missing_tool_results(
-                        messages_for_model
-                    )
+                    messages_for_model = self._drop_orphan_tool_results(messages)
+                    messages_for_model = self._backfill_missing_tool_results(messages_for_model)
                 except Exception:
                     messages_for_model = messages
             context = AgentHookContext(iteration=iteration, messages=messages)
@@ -599,8 +374,6 @@ class AgentRunner:
                     response.tool_calls,
                     external_lookup_counts,
                     workspace_violation_counts,
-                    hook,
-                    context,
                 )
                 tool_events.extend(new_events)
                 context.tool_results = list(results)
@@ -736,61 +509,6 @@ class AgentRunner:
                     thinking_blocks=response.thinking_blocks,
                 )
 
-            # L1 (v0.1.7): intent_only guard.  When the model emits prose
-            # describing a future action ("Despachando em paralelo…", "I'll
-            # dispatch…") without an actual tool_call, the cleanest fix is to
-            # push back instead of accepting the prose as the final answer.
-            # We append the assistant_message *and* a corrective user-role
-            # nudge so the next LLM call sees both — the prose it produced
-            # and an explicit instruction to call a tool.  Bounded by
-            # ``_MAX_INTENT_RETRIES`` so a model that insists on describing
-            # without acting cannot burn the entire iteration budget.
-            intent_only_retries = spec.intent_only_retries
-            # Only flag intent_only when the model actually had tools to call.
-            # We probe ``spec.tools.get_definitions()`` defensively — if the
-            # registry doesn't expose a count we fall back to checking whether
-            # the spec carries any ``defs``-like attribute.
-            available_tools_count = self._count_available_tools(spec)
-            is_intent_only = (
-                response.finish_reason != "error"
-                and assistant_message is not None
-                and not response.has_tool_calls
-                and not response.should_execute_tools
-                and available_tools_count > 0
-                and is_intent_only_response(clean)
-            )
-            if is_intent_only and intent_only_retries < _MAX_INTENT_RETRIES:
-                messages.append(assistant_message)
-                # Capture the verb that triggered detection so the feedback
-                # message references the specific action the model promised.
-                verb_match = _INTENT_VERB_RE.search(clean) if _INTENT_VERB_RE else None
-                verb_hint = verb_match.group(0) if verb_match else None
-                messages.append(build_intent_only_feedback_message(verb_hint))
-                logger.warning(
-                    "intent_only response on turn {} for {} (retry {}/{}); "
-                    "pushing back instead of accepting as final",
-                    iteration,
-                    spec.session_key or "default",
-                    intent_only_retries + 1,
-                    _MAX_INTENT_RETRIES,
-                )
-                spec.intent_only_retries = intent_only_retries + 1
-                await self._emit_checkpoint(
-                    spec,
-                    {
-                        "phase": "intent_only_pushback",
-                        "iteration": iteration,
-                        "model": spec.model,
-                        "assistant_message": assistant_message,
-                        "completed_tool_results": [],
-                        "pending_tool_calls": [],
-                    },
-                )
-                if hook.wants_streaming():
-                    await hook.on_stream_end(context, resuming=True)
-                await hook.after_iteration(context)
-                continue
-
             # Check for mid-turn injections BEFORE signaling stream end.
             # If injections are found we keep the stream alive (resuming=True)
             # so streaming channels don't prematurely finalize the card.
@@ -881,38 +599,24 @@ class AgentRunner:
             context.stop_reason = stop_reason
             await hook.after_iteration(context)
             break
-        # W1: only enter the cap-exhaustion finalize path when the
-        # loop was actually broken by the iteration cap.  All
-        # other break reasons (final response, empty response,
-        # LLM error) have already set ``final_content``,
-        # ``stop_reason``, and the assistant message inside the
-        # loop — we must NOT overwrite them with the
-        # max-iterations template.  See K1 (v0.1.2) for the bug
-        # that introduced the need for the explicit
-        # ``capped_out`` flag (and the reason why nanobot's
-        # ``for/else`` pattern does not directly apply here).
-        if capped_out:
+        else:
             stop_reason = "max_iterations"
-            # When the extra budget was used, surface the *effective* cap
-            # (``base_max + extra_budget``) so the user sees that the goal
-            # extension actually fired and how much headroom was added.
-            effective_max = current_max
             if spec.max_iterations_message:
                 final_content = spec.max_iterations_message.format(
-                    max_iterations=effective_max,
+                    max_iterations=spec.max_iterations,
                 )
             else:
                 final_content = render_template(
                     "agent/max_iterations_message.md",
                     strip=True,
-                    max_iterations=effective_max,
+                    max_iterations=spec.max_iterations,
                 )
             self._append_final_message(messages, final_content)
             # Drain any remaining injections so they are appended to the
             # conversation history instead of being re-published as
             # independent inbound messages by _dispatch's finally block.
-            # We ignore should_continue here because the for-loop has
-            # already exhausted all iterations.
+            # We ignore should_continue here because the for-loop has already
+            # exhausted all iterations.
             drained_after_max_iterations, injection_cycles = await self._try_drain_injections(
                 spec,
                 messages,
@@ -1136,27 +840,11 @@ class AgentRunner:
         tool_calls: list[ToolCallRequest],
         external_lookup_counts: dict[str, int],
         workspace_violation_counts: dict[str, int],
-        hook: AgentHook | None = None,
-        context: AgentHookContext | None = None,
     ) -> tuple[list[Any], list[dict[str, str]], BaseException | None]:
-        hook = hook or AgentHook()
-        context = context or AgentHookContext(iteration=0, messages=[])
         batches = self._partition_tool_batches(spec, tool_calls)
         tool_results: list[tuple[Any, dict[str, str], BaseException | None]] = []
         for batch in batches:
             if spec.concurrent_tools and len(batch) > 1:
-                # Audit (H6 of the v0.0.9 fourth-pass review):
-                # ``asyncio.gather`` defaults to
-                # ``return_exceptions=False`` and *cancels* the
-                # remaining tasks when one raises, leading to
-                # half-applied side effects (e.g. one tool wrote
-                # to disk, another was cancelled mid-write).  We
-                # now use ``return_exceptions=True`` so each
-                # tool's error surfaces in the result list and
-                # peers can finish cleanly.  ``_run_tool`` itself
-                # catches ``Exception`` (not ``BaseException``) so
-                # ``CancelledError`` still propagates as
-                # designed.
                 batch_results = await asyncio.gather(
                     *(
                         self._run_tool(
@@ -1164,24 +852,11 @@ class AgentRunner:
                             tool_call,
                             external_lookup_counts,
                             workspace_violation_counts,
-                            hook,
-                            context,
                         )
                         for tool_call in batch
-                    ),
-                    return_exceptions=True,
+                    )
                 )
-                # ``_run_tool`` returns a tuple on success; if
-                # it raised (now an ``Exception`` instance in
-                # the result list), we synthesize an error tuple
-                # so the rest of the loop can handle it.
-                normalized: list[Any] = []
-                for r in batch_results:
-                    if isinstance(r, BaseException):
-                        normalized.append((None, {}, r))
-                    else:
-                        normalized.append(r)
-                tool_results.extend(normalized)
+                tool_results.extend(batch_results)
             else:
                 batch_results = []
                 for tool_call in batch:
@@ -1190,8 +865,6 @@ class AgentRunner:
                         tool_call,
                         external_lookup_counts,
                         workspace_violation_counts,
-                        hook,
-                        context,
                     )
                     tool_results.append(result)
                     batch_results.append(result)
@@ -1212,11 +885,7 @@ class AgentRunner:
         tool_call: ToolCallRequest,
         external_lookup_counts: dict[str, int],
         workspace_violation_counts: dict[str, int],
-        hook: AgentHook | None = None,
-        context: AgentHookContext | None = None,
     ) -> tuple[Any, dict[str, str], BaseException | None]:
-        hook = hook or AgentHook()
-        context = context or AgentHookContext(iteration=0, messages=[])
         hint = "\n\n[Analyze the error above and try a different approach.]"
         lookup_error = repeated_external_lookup_error(
             tool_call.name,
@@ -1240,20 +909,10 @@ class AgentRunner:
                 if isinstance(prepared, tuple) and len(prepared) == 3:
                     tool, params, prep_error = prepared
         if prep_error:
-            # Audit (B5 of the v0.0.8 third-pass review): the
-            # previous code did ``prep_error.split(": ", 1)[-1]``
-            # which (a) returned the entire prep_error when no
-            # ``": "`` was present (i.e. a non-prefixed error like
-            # ``"PermissionError"``) and (b) leaked the absolute
-            # file path when the prep_error mentioned a path.  We
-            # now scrub the path/secret-bearing parts before
-            # truncating to ``_MAX_EVENT_DETAIL_LEN``.
-            parts = prep_error.split(": ", 1)
-            detail_source = parts[-1] if len(parts) == 2 else parts[0]
             event = {
                 "name": tool_call.name,
                 "status": "error",
-                "detail": scrub_text(detail_source)[:_MAX_EVENT_DETAIL_LEN],
+                "detail": prep_error.split(": ", 1)[-1][:_MAX_EVENT_DETAIL_LEN],
             }
             handled = self._classify_violation(
                 raw_text=prep_error,
@@ -1297,24 +956,13 @@ class AgentRunner:
                 ],
             )
         try:
-            await hook.before_execute_tool(context, tool_call, tool, params)
             if tool is not None:
                 result = await tool.execute(**params)
             else:
                 result = await spec.tools.execute(tool_call.name, params)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
-            # Audit (item 40 of the v0.0.7 second-pass review):
-            # we used to catch ``BaseException`` here, which also
-            # caught ``KeyboardInterrupt`` / ``SystemExit`` and would
-            # turn the resulting ``payload`` into a regular tool
-            # error reply.  ``Exception`` is the right boundary:
-            # tool errors are ``Exception`` subclasses; signals
-            # (``BaseException``) propagate as designed.  The
-            # explicit ``except asyncio.CancelledError: raise`` above
-            # keeps cancellation as a first-class signal.
-            await hook.on_execute_tool_error(context, tool_call, tool, params, exc)
+        except BaseException as exc:
             if file_edit_trackers and progress_callback is not None:
                 await invoke_file_edit_progress(
                     progress_callback,
@@ -1343,8 +991,7 @@ class AgentRunner:
                 return payload, event, exc
             return payload, event, None
 
-        if is_tool_error_result(tool_call.name, result):
-            await hook.on_execute_tool_error(context, tool_call, tool, params, result)
+        if isinstance(result, str) and result.startswith("Error"):
             if file_edit_trackers and progress_callback is not None:
                 await invoke_file_edit_progress(
                     progress_callback,
@@ -1370,8 +1017,6 @@ class AgentRunner:
             if spec.fail_on_tool_error:
                 return result + hint, event, RuntimeError(result)
             return result + hint, event, None
-
-        await hook.after_execute_tool(context, tool_call, tool, params, result)
 
         if file_edit_trackers and progress_callback is not None:
             await invoke_file_edit_progress(
@@ -1526,152 +1171,28 @@ class AgentRunner:
         tool_name: str,
         result: Any,
     ) -> Any:
-        # V3 (port of nanobot ContextGovernor): delegate to the shared
-        # ``normalize_tool_result`` so per-call normalization and the
-        # ``apply_tool_result_budget`` budget pass see identical semantics.
-        # The on-disk format and exempt set are unchanged.
-        config = ContextGovernanceConfig(
-            provider=self.provider,
-            model=spec.model,
-            tools=spec.tools,
-            workspace=spec.workspace,
-            session_key=spec.session_key,
-            max_tool_result_chars=spec.max_tool_result_chars,
-            context_window_tokens=spec.context_window_tokens,
-            context_block_limit=spec.context_block_limit,
-            max_tokens=spec.max_tokens,
-        )
-        return ContextGovernor.normalize_tool_result(config, tool_call_id, tool_name, result)
-
-    # W2 (of the v0.1.3 eighth-pass review, comparative audit with
-    # nanobot): the upstream nanobot project owns a
-    # ``ContextGovernor.strip_placeholder_assistant_messages`` and
-    # ``ContextGovernor.strip_malformed_tool_calls`` pair that we did
-    # not inherit.  These two helpers defend against two session-
-    # corruption patterns that the bare ``_drop_orphan_tool_results``
-    # cannot catch:
-    #
-    # 1. **Compaction placeholders.**  When a previous turn's
-    #    assistant message is replaced with a one-liner like
-    #    ``[Previous assistant message omitted.]`` to save tokens,
-    #    that placeholder carries no tool_calls.  When the *next* turn
-    #    sees a tool result for an ID that isn't declared in the
-    #    placeholder, the model can re-attempt the same call,
-    #    producing a malformed response in a tight loop.
-    #
-    # 2. **Malformed tool calls.**  A degenerate persisted tool_call
-    #    whose ``name`` is ``None`` or ``""`` (e.g. from an older
-    #    Femtobot version that didn't validate names) gets replayed
-    #    on every turn and the upstream provider rejects the whole
-    #    request (``messages.content.N.tool_use.name: Input should be
-    #    a valid string``), permanently wedging the session.
-    #
-    # Both helpers are pure: they return a new list when something
-    # was repaired, or the same list object when nothing changed.
-    # The persisted transcript is left untouched — only the
-    # model-facing copy is repaired.
-    _PLACEHOLDER_ASSISTANT_TEXTS = frozenset({
-        "[Previous assistant message omitted.]",
-    })
-
-    @staticmethod
-    def _tool_call_name_is_valid(tool_call: Any) -> bool:
-        """Whether a persisted OpenAI-style tool_call carries a usable name.
-
-        Mirrors ``ToolCallRequest.has_valid_name`` for the dict shape
-        stored in message history.  A degenerate call with
-        ``name=None`` / ``""`` cannot be executed and is rejected by
-        upstream APIs if replayed.
-        """
-        if not isinstance(tool_call, dict):
-            return False
-        fn = tool_call.get("function")
-        name = fn.get("name") if isinstance(fn, dict) else tool_call.get("name")
-        return isinstance(name, str) and bool(name)
-
-    @staticmethod
-    def _strip_placeholder_assistant_messages(
-        messages: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        """Remove assistant messages that are compaction placeholders.
-
-        See class docstring W2 for the rationale.  We return a new
-        list when a removal happened, or the same list object when
-        nothing changed.
-        """
-        updated: list[dict[str, Any]] | None = None
-        for idx, msg in enumerate(messages):
-            if msg.get("role") != "assistant":
-                if updated is not None:
-                    updated.append(msg)
-                continue
-            content = msg.get("content", "")
-            text = content if isinstance(content, str) else ""
-            is_placeholder = text.strip() in AgentRunner._PLACEHOLDER_ASSISTANT_TEXTS
-            has_tool_calls = bool(msg.get("tool_calls"))
-            if is_placeholder and not has_tool_calls:
-                if updated is None:
-                    updated = list(messages[:idx])
-                logger.debug(
-                    "Stripping placeholder assistant message from history: {!r}",
-                    text[:60],
-                )
-                continue
-            if updated is not None:
-                updated.append(msg)
-        if updated is None:
-            return messages
-        return updated
-
-    @staticmethod
-    def _strip_malformed_tool_calls(
-        messages: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        """Drop persisted assistant tool_calls whose name is missing/non-string.
-
-        See class docstring W2 for the rationale.  We return a new
-        list when a repair happened, or the same list object when
-        nothing changed.
-        """
-        updated: list[dict[str, Any]] | None = None
-        for idx, msg in enumerate(messages):
-            if msg.get("role") != "assistant":
-                if updated is not None:
-                    updated.append(msg)
-                continue
-            calls = msg.get("tool_calls")
-            if not calls:
-                if updated is not None:
-                    updated.append(msg)
-                continue
-            kept = [tc for tc in calls if AgentRunner._tool_call_name_is_valid(tc)]
-            if len(kept) == len(calls):
-                if updated is not None:
-                    updated.append(msg)
-                continue
-            if updated is None:
-                updated = [dict(m) for m in messages[:idx]]
-            logger.warning(
-                "Stripping {} malformed tool_call(s) with missing/non-string "
-                "name from assistant history before request",
-                len(calls) - len(kept),
+        result = ensure_nonempty_tool_result(tool_name, result)
+        if tool_name in _TOOL_RESULT_OFFLOAD_EXEMPT_TOOLS:
+            # Exempt tools bound their own output; skip generic offload and truncation.
+            return result
+        try:
+            content = maybe_persist_tool_result(
+                spec.workspace,
+                spec.session_key,
+                tool_call_id,
+                result,
+                max_chars=spec.max_tool_result_chars,
             )
-            repaired = dict(msg)
-            if kept:
-                repaired["tool_calls"] = kept
-            else:
-                repaired.pop("tool_calls", None)
-            # An assistant turn with neither content nor any valid tool
-            # call is itself invalid upstream; drop it entirely in that
-            # case.
-            has_content = bool(repaired.get("content"))
-            if not kept and not has_content:
-                continue
-            updated.append(repaired)
-
-        if updated is None:
-            return messages
-        return updated
+        except Exception:
+            logger.exception(
+                "Tool result persist failed for {} in {}; using raw result",
+                tool_call_id,
+                spec.session_key or "default",
+            )
+            content = result
+        if isinstance(content, str) and len(content) > spec.max_tool_result_chars:
+            return truncate_text(content, spec.max_tool_result_chars)
+        return content
 
     @staticmethod
     def _drop_orphan_tool_results(

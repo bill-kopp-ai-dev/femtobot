@@ -1,7 +1,0 @@
-{
-  "name": "builtin",
-  "version": "1.0.0",
-  "description": "Built-in Femtobot plugins (read-only)",
-  "allowed_tools": [],
-  "hooks": []
-}

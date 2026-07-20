@@ -3,28 +3,20 @@
 import difflib
 import mimetypes
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from loguru import logger
-
 from femtobot.agent.tools.base import Tool, tool_parameters
 from femtobot.agent.tools.file_state import FileStates, _hash_file, current_file_states
-from femtobot.agent.tools.path_utils import resolve_default_cwd, resolve_workspace_path
+from femtobot.agent.tools.path_utils import resolve_workspace_path
 from femtobot.agent.tools.schema import (
     BooleanSchema,
     IntegerSchema,
     StringSchema,
     tool_parameters_schema,
 )
-from femtobot.security.workspace_access import current_tool_workspace, current_workspace_scope
-from femtobot.security.workspace_soft_boundary import (
-    is_soft_mode,
-    max_strikes,
-    record_violation,
-)
+from femtobot.security.workspace_access import current_tool_workspace
 from femtobot.utils.helpers import build_image_content_blocks, detect_image_mime
 
 
@@ -84,114 +76,12 @@ class _FsTool(Tool):
             restrict_to_workspace=self._restrict_to_workspace,
             sandbox_restricts_workspace=self._sandbox_restricts_workspace,
         )
-        # When the tool is anchored on the Femtobot internal workspace
-        # (``<project_root>/.femtobot/workspace``) and the active scope
-        # does not pin a different project_path, prefer the project root
-        # for relative-path resolution so commands like
-        # ``read_file femtobot/agent/runner.py`` hit the user's source
-        # tree instead of ``.femtobot/workspace/femtobot/agent/runner.py``.
-        #
-        # The Femtobot-workspace check uses ``get_instance_dir`` so the
-        # override only kicks in for the canonical anchor (the workspace
-        # directory the Femtobot CLI created at startup).  Tools that were
-        # constructed with an arbitrary ``workspace=`` argument — for
-        # instance the ``apply_patch`` tests that point ``workspace`` at a
-        # ``tmp_path`` fixture — keep the legacy anchor semantics.
-        # See ``path_utils.resolve_default_cwd`` for the full policy.
-        from femtobot.config.loader import get_instance_dir
-
-        scope_overrides_project = (
-            access.scope is not None and access.scope.project_path is not None
-        )
-        anchored_on_femtobot_workspace = False
-        if self._workspace is not None:
-            try:
-                instance_dir = get_instance_dir()
-                anchored_on_femtobot_workspace = (
-                    self._workspace.resolve() == instance_dir / "workspace"
-                )
-            except Exception:
-                anchored_on_femtobot_workspace = False
-        if (
-            anchored_on_femtobot_workspace
-            and not scope_overrides_project
-            and not access.restrict_to_workspace
-        ):
-            anchor = resolve_default_cwd(
-                workspace=self._workspace,
-                restrict_to_workspace=access.restrict_to_workspace,
-            )
-            return resolve_workspace_path(
-                path,
-                anchor,
-                None,
-                self._extra_allowed_dirs,
-                restrict_to_workspace=False,
-            )
         return resolve_workspace_path(
             path,
             access.project_path,
             access.allowed_root,
             self._extra_allowed_dirs,
-            restrict_to_workspace=access.restrict_to_workspace,
         )
-
-    def _soft_resolve(self, path: str) -> tuple[Path | None, str | None]:
-        """Resolve *path* and translate boundary errors to recoverable warnings (A8).
-
-        Returns ``(resolved, error_message)``.  When the error is non-None,
-        callers should return it as the tool result instead of raising.
-        Hard-fail behavior is preserved when ``FEMTOBOT_SOFT_WORKSPACE_BOUNDARY``
-        is unset, and after the per-session strike limit is exceeded.
-
-        The session key is derived from the active workspace scope's source
-        channel + project name (best effort).  When no scope is bound (e.g.
-        unit tests), the counter is process-global — the strike limit is
-        still enforced so we never loop forever.
-        """
-        try:
-            return self._resolve(path), None
-        except Exception as exc:
-            if not is_soft_mode():
-                raise
-            session_key = self._current_session_key()
-            count = record_violation(session_key)
-            strike_limit = max_strikes()
-            logger.warning(
-                "Workspace boundary soft-violation {}/{} for session {}: {}",
-                count,
-                strike_limit,
-                session_key,
-                exc,
-            )
-            if count >= strike_limit:
-                logger.error(
-                    "Soft workspace boundary exhausted ({} strikes) for session {}; "
-                    "falling back to hard-fail.",
-                    count,
-                    session_key,
-                )
-                raise
-            return None, (
-                f"Warning: path '{path}' is outside the active workspace ({exc}). "
-                f"This is a soft warning ({count}/{strike_limit}); subsequent "
-                f"violations on the same session will be hard-fail. If the path is "
-                f"intentional, ask the user to whitelist it or move the file into the "
-                f"workspace."
-            )
-
-    def _current_session_key(self) -> str:
-        """Best-effort session key lookup for soft-mode counter scoping (A8).
-
-        Falls back to a process-global key when no scope is bound.
-        """
-        try:
-            scope = current_workspace_scope()
-            if scope is not None:
-                return f"{scope.source_channel or 'default'}:{scope.project_name}"
-        except Exception:  # pragma: no cover - defensive
-            pass
-        return "global"
 
     def _display_workspace(self) -> Path | None:
         return current_tool_workspace(self._workspace).project_path
@@ -220,30 +110,8 @@ _BLOCKED_DEVICE_PATHS = frozenset(
 )
 
 
-_BLOCKED_PROC_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # /proc/self/environ exposes the process env vars (API keys, etc.).
-    re.compile(r"^/proc/self/environ$"),
-    re.compile(r"^/proc/\d+/environ$"),
-    # /proc/self/maps, /proc/<pid>/maps — process memory map.
-    re.compile(r"^/proc/self/maps$"),
-    re.compile(r"^/proc/\d+/maps$"),
-    # /proc/<pid>/mem — process memory; reading it as a regular file
-    # returns 0 bytes (or is denied) but the LLM trying it is a smell.
-    re.compile(r"^/proc/\d+/mem$"),
-)
-
-
 def _is_blocked_device(path: str | Path) -> bool:
-    """Check if path is a blocked device that could hang or produce infinite output.
-
-    Audit (B7 of the v0.0.8 third-pass review): the previous regex
-    only blocked ``/proc/<pid>/fd/[012]`` and missed the much more
-    dangerous ``/proc/self/environ`` (which contains the entire
-    process environment, including API keys set via ``export
-    OPENAI_API_KEY=...`` or equivalent).  Reading it would leak
-    every secret the agent has access to.  We now block the
-    ``environ`` / ``maps`` / ``mem`` paths too.
-    """
+    """Check if path is a blocked device that could hang or produce infinite output."""
     import re
 
     raw = str(path)
@@ -260,10 +128,6 @@ def _is_blocked_device(path: str | Path) -> bool:
         return True
     if re.match(r"/proc/\d+/fd/[012]$", resolved) or re.match(r"/proc/self/fd/[012]$", resolved):
         return True
-    # Audit (B7): block ``/proc/self/environ`` and friends.
-    for pat in _BLOCKED_PROC_PATTERNS:
-        if pat.match(raw) or pat.match(resolved):
-            return True
 
     # Check if resolved path starts with /dev/ (covers symlinks to devices)
     if resolved.startswith("/dev/"):
@@ -569,12 +433,7 @@ class WriteFileTool(_FsTool):
                 raise ValueError("Unknown path")
             if content is None:
                 raise ValueError("Unknown content")
-            # A8: try soft-resolve first; on strike-out, falls back to hard-fail
-            # inside ``_soft_resolve`` (re-raises) so the ``except`` below sees it.
-            fp, soft_error = self._soft_resolve(path)
-            if soft_error is not None:
-                return soft_error
-            assert fp is not None  # soft_resolve contract
+            fp = self._resolve(path)
             fp.parent.mkdir(parents=True, exist_ok=True)
             fp.write_text(content, encoding="utf-8")
             self._file_states.record_write(fp)
@@ -943,11 +802,7 @@ class EditFileTool(_FsTool):
             if expected_replacements is not None and expected_replacements < 1:
                 return "Error: expected_replacements must be >= 1."
 
-            # A8: soft-resolve (falls back to hard-fail after the strike limit).
-            fp, soft_error = self._soft_resolve(path)
-            if soft_error is not None:
-                return soft_error
-            assert fp is not None
+            fp = self._resolve(path)
 
             # Create-file semantics: old_text='' + file doesn't exist → create
             if not fp.exists():

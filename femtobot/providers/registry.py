@@ -435,20 +435,6 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         backend="openai_compat",
         default_api_base="https://qianfan.baidubce.com/v2",
     ),
-    # === AWS Bedrock (Converse API) ==========================================
-    # Matched by ``anthropic.claude*`` / ``amazon.nova*`` / ``meta.llama*``
-    # model-id keywords.  Uses SigV4 via boto3 (lazy import — see
-    # ``femtobot.providers.bedrock``).  ``is_direct=True`` because users
-    # supply credentials directly via AWS_* env vars, not via a Femtobot
-    # API key.
-    ProviderSpec(
-        name="bedrock",
-        keywords=("bedrock", "anthropic.claude", "amazon.nova", "meta.llama"),
-        env_key="BEDROCK_API_KEY",
-        display_name="AWS Bedrock",
-        backend="bedrock",
-        is_direct=True,
-    ),
 )
 
 
@@ -464,13 +450,3 @@ def find_by_name(name: str) -> ProviderSpec | None:
         if spec.name == normalized:
             return spec
     return None
-
-
-def list_provider_specs() -> list[ProviderSpec]:
-    """Return all provider specs (read-only copy of :data:`PROVIDERS`).
-
-    C5 (REFACTOR_PLAN.md Lote C): the onboard wizard iterates this list
-    to build the provider chooser.  Stable ordering matches the
-    registry's match-priority order (gateways first).
-    """
-    return list(PROVIDERS)

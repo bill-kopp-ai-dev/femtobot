@@ -231,18 +231,8 @@ def safe_filename(name: str) -> str:
 
 
 def image_placeholder_text(path: str | None, *, empty: str = "[image]") -> str:
-    """Build an image placeholder string.
-
-    A13 (REFACTOR_PLAN.md Lote A): when *path* is a local filesystem path,
-    the placeholder is replaced with a privacy-safe ``[image omitted]``
-    token instead of leaking the absolute path into the replay transcript
-    (which is later injected into prompts).  Callers that need a path for
-    debugging should log it via ``logger`` at INFO level — never inline
-    the path in user-visible text.
-    """
-    if not path:
-        return empty
-    return "[image omitted]"
+    """Build an image placeholder string."""
+    return f"[image: {path}]" if path else empty
 
 
 def truncate_text(text: str, max_chars: int) -> str:
@@ -253,22 +243,7 @@ def truncate_text(text: str, max_chars: int) -> str:
 
 
 def find_legal_message_start(messages: list[dict[str, Any]]) -> int:
-    """Find the first index whose tool results have matching assistant calls.
-
-    Audit (I5 of the v0.1.0 fifth-pass review): the previous
-    implementation called ``declared.clear()`` when it found
-    an orphan tool result, which threw away the legitimate
-    tool-call IDs that were declared *before* the orphan.  As
-    a result, valid tool results later in the list were also
-    treated as orphans and the ``start`` index kept advancing.
-
-    We now only set ``start = i + 1`` when an orphan is found;
-    the ``declared`` set is preserved so later valid tool
-    results are recognized.  This is safe because the function
-    returns the *first* index from which the tail is legal —
-    once we see an orphan at index ``i``, everything before
-    ``i + 1`` is discarded regardless of what comes next.
-    """
+    """Find the first index whose tool results have matching assistant calls."""
     declared: set[str] = set()
     start = 0
     for i, msg in enumerate(messages):
@@ -280,14 +255,8 @@ def find_legal_message_start(messages: list[dict[str, Any]]) -> int:
         elif role == "tool":
             tid = msg.get("tool_call_id")
             if tid and str(tid) not in declared:
-                # Orphan tool result.  Advance ``start`` past
-                # the orphan (so the tail is legal) but do
-                # NOT clear ``declared``: any tool-call IDs
-                # declared *before* the orphan are still
-                # legitimate and must be matched against their
-                # corresponding tool results later in the
-                # list.
                 start = i + 1
+                declared.clear()
     return start
 
 
@@ -611,28 +580,6 @@ def build_status_content(
     return "\n".join(lines)
 
 
-# R2-femtobot (refactor-parity-with-nanobot.md Phase 3): the sync helper
-# used to copy every ``templates/agent/*.md`` (identity.md, dream.md,
-# tool_contract.md, evaluator.md, …) into the user workspace, even
-# though those files are internal prompt templates rendered in memory
-# by ``prompt_templates.render_template`` and should never be edited
-# by the operator.  Restrict the sync to the four canonical user-
-# facing files plus the memory stubs.  Adding a new template below is
-# a deliberate decision; the previous open-loop policy leaked internal
-# prompt scaffolding into ``.gitignore``-protected workspace files.
-#
-# Each tuple is ``(template_path_relative_to_templates, workspace_name)``
-# so we can map ``templates/agent/goal_runtime.md`` to ``goal_runtime.md``
-# in the workspace — keeping the user-facing name stable while the
-# template lives next to its sibling internal prompts.
-_CANONICAL_WORKSPACE_TEMPLATES = (
-    ("AGENTS.md", "AGENTS.md"),
-    ("SOUL.md", "SOUL.md"),
-    ("USER.md", "USER.md"),
-    ("agent/goal_runtime.md", "goal_runtime.md"),
-)
-
-
 def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]:
     """Sync bundled templates to workspace. Creates missing files without overwriting user files."""
     from importlib.resources import files as pkg_files
@@ -657,14 +604,9 @@ def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]
         dest.write_text(content, encoding="utf-8")
         added.append(str(dest.relative_to(workspace)))
 
-    # Only the four canonical user-facing files are emitted to the
-    # workspace.  Internal prompt templates (templates/agent/*.md) are
-    # read directly from the package by ``prompt_templates.render_template``
-    # and never materialised on disk — that mirrors nanobot, where the
-    # template bundle is shipped inside the package and never copied
-    # into ``.agent/`` either.
-    for src_rel, dest_name in _CANONICAL_WORKSPACE_TEMPLATES:
-        _write(tpl / src_rel, workspace / dest_name)
+    for item in tpl.iterdir():
+        if item.is_file() and item.name.endswith(".md") and not item.name.startswith("."):
+            _write(item, workspace / item.name)
     _write(tpl / "memory" / "MEMORY.md", workspace / "memory" / "MEMORY.md")
     _write(None, workspace / "memory" / "history.jsonl")
     (workspace / "skills").mkdir(exist_ok=True)
@@ -684,7 +626,6 @@ def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]
             tracked_files=[
                 "SOUL.md",
                 "USER.md",
-                "goal_runtime.md",
                 "memory/MEMORY.md",
             ],
         )
@@ -762,11 +703,12 @@ __pycache__/
     return created
 
 
-def build_default_onboard_config(instance_dir: Path) -> Config:
+def build_default_onboard_config(instance_dir: Path, suffix: str | None = None) -> Config:
     """Build a default Config for onboard.
 
     Args:
         instance_dir: Root instance directory
+        suffix: Instance suffix (for display purposes)
 
     Returns:
         Config with sensible defaults for a new instance.
@@ -778,43 +720,21 @@ def build_default_onboard_config(instance_dir: Path) -> Config:
     # Set workspace relative to instance_dir
     config.agents.defaults.workspace = "workspace"
 
-    # T13 (ui-parity Q2): explicit placeholder for the human operator so
-    # the parity header bar / welcome card know where to interpolate the
-    # name. ``<your-name>`` is the same sentinel used by
-    # ``schema.UserConfig``; downstream code replaces it with a safe
-    # fallback (``os.getlogin()``) at render time.
-    config.agents.defaults.user.name = "<your-name>"
+    # Set instance-specific bot name if suffix provided
+    if suffix:
+        config.agents.defaults.bot_name = f"Femtobot-{suffix.upper()}"
+        config.agents.defaults.bot_icon = "🤖"
 
     return config
 
 
-def write_default_config(
-    config: Config,
-    config_path: Path,
-    force: bool = False,
-    *,
-    scrub_secrets: bool = True,
-) -> bool:
+def write_default_config(config: Config, config_path: Path, force: bool = False) -> bool:
     """Write default config to file.
-
-    SECURITY: by default, sensitive fields (``api_key``, ``token``, ``secret``,
-    etc.) are scrubbed to ``None`` before the config is persisted. This
-    prevents a class of bug where ``Config()`` reads ``FEMTOBOT_*`` env vars
-    (inherited from the parent process / IDE) into the config object, and a
-    subsequent ``model_dump`` writes them to ``config.json`` in plain text.
-
-    A ``loguru`` warning is emitted whenever any secrets are detected in the
-    in-memory config so the user knows where to look. Pass
-    ``scrub_secrets=False`` to persist secrets verbatim — but be aware this
-    re-opens the on-disk exposure the scrubber is meant to close.
 
     Args:
         config: Config object to write
         config_path: Path to config.json
         force: Overwrite if exists
-        scrub_secrets: When True (default), sensitive values are replaced with
-            ``None`` before serialization. When False, the config is dumped
-            verbatim and a warning is logged.
 
     Returns:
         True if written, False if skipped (file exists and not force)
@@ -822,43 +742,11 @@ def write_default_config(
     if config_path.exists() and not force:
         return False
 
-    # Import locally to avoid a hard dependency at module import time; the
-    # scrubber has no other coupling and this keeps cold-start paths clean.
-    from femtobot.utils.secret_scrub import count_secrets
-    from femtobot.utils.secret_scrub import scrub_secrets as _scrub
+    import json
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
     data = config.model_dump(mode="json", by_alias=True)
-    secret_count = count_secrets(data)
-    if secret_count > 0:
-        logger.warning(
-            "Config at {} contains {} sensitive field(s) (api_key/token/secret/...). "
-            "Move them to env vars (FEMTOBOT_PROVIDERS__<NAME>__API_KEY) or a "
-            "gitignored .env file. They will be scrubbed from the persisted "
-            "config.json to avoid leaking via `git add` / backups / IDE sync.",
-            config_path,
-            secret_count,
-        )
-
-    if scrub_secrets:
-        data, scrubbed = _scrub(data)
-        if scrubbed != secret_count:
-            # Defensive: should be impossible, but log if it ever happens.
-            logger.warning(
-                "Secret scrubber mismatch on {}: detected={}, scrubbed={}",
-                config_path,
-                secret_count,
-                scrubbed,
-            )
-    elif secret_count > 0:
-        logger.warning(
-            "Persisting {} sensitive field(s) to {} with scrub_secrets=False. "
-            "This file MUST stay out of version control.",
-            secret_count,
-            config_path,
-        )
-
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
@@ -876,47 +764,28 @@ def create_instance_gitignore(instance_dir: Path) -> Path:
     """
     gitignore = instance_dir / ".gitignore"
     if not gitignore.exists():
-        # SECURITY: ignore config.json by default. It routinely contains API
-        # keys (providers.*.apiKey), webhook tokens, allowed-root lists, and
-        # other secrets. Earlier versions un-ignored it (rule "!config.json")
-        # so the file could be tracked in personal forks, but that put anyone
-        # who ran `git init` inside this dir at risk of pushing secrets.
-        #
-        # Override patterns if you really want to commit a non-secret slice
-        # of your config (e.g. !config.public.json).
-        gitignore.write_text("""# Femtobot instance data — DO NOT COMMIT secrets
-# config.json is intentionally ignored because it contains provider API
-# keys (providers.*.apiKey) and other credentials. To persist secrets
-# safely, use:
-#   - Environment variables (FEMTOBOT_PROVIDERS__MINIMAX__API_KEY=...)
-#   - A `.env` file (already ignored below)
-#   - A separate `config.local.json` and un-ignore it explicitly here
-#     only AFTER scrubbing secrets from that file.
+        gitignore.write_text("""# Femtobot instance data
+# Keep config.json but ignore other generated files
 *.json
-*.toml
-*.yaml
-*.yml
+!config.json
 history/
 workspace/memory/history.jsonl
 workspace/tool_results/
 workspace/artifacts/
-workspace/sessions/
 __pycache__/
 *.pyc
 .env
-.env.*
 *.log
-*.pid
-*.seed
 """)
     return gitignore
 
 
-def create_instance_readme(instance_dir: Path) -> Path:
+def create_instance_readme(instance_dir: Path, suffix: str | None = None) -> Path:
     """Create README.md in instance root documenting this instance.
 
     Args:
         instance_dir: Root instance directory
+        suffix: Instance suffix (for display)
 
     Returns:
         Path to created README.md
@@ -925,7 +794,7 @@ def create_instance_readme(instance_dir: Path) -> Path:
     if readme.exists():
         return readme
 
-    name = ".femtobot"
+    name = f".femtobot{suffix and '_' + suffix or ''}"
     content = f"""# {name} - Femtobot Instance
 
 This directory contains the persistent data for a Femtobot agent instance.
@@ -948,16 +817,12 @@ This directory contains the persistent data for a Femtobot agent instance.
 
 ## Usage
 
-Run ``femtobot`` commands in this directory to interact with the instance:
+Run commands with `--suffix {suffix or "default"}` to target this instance:
 
 ```bash
-femtobot status
+femtobot status --suffix {suffix or "default"}
 femtobot agent -m "Hello"
 ```
-
-To target a different instance, use ``--folder-path <dir>`` or set the
-``FEMTOBOT_HOME`` environment variable.  See
-``docs/multiple-instances.md`` for details.
 
 ---
 *Generated by Femtobot onboard*
@@ -968,17 +833,19 @@ To target a different instance, use ``--folder-path <dir>`` or set the
 
 
 def summarize_instance_creation(
-    instance_dir: Path, created_files: list[str] | None = None
+    instance_dir: Path, suffix: str | None = None, created_files: list[str] | None = None
 ) -> str:
     """Generate a summary message for instance creation.
 
     Args:
         instance_dir: Root instance directory
+        suffix: Instance suffix
         created_files: Optional list of created file names
 
     Returns:
         Formatted summary string
     """
+    name = f".femtobot{suffix and '_' + suffix or ''}"
     summary = f"""Instance created at: {instance_dir}
 
 Next steps:
@@ -990,69 +857,3 @@ Next steps:
         for f in created_files:
             summary += f"  - {f}\n"
     return summary
-
-
-# ---------------------------------------------------------------------------
-# Secret scrubbing (v0.0.8 third-pass audit B1, B2)
-# ---------------------------------------------------------------------------
-
-# Patterns that match common credential shapes.  We use a single
-# compiled regex with named groups so callers can see *what* was
-# redacted.  The patterns are deliberately conservative — false
-# positives are OK for log output (over-redaction is safe),
-# false negatives are the danger.
-_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # Bearer / Basic / API tokens (preserve the "Authorization: Bearer " prefix)
-    re.compile(
-        r"(?i)\b(?P<scheme>authorization\s*:\s*(?:bearer|basic)\s+)"
-        r"(?P<token>[A-Za-z0-9._\-+/=]{8,})"
-    ),
-    # OpenAI-style keys (sk-..., sk-proj-...)
-    re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_\-]{20,}"),
-    # GitHub PATs (ghp_, gho_, ghu_, ghs_, ghr_)
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"),
-    # AWS access keys
-    re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}"),
-    # Generic key=value / key: value pairs (preserve the key + separator)
-    re.compile(
-        r"(?i)\b(?P<key>api[_-]?key|secret|token|password|passwd|pwd)"
-        r"\s*(?P<sep>[:=])\s*"
-        r"[\"']?(?P<value>[A-Za-z0-9._\-+/=]{8,})[\"']?"
-    ),
-    # PEM private keys (just the header marker)
-    re.compile(r"-----BEGIN [A-Z ]+PRIVATE KEY-----"),
-)
-
-
-def scrub_text(text: str, *, placeholder: str = "[REDACTED]") -> str:
-    """Replace secret-looking substrings with ``placeholder``.
-
-    Audit (B1, B2 of the v0.0.8 third-pass review): user-provided
-    message text used to land in INFO logs (full content for short
-    messages; 80-char prefix for longer ones).  This helper scrubs
-    common credential shapes (Authorization headers, OpenAI/GitHub/
-    AWS keys, generic ``key=…`` assignments, PEM blocks) before
-    logging, without altering the underlying API behavior.
-
-    The helper is intentionally lightweight — it doesn't try to be
-    a full credential detector.  Over-redaction is safe (worst case
-    is a log line that's a bit less readable); under-redaction is
-    what we're guarding against.
-    """
-    if not text:
-        return text
-    out = text
-    for pattern in _SECRET_PATTERNS:
-        # Replace the *value* portion when the pattern has named
-        # groups; otherwise redact the whole match.  We support two
-        # shapes:
-        #   - key=value style (groups: key, sep, value)
-        #   - "Scheme: value" style (groups: scheme, token)
-        groups = pattern.groupindex
-        if "key" in groups and "value" in groups:
-            out = pattern.sub(rf"\g<key>\g<sep>{placeholder}", out)
-        elif "scheme" in groups and "token" in groups:
-            out = pattern.sub(rf"\g<scheme>{placeholder}", out)
-        else:
-            out = pattern.sub(placeholder, out)
-    return out
