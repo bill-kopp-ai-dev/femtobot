@@ -205,9 +205,53 @@ class StreamRenderer:
         self._stop_spinner()
         if self._buf.strip():
             # Print final rendered content (persists after Live is gone).
-            out = sys.stdout
-            out.write(self._render_str())
-            out.flush()
+            #
+            # Phase 4 cleanup (audit 2026-07-20): the original
+            # nanobot baseline writes directly to ``sys.stdout`` here
+            # via ``out.write(self._render_str())``. That works in
+            # nanobot because nanobot's REPL loop is built on top of
+            # ``prompt_toolkit``'s ``PromptSession`` (an async input
+            # machinery that yields control). femtobot's REPL loop
+            # in ``femtobot/cli/commands.py:run_interactive`` ALSO
+            # uses ``prompt_toolkit.PromptSession``. However, the
+            # ``on_end`` call here happens inside an ``asyncio.Task``
+            # that runs *concurrently* with the prompt_toolkit
+            # input loop, and a sync ``sys.stdout.write`` here can
+            # race the prompt_toolkit renderer — the body text gets
+            # echoed back into the input queue and the next turn
+            # self-feeds into a loop.
+            #
+            # We use ``prompt_toolkit.application.run_in_terminal``
+            # when available to defer the write until prompt_toolkit
+            # has paused its renderer. The function is a no-op when
+            # no prompt_toolkit session is active (the startup
+            # drain / non-TTY test paths).
+            ansi_str = self._render_str()
+            if not ansi_str:
+                pass
+            else:
+                try:
+                    from prompt_toolkit.application import run_in_terminal
+                    from prompt_toolkit.formatted_text import ANSI
+                    from prompt_toolkit import print_formatted_text
+
+                    def _write() -> None:
+                        print_formatted_text(ANSI(ansi_str), end="")
+
+                    try:
+                        # ``run_in_terminal`` only works when
+                        # prompt_toolkit's event loop is currently
+                        # running. If we are not inside one (e.g.
+                        # test / non-TTY), fall back to a sync write.
+                        await run_in_terminal(_write)
+                    except Exception:
+                        out = sys.stdout
+                        out.write(ansi_str)
+                        out.flush()
+                except ImportError:
+                    out = sys.stdout
+                    out.write(ansi_str)
+                    out.flush()
         if resuming:
             self._buf = ""
             self._start_spinner()

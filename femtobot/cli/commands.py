@@ -335,8 +335,34 @@ def _print_agent_response(
     render_markdown: bool,
     metadata: dict | None = None,
     show_header: bool = True,
+    _await_via_run_in_terminal: bool = False,
 ) -> None:
-    """Render assistant response with consistent terminal styling."""
+    """Render assistant response with consistent terminal styling.
+
+    Phase 4 cleanup — ``_print_agent_response`` previously wrote
+    directly to ``sys.stdout`` via Rich's ``Console.print``, which
+    conflicted with prompt_toolkit's active input loop. The nanobot
+    baseline routes async interjections through
+    ``prompt_toolkit.application.run_in_terminal`` so the prompt
+    is paused, the line is written, then the prompt resumes. We
+    keep a sync form (default, used by the startup-drain path
+    before the REPL begins) and add the async form via the
+    ``_await_via_run_in_terminal=True`` flag for the REPL-time
+    paths.
+
+    The bug #30 fix is unrelated; see issue surfaced 2026-07-20
+    where the body render raced the prompt and produced a loop
+    where the response text was echoed back as input on the
+    next iteration.
+    """
+    if _await_via_run_in_terminal:
+        return _print_agent_response_in_terminal(
+            response,
+            render_markdown=render_markdown,
+            metadata=metadata,
+            show_header=show_header,
+        )
+
     console = _make_console()
     content = response or ""
     body = _response_renderable(content, render_markdown, metadata)
@@ -345,6 +371,44 @@ def _print_agent_response(
         console.print(f"[cyan]{__logo__} Femtobot[/cyan]")
     console.print(body)
     console.print()
+
+
+async def _print_agent_response_in_terminal(
+    response: str,
+    render_markdown: bool,
+    metadata: dict | None = None,
+    show_header: bool = True,
+) -> None:
+    """Async form of ``_print_agent_response`` that yields control to prompt_toolkit.
+
+    See ``_print_agent_response`` for the rationale. This wrapper
+    runs the write inside ``run_in_terminal`` so prompt_toolkit
+    cleanly pauses its renderer, lets us print, then restores
+    the prompt state — eliminating the bug where the agent's
+    body was echoed back into the prompt_toolkit input queue.
+    """
+    from prompt_toolkit.application import run_in_terminal  # local import
+    from prompt_toolkit.formatted_text import ANSI
+    from prompt_toolkit import print_formatted_text
+
+    content = response or ""
+
+    def _write() -> None:
+        ansi = _render_interactive_ansi(
+            lambda c: (
+                c.print(),
+                (
+                    c.print(f"[cyan]{__logo__} Femtobot[/cyan]")
+                    if show_header
+                    else c.print()
+                ),
+                c.print(_response_renderable(content, render_markdown, metadata)),
+                c.print(),
+            )
+        )
+        print_formatted_text(ANSI(ansi), end="")
+
+    await run_in_terminal(_write)
 
 
 def _response_renderable(content: str, render_markdown: bool, metadata: dict | None = None):
@@ -1595,7 +1659,14 @@ def agent(
                             # inline without disturbing the prompt.
                             if renderer:
                                 await renderer.close()
-                            _print_agent_response(
+                            # Bug surfaced 2026-07-20: a sync write to
+                            # sys.stdout inside the consumer task races
+                            # the prompt_toolkit input loop and the body
+                            # text gets echoed back into the input queue,
+                            # producing a self-feeding loop. We await the
+                            # in-terminal form so prompt_toolkit cleanly
+                            # pauses its renderer before we print.
+                            await _print_agent_response_in_terminal(
                                 msg.content,
                                 render_markdown=markdown,
                                 metadata=msg.metadata or None,
@@ -1690,11 +1761,20 @@ def agent(
                                 print_kwargs: dict[str, Any] = {}
                                 if renderer and renderer.header_printed:
                                     print_kwargs["show_header"] = False
-                                _print_agent_response(
+                                # Bug surfaced 2026-07-20: sync
+                                # ``_print_agent_response`` writes to
+                                # ``sys.stdout`` while prompt_toolkit
+                                # still owns the terminal. The body
+                                # text gets echoed back into the input
+                                # queue and the next turn self-feeds.
+                                # Use the in-terminal async form so
+                                # prompt_toolkit cleanly pauses its
+                                # renderer before we print.
+                                await _print_agent_response_in_terminal(
                                     content,
                                     render_markdown=markdown,
                                     metadata=meta,
-                                    **print_kwargs,
+                                    show_header=print_kwargs.get("show_header", True),
                                 )
                         elif renderer and not renderer.streamed:
                             await renderer.close()
