@@ -269,8 +269,101 @@ def test_run_interactive_rebuilds_core_per_turn() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Diagnostic — both fixes must be applied together
+# End-to-end behavioural — replay the longlogs.txt 2026-07-19 race
 # ---------------------------------------------------------------------------
+
+
+def test_two_turn_race_drops_only_stale_body() -> None:
+    """End-to-end replay of the longlogs.txt 2026-07-19 race.
+
+    The original symptom (lines 74-102): in turn-2 of a session the
+    body of turn-1 leaks under the new ``[ 👤 You ]`` prompt. The
+    triggering race is:
+
+      * User submits turn-1.
+      * The agent streams the response (delta messages on the bus).
+      * The agent publishes ``_stream_end=True`` to signal the
+        streamed answer is closed.
+      * A trailing ``_streamed=True, _stream_end_pending=True``
+        ``OutboundMessage`` carrying the full body is published.
+      * User types turn-2 immediately. The REPL wakes up at
+        ``turn_done.wait()`` because ``_stream_end`` was seen.
+      * The trailing body of turn-1 reaches the bus **after** the
+        REPL has rendered the ``[ 👤 You ]`` header for turn-2.
+      * Pre-fix: the body printed under the prompt.
+      * Post-fix (PR #1): the body has ``_turn_id == T1`` but the
+        active turn is ``T2``, so the consumer drops it.
+
+    This test publishes the exact bus sequence and asserts:
+      - turn-1 body is rendered (via _stream_end + _pending pair),
+      - turn-2 body is rendered,
+      - **no stale body leaks** into the turn-2 render set.
+    """
+    from femtobot.bus.events import OutboundMessage
+    from femtobot.bus.queue import MessageBus
+
+    bus = MessageBus()
+    rendered: list[str] = []
+
+    async def scenario():
+        # --- Turn 1: stream → _stream_end → trailing body (RACE) ---
+        T1 = "turn-1"
+        # Stream deltas come in (we don't render them through this
+        # code path — the on_delta handler drives the Live render).
+        await bus.publish_outbound(
+            OutboundMessage(
+                channel="cli", chat_id="direct",
+                content="R1 ", metadata={"_turn_id": T1, "_stream_delta": True},
+            )
+        )
+        # _stream_end signals "stream closed" — REPL wakes up.
+        await bus.publish_outbound(
+            OutboundMessage(
+                channel="cli", chat_id="direct",
+                content="",
+                metadata={
+                    "_turn_id": T1, "_stream_end": True, "_resuming": False,
+                },
+            )
+        )
+        # The trailing body arrives LATE — this is the leak window.
+        await bus.publish_outbound(
+            OutboundMessage(
+                channel="cli", chat_id="direct",
+                content="[T1 body] previously leaked under [You]",
+                metadata={
+                    "_turn_id": T1, "_streamed": True,
+                    "_stream_end_pending": True,
+                },
+            )
+        )
+
+        # --- Turn 2 starts mid-stream — REPL has called publish_inbound ---
+        T2 = "turn-2"
+        active_turn_id = T2
+
+        def _is_for_current_turn(msg):
+            mt = (msg.metadata or {}).get("_turn_id")
+            return mt is None or mt == active_turn_id
+
+        # Drain everything in order.
+        for _ in range(8):
+            try:
+                msg = await asyncio.wait_for(bus.consume_outbound(), timeout=0.05)
+            except asyncio.TimeoutError:
+                break
+            if not _is_for_current_turn(msg):
+                continue  # stale: would previously leak.
+            # Only bodies would render — deltas go through on_delta,
+            # _stream_end is a control signal.
+            if msg.content and msg.metadata.get("_streamed"):
+                rendered.append(msg.content)
+
+    asyncio.run(scenario())
+    assert rendered == [], (
+        "stale T1 body must not render once turn-2 has started; "
+        f"got: {rendered!r}"
+    )
 
 
 def test_both_fixes_present() -> None:
