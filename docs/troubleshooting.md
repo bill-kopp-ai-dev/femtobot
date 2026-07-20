@@ -559,64 +559,151 @@ through to the normal consumer.
 
 ---
 
-## Issues fixed in 0.1.0-ui.3 (2026-07-19)
+## Issues fixed in 0.1.0-ui.3 and 0.1.0-ui.4 (2026-07-19 / 2026-07-20)
 
 A follow-up interactive `femtobot agent --ui compat` session against
 `percival-osm` (recorded in `longlogs.txt`, 2026-07-19, lines 74-102)
-surfaced a new class of bug — a renderer-stable race that prints body
-content from the previous turn under the next turn's `[ 👤 You ]`
-prompt. Two complementary fixes shipped together in `0.1.0-ui.3`
-(issue #2): PR #1 (per-turn `turn_id` tokens) and PR #2 (per-turn
-`StreamRenderer` rebuild, parity layer kept). Upgrade to `0.1.0-ui.3`
-or later if you hit either of these.
+surfaced a new class of bug — a renderer-stable race that prints
+body content from the previous turn under the next turn's
+`[ 👤 You ]` prompt.
+
+`0.1.0-ui.3` shipped both PR #1 (per-turn `turn_id` tokens) and
+PR #2 (per-turn `StreamRenderer` rebuild). A subsequent session
+(issue #3, screenshots 2026-07-20 10:08) showed that PR #2's
+per-turn rebuild leaked Rich `Live` displays and produced raw
+ANSI escapes; `0.1.0-ui.4` reverted PR #2 entirely and kept
+**only PR #1**.
+
+**Upgrade to `0.1.0-ui.4` or later.** `0.1.0-ui.3` should not
+be installed.
 
 ### Body content from the previous turn prints under the next `[ 👤 You ]` prompt
 
-**Fixed in.** `0.1.0-ui.3` (issue #2, PR #1 + PR #2).
+**Fixed in.** `0.1.0-ui.3` (issue #2, PR #1). Reinforced in
+`0.1.0-ui.4` (issue #3 — PR #1 is the sole fixer).
 
-**Symptom.** In a `ui_parity=compat` session, the second turn onwards
-shows the assistant's response being printed *underneath* the
-previously-rendered `You:` prompt. The user types their next input
-but the previous response continues to render around it, leaving
-the screen with text from two consecutive turns interleaved. The
-`nanobot` project does not exhibit this bug because it instantiates
-a fresh `StreamRenderer` on every turn.
+**Symptom.** In a `ui_parity=compat` session, the second turn
+onwards shows the assistant's response being printed
+*underneath* the previously-rendered `You:` prompt. The user
+types their next input but the previous response continues to
+render around it, leaving the screen with text from two
+consecutive turns interleaved.
 
-**Cause.** Two architectural decisions in `femtobot/cli/commands.py`:
-- The renderer is constructed **once** before the REPL loop so the
-  parity `HeaderBar` + `Welcome card` only render once.
-- The `StreamRenderer` instance is then *reused* across turns,
-  keeping the same `_buf`, `_live`, `_ENDED`, and `_pending_streamed_body`
-  state alive between iterations. The same turn's body can be
-  rendered twice (once via stream deltas and once via the
-  `_print_agent_response` fallback path) when the trailing
-  `_streamed=True, _stream_end_pending=True` `OutboundMessage`
-  arrives at the bus out-of-order with `_stream_end`.
+**Cause.** The renderer is constructed **once** before the REPL
+loop so the parity `HeaderBar` + `Welcome card` only render
+once. The `StreamRenderer` instance is then *reused* across
+turns, keeping the same `_buf`, `_live`, `_ENDED`, and
+`_pending_streamed_body` state alive between iterations. The
+same turn's body can be rendered twice (once via stream deltas
+and once via the `_print_agent_response` fallback path) when
+the trailing `_streamed=True, _stream_end_pending=True`
+`OutboundMessage` arrives at the bus out-of-order with
+`_stream_end`.
 
-**Fix (PR #1 — turn-token).** Each user turn mints a fresh UUID
-`metadata["_turn_id"]`. The REPL's `_consume_outbound` task drops
-any `OutboundMessage` whose `_turn_id` no longer matches the
-active turn, so a late-arriving body from the previous turn is
-silently discarded instead of leaking under the next prompt.
-Background notifications (`cli:startup`, `_progress`,
-`_retry_wait`, `_runtime_control`) carry no `_turn_id` and
-continue to flow through unchanged.
+**Fix (PR #1 — turn-token).** Each user turn mints a fresh
+UUID `metadata["_turn_id"]`. The REPL's `_consume_outbound`
+task drops any `OutboundMessage` whose `_turn_id` no longer
+matches the active turn, so a late-arriving body from the
+previous turn is silently discarded instead of leaking under
+the next prompt. Background notifications (`cli:startup`,
+`_progress`, `_retry_wait`, `_runtime_control`) carry no
+`_turn_id` and continue to flow through unchanged.
 
-**Fix (PR #2 — per-turn core rebuild).** `ParityStreamRenderer`
-exposes `replace_core(new_core)`, called by the REPL at the start
-of every turn. The compat surface (HeaderBar, Welcome card,
-input-bar markup, theme) stays stable across turns; only the
-underlying `StreamRenderer` (the layer that owns `_buf`, `_live`,
-`_ENDED`) is swapped for a fresh instance. This mirrors the
-`nanobot` reference and removes the entire class of cross-turn
-state leakage by construction.
+**Note on PR #2.** PR #2 of `0.1.0-ui.3` introduced a
+per-turn `StreamRenderer` rebuild modelled on `nanobot`. The
+attempt to mirror `nanobot`'s construction caused a
+**regression** (`0.1.0-ui.4`):
+- Two Rich `Live` displays competed for the same
+  `sys.stdout`, leaking raw ANSI escape bytes
+  (`?[2K`, `?[2m`, `?[0m`) into the response.
+- The previous turn's `ThinkingSpinner` continued
+  refreshing on top of the new turn's response.
+- Markdown tables rendered as one ANSI-fragment-per-character
+  because each new `Console` had no cached terminal width.
+
+PR #2 has been removed; PR #1 alone is sufficient to close the
+issue #2 race.
 
 **How to verify the fix is in your build.**
 ```bash
-python -c "import femtobot.cli.commands as c; import inspect; \
-src = inspect.getsource(c); print('PR #1 ok' if 'uuid.uuid4' in src else 'PR #1 missing'); \
-print('PR #2 ok' if 'replace_core' in src else 'PR #2 missing')"
+python -c "
+import femtobot.cli.commands as c, femtobot.cli.parity_stream as p, inspect
+src = inspect.getsource(c)
+code_lines = [l for l in src.splitlines() if not l.lstrip().startswith(('#', '\"', \"'\"))]
+code = '\n'.join(code_lines)
+print('PR #1 ok' if 'uuid.uuid4' in code else 'PR #1 MISSING')
+print('PR #2 absent (good):', not hasattr(p.ParityStreamRenderer, 'replace_core'))
+"
 ```
+
+---
+
+## Issues fixed in 0.1.0-ui.4 (2026-07-20) — direct regressions from 0.1.0-ui.3
+
+A new `femtobot agent --ui compat` session (issue #3, recorded
+in 2026-07-20 10:08 screenshots) showed three regression
+symptoms that all had the same root cause: `0.1.0-ui.3`'s
+per-turn `StreamRenderer` rebuild left the previous Rich
+`Live` and `ThinkingSpinner` running. Each of the entries below
+traces one symptom back to the same fix.
+
+### ANSI escape sequences leak into the response body mid-stream
+
+**Fixed in.** `0.1.0-ui.4` (reverts PR #2 of `0.1.0-ui.3`).
+
+**Symptom.** In a `ui_parity=compat` session starting with the
+second turn, escape sequences such as `?[2K`, `?[2m`, `?[0m`
+appear as raw bytes in the middle of the response body. The
+terminal prints the bytes literally instead of treating them as
+control sequences.
+
+**Cause.** `ParityStreamRenderer.replace_core(new)` from
+`0.1.0-ui.3` swapped the underlying `StreamRenderer`. The new
+`StreamRenderer.__init__` (`stream.py:222`) created a fresh
+Rich `Console`, and `_start_spinner()` (`stream.py:236`)
+immediately spawned a new Rich `Live`. The previous core's
+`Live` was never `.stop()`-ed, so two `Live` displays were
+racing against the same `sys.stdout` — the orphan's refresh
+frames escaped as raw bytes when the new core pushed content.
+
+**Fix.** PR #2 (per-turn renderer rebuild) was reverted; the
+turn-token guard (PR #1) is now the sole mechanism for the
+issue #2 cross-turn race.
+
+### Previous turn's spinner keeps iterating on top of the new turn
+
+**Fixed in.** `0.1.0-ui.4` (issue #3, reverts PR #2).
+
+**Symptom.** After the first turn completes, the spinner
+(*"Femtobot is reticulating..."* / *"Femtobot is cogitating..."*)
+continues to iterate on top of the new turn's response body,
+even though the user has already submitted their next prompt.
+
+**Cause.** Same as above — the previous core's
+`ThinkingSpinner` and `Live` were left running because
+`replace_core` did not call `await old_core.close()` before
+swapping in the new core.
+
+**Fix.** Same as above — `replace_core` removed.
+
+### Markdown tables render with one ANSI-fragment-per-character
+
+**Fixed in.** `0.1.0-ui.4` (issue #3, reverts PR #2).
+
+**Symptom.** Markdown tables render as a single line wrapped
+in many short colour-styled segments (e.g.
+`?[36m ?[0m?[36Bateria?[0m?[1m ?[0m...`) instead of a nicely
+formatted table.
+
+**Cause.** Each new `Console` started with
+`force_terminal=sys.stdout.isatty()` but without the cached
+`width` of the previous session — markdown defaulted to 80
+cols. Combined with the orphan `Live` writing to stdout, the
+new core's wrapped output got interleaved with the orphan's
+frame draws, producing the per-fragment rendering.
+
+**Fix.** Same as above — restoring the single-Console /
+single-Live invariant fixes the table render.
 
 ---
 

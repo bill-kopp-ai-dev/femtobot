@@ -1700,33 +1700,6 @@ def agent(
                         turn_done.clear()
                         turn_response.clear()
                         reasoning_buffer.clear()
-                        # Issue #2 PR #2 (longlogs 2026-07-19, compat
-                        # profile): swap the underlying StreamRenderer
-                        # so each turn starts with a clean ``_buf`` /
-                        # ``_live`` / ``_ENDED``. The parity layer
-                        # wrapping it (HeaderBar, Welcome card) stays
-                        # stable across turns so its one-shot prints
-                        # do not repeat. Mirrors ``nanobot``'s
-                        # per-turn renderer rebuild.
-                        new_core = StreamRenderer(
-                            render_markdown=markdown,
-                            show_spinner=True,
-                            bot_name=config.agents.defaults.bot_name,
-                            bot_icon=config.agents.defaults.bot_icon,
-                            spacing_renderer=(
-                                renderer._spacing
-                                if hasattr(renderer, "_spacing")
-                                else None
-                            ),
-                        )
-                        if hasattr(renderer, "replace_core"):
-                            try:
-                                renderer.replace_core(new_core)
-                            except Exception:
-                                logger.debug(
-                                    "replace_core failed; continuing with stale core",
-                                    exc_info=True,
-                                )
                         # ``renderer`` is reused from the enclosing scope
                         # (built once before the loop). Resetting the
                         # parity renderer's per-turn transport (Live /
@@ -1742,6 +1715,12 @@ def agent(
                         # stream deltas / ``_stream_end`` / trailing
                         # ``_streamed`` body all inherit this token and
                         # the consumer can age them out on the next turn.
+                        # Issue #3 (longlogs 2026-07-20 screenshots):
+                        # ``new_core = StreamRenderer(...)`` and
+                        # ``renderer.replace_core(new_core)`` were
+                        # removed here — see issue #3 for why per-turn
+                        # rebuilds leaked the previous ``Live`` and
+                        # produced raw ANSI escapes.
                         new_turn_id = uuid.uuid4().hex
                         active_turn_id = new_turn_id
 

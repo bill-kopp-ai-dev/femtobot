@@ -256,6 +256,82 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Operators on `ui_parity=full` (Textual TUI) are unaffected — the
   rebuild path skips when `replace_core` is missing.
 
+## [0.1.0-ui.4] — 2026-07-20
+
+> Patch release — **regression fix**. A new follow-up interactive
+> session (recorded in 2026-07-20 10:08 screenshots, issue #3)
+> surfaced a regression introduced by `0.1.0-ui.3`'s PR #2
+> per-turn `StreamRenderer` rebuild. The PR #2 attempt to mirror
+> `nanobot`'s per-turn renderer construction **leaked the previous
+> Rich `Live` and `ThinkingSpinner`**: two `Live` displays competed
+> for the same `sys.stdout`, producing raw ANSI byte sequences in
+> the middle of the response, spinner state interleaving between
+> turns, and markdown tables rendered as one ANSI-fragment per
+> character. This release reverts PR #2 in full and relies
+> exclusively on PR #1 (the turn-token guard from `0.1.0-ui.3`) to
+> close the original issue #2 race.
+
+### Reverted
+
+#### Interactive TUI — `femtobot.cli.parity_stream`
+
+- **`ParityStreamRenderer.replace_core(new_core)` removed**. The
+  per-turn core swap created a second Rich `Console` and a second
+  `Live` display on every turn. Because `_make_console()`
+  (`stream.py:71-82`) builds a new Console with
+  `force_terminal=sys.stdout.isatty()` and `_start_spinner()`
+  (`stream.py:236`) immediately spawns a new `Live`, every
+  `replace_core` left the previous core's spinner thread running.
+  Two `Live` displays iterating against the same stdout produced
+  the raw escape fragments seen in the issue #3 screenshots.
+
+#### Interactive TUI — `femtobot.cli.commands.run_interactive`
+
+- **Per-turn `StreamRenderer` instantiation removed** (the
+  `new_core = StreamRenderer(...)` block). Replaced with a
+  comment explaining why the rebuild path is closed off, and
+  referencing issue #3. The renderer is now stable across
+  turns, matching the original v0.0.x design intent where the
+  parity `HeaderBar` + `Welcome card` only render once.
+
+### Fixed (carry-over from 0.1.0-ui.3 PR #1, now sole race fixer)
+
+- The **turn-token guard** (`commands.py:_is_for_current_turn`)
+  remains in place and is now the **only** mechanism preventing
+  the longlogs.txt 2026-07-19 issue #2 race. Each user turn
+  mints a UUID `_turn_id`; the consumer drops any
+  `OutboundMessage` whose `_turn_id` does not match the active
+  turn. Background notifications (no `_turn_id`) remain
+  unaffected.
+
+### Test suite
+
+- **1415/1415 tests pass** (was 1416 in `0.1.0-ui.3`; one issue
+  #2 test was consolidated into one asserting both the
+  presence of PR #1 and the absence of PR #2).
+- **Updated** `tests/test_longlogs_issue2_fixes.py`:
+    - `test_parity_renderer_has_no_replace_core` — asserts
+      `ParityStreamRenderer.replace_core` does NOT exist.
+    - `test_replace_core_swaps_underlying_renderer` —
+      repurposed to verify `ParityStreamRenderer._base` is the
+      same `StreamRenderer` instance passed to the constructor
+      (no swap) and that `replace_core` is absent.
+    - `test_turn_token_guard_present_and_replace_core_absent`
+      — bundle check; the consumer-side guard must be present
+      AND the renderer-side rebuild path must be absent.
+    - The previous `test_run_interactive_rebuilds_core_per_turn`
+      and `test_both_fixes_present` were rewritten/merged into
+      the bundle check.
+
+### Upgrade notes
+
+- Drop-in replacement for `0.1.0-ui.3`. **If you installed
+  `0.1.0-ui.3`, upgrade immediately** — `0.1.0-ui.3` leaks Rich
+  `Live` displays on the second turn onwards.
+- Operators on `ui_parity=full` (Textual TUI) and `ui_parity=off`
+  (legacy `print_agent_response`) are unaffected — both
+  profiles never consumed `replace_core`.
+
 ## [Unreleased]
 
 ### Femtobot 1.0 — PydanticAI migration (Phases 0-9)

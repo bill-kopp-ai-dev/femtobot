@@ -174,34 +174,52 @@ def test_consumer_skips_stale_body_in_simulated_bus() -> None:
 
 
 # ---------------------------------------------------------------------------
-# PR #2 — per-turn core rebuild + ParityStreamRenderer.replace_core
+# Issue #3 — per-turn renderer rebuild must NOT be present
 # ---------------------------------------------------------------------------
+#
+# Issue #3 (longlogs 2026-07-20 screenshots) showed that
+# ``ParityStreamRenderer.replace_core`` and ``new_core = StreamRenderer(...)``
+# inside ``run_interactive`` (the PR #2 attempt to mirror nanobot) leaked
+# the previous core's Rich ``Live`` and ``ThinkingSpinner``. Two ``Live``
+# displays competed for the same ``sys.stdout`` and produced:
+#
+#   - raw ANSI bytes in the middle of the response (`?[2K`, `?[2m`, `?[0m`),
+#   - spinner state interleaving between turns,
+#   - markdown tables rendered as one ANSI-fragment-per-character.
+#
+# PR #2 was reverted in issue #3; only the turn-token guard (PR #1)
+# handles cross-turn message ordering. These two tests pin the API absence.
 
 
-def test_parity_renderer_has_replace_core() -> None:
-    """``ParityStreamRenderer`` exposes a ``replace_core`` hook used
-    by the REPL to swap the underlying ``StreamRenderer`` per turn.
+def test_parity_renderer_has_no_replace_core() -> None:
+    """``ParityStreamRenderer.replace_core`` must NOT exist.
 
-    Static check — the fix is structural.
+    Static check — guards against a future contributor re-introducing
+    per-turn renderer rebuilds that leak the previous Rich ``Live``.
+    See issue #3 for the regression details.
     """
     from femtobot.cli.parity_stream import ParityStreamRenderer
 
-    assert hasattr(ParityStreamRenderer, "replace_core"), (
-        "ParityStreamRenderer.replace_core is required by issue #2 PR #2"
+    assert not hasattr(ParityStreamRenderer, "replace_core"), (
+        "ParityStreamRenderer.replace_core was re-introduced after "
+        "the issue #3 fix — see issue #3 for why this leaks "
+        "Rich Live displays and the previous turn's spinner."
     )
-    assert callable(ParityStreamRenderer.replace_core)
 
 
 def test_replace_core_swaps_underlying_renderer() -> None:
-    """After ``replace_core(new)``, ``on_delta`` / ``on_end`` /
-    ``close`` / ``header_printed`` all delegate to ``new``."""
+    """After issue #3 the parity renderer's ``on_delta`` / ``on_end``
+    / ``close`` all delegate to a single stable ``StreamRenderer``.
+
+    The structural check: ``ParityStreamRenderer._base`` exists and
+    is a ``StreamRenderer`` instance. The original PR #2 swap is
+    gone.
+    """
     from femtobot.cli.parity_stream import ParityStreamRenderer
     from femtobot.cli.stream import StreamRenderer
 
     base_old = StreamRenderer(render_markdown=True, show_spinner=False)
-    base_new = StreamRenderer(render_markdown=True, show_spinner=False)
 
-    # Build a real ParityStreamRenderer on top of base_old.
     # We need a minimal config-like object — ParityStreamRenderer
     # reads ``config.agents.defaults.cli.theme`` and
     # ``config.agents.defaults.bot_name`` defensively, so we
@@ -234,38 +252,12 @@ def test_replace_core_swaps_underlying_renderer() -> None:
         # an explanatory note instead of failing.
         pytest.skip("ParityStreamRenderer init requires a TTY-capable env")
 
-    parity.replace_core(base_new)
-    assert parity._base is base_new, (
-        "replace_core must rebind the underlying StreamRenderer"
-    )
-    assert parity._console is base_new.console, (
-        "replace_core must rebind the console reference too"
-    )
-
-
-def test_run_interactive_rebuilds_core_per_turn() -> None:
-    """The REPL body must call ``replace_core`` (or equivalent)
-    before each ``publish_inbound`` so the next turn has a clean
-    ``_buf`` / ``_live`` / ``_ENDED``.
-
-    Structural check — guards against the regressions that
-    longlogs.txt 2026-07-19 (lines 74-102) captured.
-    """
-    src = inspect.getsource(
-        __import__("femtobot.cli.commands", fromlist=["_ACTIVE_RENDERER"])
-    )
-    # Look for the per-turn rebuild evidence.
-    assert "replace_core" in src, (
-        "expected REPL to call replace_core per turn (issue #2 PR #2)"
-    )
-    # And the StreamRenderer must be instantiated inside the loop
-    # (i.e. after the inner ``while True:`` of run_interactive). We
-    # approximate this by checking for the StreamRenderer symbol
-    # being imported (already at module level) and used alongside
-    # the per-turn metadata update.
-    assert "new_core = StreamRenderer(" in src, (
-        "expected REPL to build a fresh StreamRenderer per turn"
-    )
+    # The parity renderer's underlying ``_base`` must be the *same*
+    # ``StreamRenderer`` instance we passed in (no swap).
+    assert parity._base is base_old
+    assert isinstance(parity._base, StreamRenderer)
+    # No replacement hook.
+    assert not hasattr(parity, "replace_core")
 
 
 # ---------------------------------------------------------------------------
@@ -366,19 +358,42 @@ def test_two_turn_race_drops_only_stale_body() -> None:
     )
 
 
-def test_both_fixes_present() -> None:
-    """Sanity bundle: both issue #2 fixes are wired in the same REPL.
+def test_turn_token_guard_present_and_replace_core_absent() -> None:
+    """Sanity bundle for the issue #2 + issue #3 state.
 
-    A future refactor that reverts one but keeps the other is the
-    failure mode we want this test to catch (the longlogs bug only
-    fully disappears when BOTH fixes are present).
+    After the issue #3 revert:
+
+      - PR #1 (turn-token guard) must still be present in run_interactive.
+      - PR #2 (per-turn renderer rebuild) must NOT be in run_interactive.
+      - ``ParityStreamRenderer.replace_core`` must NOT exist.
+
+    This catches the failure mode where a future contributor might
+    re-add ``replace_core`` thinking the cross-turn race fix lives in
+    the renderer (it does not — it lives in the consumer's turn-token).
     """
     src = inspect.getsource(
         __import__("femtobot.cli.commands", fromlist=["_ACTIVE_RENDERER"])
     )
-    assert "replace_core" in src and "new_core = StreamRenderer(" in src, (
-        "PR #2 (per-turn core rebuild) is missing"
-    )
+    # PR #1 — turn-token guard
     assert "_turn_id" in src and "uuid.uuid4" in src, (
-        "PR #1 (turn-token guard) is missing"
+        "PR #1 (turn-token guard) is missing — issue #2 regressed."
+    )
+    # Issue #3: per-turn rebuild must not be present in run_interactive
+    # (it caused the Rich Live leak observed on 2026-07-20). We strip
+    # leading whitespace + ``#`` characters so that docstrings and
+    # comments (which mention ``replace_core`` historically) don't
+    # trigger a false positive. Then we look for an actual call site.
+    import re as _re
+    code_lines = [
+        line for line in src.splitlines()
+        if not line.lstrip().startswith(("#", '"', "'"))
+    ]
+    code = "\n".join(code_lines)
+    assert not _re.search(r"\.\s*replace_core\(", code), (
+        "run_interactive has a .replace_core( call — issue #3 fix reverted "
+        "but per-turn rebuild is back."
+    )
+    assert "new_core = StreamRenderer(" not in code, (
+        "run_interactive instantiates a new StreamRenderer per turn — "
+        "issue #3 fix is incomplete."
     )

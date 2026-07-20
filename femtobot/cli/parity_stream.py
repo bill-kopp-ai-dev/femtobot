@@ -299,38 +299,19 @@ class ParityStreamRenderer:
     async def close(self) -> None:
         await self._base.close()
 
-    def replace_core(self, new_core: StreamRenderer) -> None:
-        """Swap the underlying :class:`StreamRenderer` instance.
-
-        Issue #2 PR #2 (longlogs 2026-07-19, compat profile). The
-        parity layer keeps the **compat** surface (HeaderBar, Welcome
-        card, theme, input-bar markup) stable across turns so they
-        only render once. The **core** renderer (``StreamRenderer``,
-        which owns ``_buf`` / ``_live`` / ``_ENDED``) is the layer
-        that accumulated cross-turn state and lost its atomicity
-        — exactly the surface that leaked body content under the
-        next turn's ``[ 👤 You ]`` prompt.
-
-        Replacing the core each turn matches the ``nanobot``
-        reference (``nanobot/cli/commands.py`` instantiates a fresh
-        ``StreamRenderer`` per turn) and gives each turn a clean
-        buffer. The parity layer stays a presentation overlay, so
-        the Welcome card does NOT re-print.
-
-        The previous core is closed before being replaced, but
-        since its ``on_end`` already ran on every past turn it
-        should already be torn down — this is a defensive no-op
-        for the streamed path that never spawned a ``Live``.
-        """
-        self._base = new_core
-        self._console = new_core.console
-        # The parity surface (``_console``) is the same Console object
-        # under both cores — but resetting the reference here keeps the
-        # parity layer from holding onto a stale ``Live`` if the core
-        # was swapped mid-spinner.
-
     def stop_for_input(self) -> None:
         self._base.stop_for_input()
+
+    # NOTE: there is intentionally no ``replace_core`` hook here.
+    # Issue #3 (longlogs 2026-07-20 screenshots) showed that
+    # swapping the underlying ``StreamRenderer`` per turn leaked
+    # the previous core's Rich ``Live`` and ``ThinkingSpinner``:
+    # two ``Live`` displays competed for the same ``sys.stdout``,
+    # producing raw ANSI escapes (``?[2K``, ``?[2m``, ``?[0m``) and
+    # interleaved spinner refreshes. The cross-turn race fix lives
+    # in the consumer's turn-token guard (``commands.py`` /
+    # ``_is_for_current_turn``), not in rebuilding the renderer.
+    # See issue #3 for the full root-cause analysis.
 
     def pause(self) -> Any:
         return self._base.pause()
