@@ -332,6 +332,87 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (legacy `print_agent_response`) are unaffected — both
   profiles never consumed `replace_core`.
 
+## [0.1.0-cli.1] — 2026-07-20
+
+> Migration. The femtobot CLI now ships a byte-for-byte mirror of
+> the `nanobot` CLI's stream layer at
+> `femtobot/cli/_nanobot_mirror/stream.py`, and the parity layer
+> (introduced in `0.1.0-ui.0+` through `0.1.0-ui.4`) is removed
+> entirely. The long-running TUI issues recorded in
+> `longlogs.txt 2026-07-19` (issue #2) and `2026-07-20` (issue #3
+> + screenshots) are resolved structurally — the mirror's
+> `StreamRenderer` does not have the parity-only state surfaces
+> those bugs depended on.
+
+### Removed
+
+- `ParityStreamRenderer`, `HeaderBar`, `WelcomeCard`, `ToolCard`,
+  parity status footer, `SpinnerWithElapsed`, `_ReasoningBuffer`,
+  `Theme`, `whimsy`, `role_renderer`, `status_line`, parity
+  `background`/`file_mention`/`permission_prompt`/
+  `completer`/`keybindings`/`textual_app` modules.
+- `ui_parity=compat` profile and the `--ui compat` CLI flag.
+  The flag now exits 64 (EX_USAGE) with a deprecation message
+  (D4).
+- 17 `femtobot/cli/*.py` files (`parity_stream.py`,
+  `parity_widgets.py`, `renderer_factory.py`, `theme.py`,
+  `whimsy.py`, `role_renderer.py`, `status_line.py`,
+  `background.py`, `file_mention.py`, `permission_prompt.py`,
+  `completer.py`, `keybindings.py`, `textual_app.py`,
+  `md_commands.py`, `bash_mode.py`, `onboard_wizard.py`,
+  `sessions.py`, `doctor.py`) and 21 corresponding test files.
+- ~3000 lines of parity-only code removed.
+
+### Borrowed
+
+- `femtobot/cli/_nanobot_mirror/stream.py` is a byte-for-byte
+  copy of `nanobot/cli/stream.py`. The mirror module is the
+  canonical implementation; `femtobot.cli.stream` re-exports the
+  symbols under their stable paths (D5) so
+  `from femtobot.cli.stream import StreamRenderer` keeps working.
+
+### Fixed (carry-over from prior reports)
+
+- Issue #2 (longlogs 2026-07-19 cross-turn body race) — now
+  structurally impossible; the mirror's `StreamRenderer.__init__`
+  is small (< 30 non-blank lines) and does not eagerly spawn a
+  Rich `Live`.
+- Issue #3 (Rich `Live` leak from `0.1.0-ui.3` PR #2) — gone with
+  the parity layer. The previous parity variant spawned a
+  second `Live` and a fresh `Console` per turn; the mirror
+  shares a single `Console` across the REPL.
+- 2026-07-20 screenshot regressions (raw ANSI bytes, spinner
+  interleaving, markdown tables wrapped against `width=80`) —
+  all eliminated at the source.
+
+### Test suite
+
+- 1105 tests passing, 0 regressions. ~310 tests removed (parity
+  family) and ~6 added (`tests/cli/test_nanobot_mirror_phase1.py`
+  + per-phase check-ins).
+
+### Upgrade notes
+
+- Drop-in replacement for `0.1.0-ui.4`. Users on `ui_parity=off`
+  or `ui_parity=full` are unaffected.
+- `--ui compat` exits 64 with a clear deprecation message.
+- The bash-mode extension (run shell commands with `!command`)
+  was removed (the original `bash_mode.py` lived in the parity
+  layer). Pin to `0.1.0-ui.4` to keep using `!` shortcuts, or
+  re-implement via a femtobot extension.
+- The standalone `sessions` sub-app was simplified to a
+  pointer message. Sessions now live alongside the agent loop;
+  use the in-REPL `/clear` slash command.
+
+### Backward compatibility
+
+- `from femtobot.cli.stream import StreamRenderer` — unchanged.
+- `from femtobot.cli.commands import agent_app` — unchanged.
+- `from femtobot.cli._nanobot_mirror.stream import StreamRenderer`
+  — new explicit mirror path (D5).
+- The internal layout under `_nanobot_mirror/` is not a public
+  import path; downstream code must keep using `femtobot.cli.*`.
+
 ## [Unreleased]
 
 ### Femtobot 1.0 — PydanticAI migration (Phases 0-9)

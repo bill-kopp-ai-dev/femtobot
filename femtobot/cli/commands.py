@@ -51,7 +51,44 @@ from rich.text import Text  # noqa: E402
 
 from femtobot import __logo__, __version__  # noqa: E402
 from femtobot.agent.loop import AgentLoop  # noqa: E402
-from femtobot.cli.renderer_factory import build_renderer
+# Phase 4 cleanup — build_renderer (parity factory) removed; we now
+# construct the mirror's ``StreamRenderer`` directly.
+from femtobot.cli.stream import StreamRenderer as build_renderer  # type: ignore[assignment,misc]  # noqa: E402
+
+
+def _build_simple_renderer(config_obj, *, render_markdown: bool = True):
+    """Phase 4 replacement for ``build_renderer``.
+
+    Returns a plain :class:`StreamRenderer` (the nanobot mirror),
+    ignoring the deleted parity theme / role-renderer wiring. The
+    signature matches what `commands.py` call-sites pass in so the
+    transition is local.
+    """
+    bot_name = getattr(
+        getattr(config_obj.agents.defaults, "bot_name", None),
+        "default",
+        "Femtobot",
+    )
+    bot_icon = getattr(
+        getattr(config_obj.agents.defaults, "bot_icon", None),
+        "default",
+        "\U0001f408",  # 🐈
+    )
+    # Best-effort: try config defaults, else fall back to literal name.
+    try:
+        bot_name = config_obj.agents.defaults.bot_name
+    except Exception:
+        bot_name = "Femtobot"
+    try:
+        bot_icon = config_obj.agents.defaults.bot_icon
+    except Exception:
+        bot_icon = "\U0001f408"
+    return StreamRenderer(
+        render_markdown=render_markdown,
+        show_spinner=True,
+        bot_name=bot_name,
+        bot_icon=bot_icon,
+    )
 from femtobot.cli.stream import StreamRenderer, ThinkingSpinner  # noqa: E402
 from femtobot.config.paths import get_workspace_path  # noqa: E402
 from femtobot.config.schema import Config  # noqa: E402
@@ -668,33 +705,15 @@ async def _handle_bash_mode(
     agent loop), False otherwise. Respects
     ``agents.cli.bashModeEnabled`` and surfaces timeouts / non-zero exit
     codes inline.
-    """
-    from femtobot.cli.bash_mode import (
-        extract_command,
-        format_bash_output,
-        is_repeat_request,
-        looks_like_bash_mode,
-        parse_timeout,
-        run_bash_command,
-    )
 
-    if not looks_like_bash_mode(user_input):
-        return False
-    if not getattr(config.agents.defaults.cli, "bash_mode_enabled", True):
-        console.print("[red]![/red] Bash mode is disabled in config (agents.cli.bashModeEnabled=false).")
-        return True
-    if is_repeat_request(user_input):
-        console.print("[yellow]![/yellow] Repeat history is not yet wired (T8 follow-up).")
-        return True
-    cmd = extract_command(user_input)
-    if not cmd:
-        console.print("[yellow]![/yellow] Empty bash command. Type `!<command>` to run one.")
-        return True
-    timeout_s = parse_timeout(config)
-    console.print(f"[dim]$ {cmd}[/dim]")
-    result = await run_bash_command(cmd, timeout_s=timeout_s)
-    console.print(format_bash_output(result))
-    return True
+    Phase 4 cleanup — the original ``bash_mode.py`` extension was
+    removed with the parity layer. The shell-mode feature was
+    femtobot-only and is not in the nanobot mirror. The hook now
+    is a no-op (returns False) so callers fall through to the
+    normal agent loop. Users who relied on shell-mode can pin to
+    0.1.0-ui.4 or re-implement via a femtobot extension.
+    """
+    return False
 
 
 def version_callback(value: bool):
@@ -708,6 +727,15 @@ def main(
     version: bool = typer.Option(None, "--version", "-v", callback=version_callback, is_eager=True),
 ):
     """Femtobot - Minimalist CLI Agent."""
+    # Phase 4 cleanup — ``--ui compat`` was the only valid value of
+    # the parity profile flag, and the parity profile itself was
+    # deleted. We hard-error (exit 64) before Typer parses anything
+    # so users get a clear deprecation message instead of an
+    # ImportError for ``femtobot.cli.renderer_factory``. This runs
+    # eagerly because Typer invokes the root callback before any
+    # sub-command parser.
+    from femtobot.cli._nanobot_mirror._ui_parity_shim import block_if_compat
+    block_if_compat()
     pass
 
 
@@ -882,7 +910,14 @@ def onboard(
     # C5: optional interactive wizard for choosing model + provider
     # (only when stdin is a TTY and --wizard is set or the user passes
     # no --folder-path, signaling a first-time setup).
-    from femtobot.cli.onboard_wizard import run_onboard_wizard
+    #
+    # Phase 4 cleanup — the femtobot-local onboard_wizard.py was
+    # removed with the parity layer. The wizard is no-op now;
+    # users wanting an interactive first-time setup can use the
+    # nanobot-style ``femtobot config init`` flow (which reads the
+    # same env vars to populate the workspace).
+    def run_onboard_wizard(*_args, **_kwargs):  # type: ignore[no-redef]
+        return None
 
     # C5 + CLI-parity v0.1.7: the wizard is now strictly opt-in via
     # --wizard.  The previous auto-trigger (``isatty() and no args``)
@@ -1282,11 +1317,8 @@ def agent(
     if message:
         # Single message mode — direct call, no bus needed
         async def run_once():
-            renderer = build_renderer(
+            renderer = _build_simple_renderer(
                 config,
-                bot_name=config.agents.defaults.bot_name,
-                bot_icon=config.agents.defaults.bot_icon,
-                spacing_renderer=_make_spacing_renderer(config),
                 render_markdown=markdown,
             )
             global _ACTIVE_RENDERER
@@ -1381,11 +1413,8 @@ def agent(
         # re-print on every turn. The renderer is reused across turns;
         # only its transport (Live / spinner) gets reset between turns
         # (see ``renderer.stop_for_input()`` and ``renderer.on_end()``).
-        renderer = build_renderer(
+        renderer = _build_simple_renderer(
             config,
-            bot_name=config.agents.defaults.bot_name,
-            bot_icon=config.agents.defaults.bot_icon,
-            spacing_renderer=_make_spacing_renderer(config),
             render_markdown=markdown,
         )
         global _ACTIVE_RENDERER
@@ -1424,15 +1453,18 @@ def agent(
                     renderer._stop_spinner()  # noqa: SLF001
             except Exception:
                 logger.debug("Could not close previous renderer", exc_info=True)
-            new_renderer = build_renderer(
-                config,
-                bot_name=config.agents.defaults.bot_name,
-                bot_icon=config.agents.defaults.bot_icon,
-                spacing_renderer=_make_spacing_renderer(config),
-                render_markdown=markdown,
+            # Phase 4 cleanup — the ``/ui`` slash command's hot-swap
+            # previously built a fresh ``ParityStreamRenderer``. After
+            # the parity layer was removed this hot-swap can no longer
+            # succeed (the mirror's ``StreamRenderer`` does not support
+            # a re-init path that preserves the active ``_live``). We
+            # keep the existing renderer instead and surface a warning
+            # — restart the session to pick up UI changes.
+            logger.warning(
+                "/ui hot-swap was removed in 0.1.0-cli.1 along with "
+                "the parity UI. Restart the femtobot session to pick "
+                "up UI configuration changes."
             )
-            renderer = new_renderer
-            globals()["_ACTIVE_RENDERER"] = new_renderer
 
         async def run_interactive():
             bus_task = asyncio.create_task(agent_loop.run())
@@ -1876,6 +1908,13 @@ def status(
 
 
 if __name__ == "__main__":
+    # The ``--ui compat`` block runs from the Typer root callback
+    # when invoked via the ``femtobot`` entry-point. When invoked
+    # via ``python -m femtobot.cli.commands``, we duplicate the
+    # check here so ``python -m femtobot.cli.commands --ui compat``
+    # also exits 64 immediately.
+    from femtobot.cli._nanobot_mirror._ui_parity_shim import block_if_compat
+    block_if_compat()
     app()
 
 
@@ -1883,7 +1922,25 @@ if __name__ == "__main__":
 # Sessions subcommands (CLI-parity v0.1.8 Issue 4)
 # ============================================================================
 
-from femtobot.cli.sessions import sessions_app  # noqa: E402
+# Phase 4 cleanup — ``femtobot.cli.sessions`` was deleted with the
+# parity layer. The nanobot CLI does not ship a separate ``sessions``
+# sub-app (sessions live alongside the agent loop). We add a stub
+# ``sessions_app`` so existing callers / scripts that reference it
+# keep working (the stub prints a helpful pointer to ``femtobot
+# agent`` which now owns the session lifecycle).
+import typer as _typer  # noqa: E402
+
+sessions_app = _typer.Typer(help="Sessions are managed via `femtobot agent`. Use the in-session /clear to start a new session.")
+
+
+@sessions_app.callback(invoke_without_command=True)
+def _sessions_default() -> None:
+    console.print(
+        "[yellow]![/yellow] The standalone ``sessions`` sub-app was removed in 0.1.0-cli.1."
+    )
+    console.print(
+        "Use the in-REPL ``/clear`` slash command to start a new session, or run ``femtobot agent`` directly."
+    )
 
 app.add_typer(sessions_app, name="sessions")
 
